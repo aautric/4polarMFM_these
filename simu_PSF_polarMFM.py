@@ -218,8 +218,8 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
             ''' in case there are several planes, the parameters are lilstede in the plaene order 
             (the same as in several_planes, which give the distance from plane to a fictive nominal plane, 
              and polar_proj)'''
-            zernike_mask_x = torch.exp(1j * torch.sum(torch.einsum('ab, bcd->abcd', zernike_coefs_x, zernike_base), dim=0))
-            zernike_mask_y = torch.exp(1j * torch.sum(torch.einsum('ab, bcd->abcd', zernike_coefs_y, zernike_base), dim=0))
+            zernike_mask_x = torch.exp(1j * torch.sum(torch.einsum('ab, bcd->abcd', zernike_coefs_x, zernike_base), dim=1))
+            zernike_mask_y = torch.exp(1j * torch.sum(torch.einsum('ab, bcd->abcd', zernike_coefs_y, zernike_base), dim=1))
     else:
         '''numpy case'''
         zernike_mask_x = np.exp(1j * np.sum(zernike_coefs_x.reshape(-1, 1, 1)*zernike_base, axis=0))
