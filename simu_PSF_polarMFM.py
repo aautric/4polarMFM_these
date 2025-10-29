@@ -244,7 +244,7 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
         ''' torch version ''' 
         if len(phase.shape)==2: 
             ''' 1 PSF ''' 
-            freq = (torch.fft.fftshift(torch.fft.fftfreq(N+Npadding, Dx, device=device))*2*np.pi*f_tube/k)*MAG
+            freq = (torch.fft.fftshift(torch.fft.fftfreq(N+Npadding, Dx, device=device))*2*torch.pi*f_tube/k)*MAG
             ### WARNING torch.meshgrid() returns exactly the opposite of np.meshgrid() !!!!
             v, u = torch.meshgrid(freq, freq)
             
@@ -276,11 +276,14 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
              
         else: 
             ''' several PSF '''     
-            freq = (torch.fft.fftshift(torch.fft.fftfreq(N+Npadding, Dx, device=device))*2*np.pi*f_tube/k)*MAG
+            freq = (torch.fft.fftshift(torch.fft.fftfreq(N+Npadding, Dx, device=device))*2*torch.pi*f_tube/k)*MAG
             v, u = torch.meshgrid(freq, freq) 
             if second_plane!=None: # 2 planes
                 polar = [polar_offset, polar_offset2, polar_offset]
                 ''' rotated polarizations as a function of the plane '''
+                polar_rad = (polar_projections=='rad')
+                polar_projections[polar_rad] = 0. # will be managed just after
+                polar_projections = torch.tensor(polar_projections.astype(float), device=device)
                 ex0 = torch.stack([torch.cos((polar_projections[ind]+polar[ind])*torch.pi/180)*Ex0 + torch.sin((polar_projections[ind]+polar[ind])*torch.pi/180)*Ey0 for ind in range(len(polar_projections))])
                 ex1 = torch.stack([torch.cos((polar_projections[ind]+polar[ind])*torch.pi/180)*Ex1 + torch.sin((polar_projections[ind]+polar[ind])*torch.pi/180)*Ey1 for ind in range(len(polar_projections))])
                 ex2 = torch.stack([torch.cos((polar_projections[ind]+polar[ind])*torch.pi/180)*Ex2 + torch.sin((polar_projections[ind]+polar[ind])*torch.pi/180)*Ey2 for ind in range(len(polar_projections))])
@@ -288,6 +291,13 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                 ey0 = torch.stack([-torch.sin((polar_projections[ind]+polar[ind])*torch.pi/180)*Ex0 + torch.cos((polar_projections[ind]+polar[ind])*torch.pi/180)*Ey0 for ind in range(len(polar_projections))])
                 ey1 = torch.stack([-torch.sin((polar_projections[ind]+polar[ind])*torch.pi/180)*Ex1 + torch.cos((polar_projections[ind]+polar[ind])*torch.pi/180)*Ey1 for ind in range(len(polar_projections))])
                 ey2 = torch.stack([-torch.sin((polar_projections[ind]+polar[ind])*torch.pi/180)*Ex2 + torch.cos((polar_projections[ind]+polar[ind])*torch.pi/180)*Ey2 for ind in range(len(polar_projections))])
+                
+                if len(polar_rad==True)!=0:
+                    for pl in range(len(second_plane)):
+                        if polar_rad[pl]:
+                            ex0[pl], ey0[pl] = ex0[pl]*torch.cos(phi) +  ey0[pl]*torch.sin(phi), -ex0[pl]*torch.sin(phi) +  ey0[pl]*torch.cos(phi)
+                            ex1[pl], ey1[pl] = ex1[pl]*torch.cos(phi) +  ey1[pl]*torch.sin(phi), -ex1[pl]*torch.sin(phi) +  ey1[pl]*torch.cos(phi)
+                            ex2[pl], ey2[pl] = ex2[pl]*torch.cos(phi) +  ey2[pl]*torch.sin(phi), -ex2[pl]*torch.sin(phi) +  ey2[pl]*torch.cos(phi)
                 
                 if BFP_version:
                      '''version that is used for plotting the BFP intensity (no fft)'''
