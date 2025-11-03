@@ -520,7 +520,7 @@ def BFP_intensity(rho, eta, delta, M, N_photons=1000, device='cpu'):
     else:
         return PSF(rho, eta, delta, M, N_photons=N_photons, device=device)
 
-def noise(PSF, QE, EM, b, sigma_b, sigma_r, bias):
+def noise(PSF, QE, EM, b, sigma_b, sigma_r, bias, sensitivity):
     '''
     given a computed PSF, adds noise according to a mixed Poisson Gaussian noise
     shot noise is taken in account with Poisson distribution and backgound by Gaussian noise with b mean and standard deviation sigma_b
@@ -533,13 +533,18 @@ def noise(PSF, QE, EM, b, sigma_b, sigma_r, bias):
         device = PSF.device
         background = normal(0, sigma_b, PSF.shape)+b
         background[background<0] = 0.
-        noisy = torch.poisson(PSF+torch.tensor(background, device=device)) + torch.tensor(normal(0, sigma_r, PSF.shape), device=device)/QE + bias/(QE*EM)
+        read = normal(0, sigma_r, PSF.shape)
+        poiss = torch.poisson(PSF+torch.tensor(background, device=device))
+        gamma_dist = torch.distributions.Gamma(concentration=poiss.clamp(min=1e-6)*QE, rate=EM)
+        excess = gamma_dist.sample()
+        noisy =  poiss + torch.tensor(read, device=device)*(1/(QE*EM)) + bias*(1/(QE*EM)) + excess*(1/(QE*EM))
         return noisy
     else:
         background = normal(b, sigma_b, PSF.shape)
         background[background<0] = 0.
         noisy = poisson(PSF+background) + normal(0, sigma_r, PSF.shape) + bias
         return noisy
+
     
 def upsample(u, v, PSF, factor):
     device = PSF.device
