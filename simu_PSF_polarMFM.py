@@ -281,6 +281,9 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
             if second_plane!=None: # 2 planes
                 polar = [polar_offset, polar_offset2, polar_offset]
                 ''' rotated polarizations as a function of the plane '''
+                polar_rad = (polar_projections=='rad')
+                polar_projections[polar_rad] = 0. # will be managed just after
+                polar_projections = torch.tensor(polar_projections.astype(float), device=device)
                 ex0 = torch.stack([torch.cos((polar_projections[ind]+polar[ind])*torch.pi/180)*Ex0 + torch.sin((polar_projections[ind]+polar[ind])*torch.pi/180)*Ey0 for ind in range(len(polar_projections))])
                 ex1 = torch.stack([torch.cos((polar_projections[ind]+polar[ind])*torch.pi/180)*Ex1 + torch.sin((polar_projections[ind]+polar[ind])*torch.pi/180)*Ey1 for ind in range(len(polar_projections))])
                 ex2 = torch.stack([torch.cos((polar_projections[ind]+polar[ind])*torch.pi/180)*Ex2 + torch.sin((polar_projections[ind]+polar[ind])*torch.pi/180)*Ey2 for ind in range(len(polar_projections))])
@@ -288,6 +291,13 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                 ey0 = torch.stack([-torch.sin((polar_projections[ind]+polar[ind])*torch.pi/180)*Ex0 + torch.cos((polar_projections[ind]+polar[ind])*torch.pi/180)*Ey0 for ind in range(len(polar_projections))])
                 ey1 = torch.stack([-torch.sin((polar_projections[ind]+polar[ind])*torch.pi/180)*Ex1 + torch.cos((polar_projections[ind]+polar[ind])*torch.pi/180)*Ey1 for ind in range(len(polar_projections))])
                 ey2 = torch.stack([-torch.sin((polar_projections[ind]+polar[ind])*torch.pi/180)*Ex2 + torch.cos((polar_projections[ind]+polar[ind])*torch.pi/180)*Ey2 for ind in range(len(polar_projections))])
+                
+                if len(polar_rad==True)!=0:
+                    for pl in range(len(second_plane)):
+                        if polar_rad[pl]:
+                            ex0[pl], ey0[pl] = ex0[pl]*torch.cos(phi) +  ey0[pl]*torch.sin(phi), -ex0[pl]*torch.sin(phi) +  ey0[pl]*torch.cos(phi)
+                            ex1[pl], ey1[pl] = ex1[pl]*torch.cos(phi) +  ey1[pl]*torch.sin(phi), -ex1[pl]*torch.sin(phi) +  ey1[pl]*torch.cos(phi)
+                            ex2[pl], ey2[pl] = ex2[pl]*torch.cos(phi) +  ey2[pl]*torch.sin(phi), -ex2[pl]*torch.sin(phi) +  ey2[pl]*torch.cos(phi)
                 
                 if BFP_version:
                      '''version that is used for plotting the BFP intensity (no fft)'''
@@ -510,7 +520,7 @@ def BFP_intensity(rho, eta, delta, M, N_photons=1000, device='cpu'):
     else:
         return PSF(rho, eta, delta, M, N_photons=N_photons, device=device)
 
-def noise(PSF, QE, EM, b, sigma_b, sigma_r, bias):
+def noise(PSF, QE, EM, b, sigma_b, sigma_r, bias, sensitivity):
     '''
     given a computed PSF, adds noise according to a mixed Poisson Gaussian noise
     shot noise is taken in account with Poisson distribution and backgound by Gaussian noise with b mean and standard deviation sigma_b
@@ -523,13 +533,18 @@ def noise(PSF, QE, EM, b, sigma_b, sigma_r, bias):
         device = PSF.device
         background = normal(0, sigma_b, PSF.shape)+b
         background[background<0] = 0.
-        noisy = torch.poisson(PSF+torch.tensor(background, device=device)) + torch.tensor(normal(0, sigma_r, PSF.shape), device=device)/QE + bias/(QE*EM)
+        read = normal(0, sigma_r, PSF.shape)
+        poiss = torch.poisson(PSF+torch.tensor(background, device=device))
+        gamma_dist = torch.distributions.Gamma(concentration=poiss.clamp(min=1e-6)*QE, rate=EM)
+        excess = gamma_dist.sample()
+        noisy =  poiss + torch.tensor(read, device=device)*(1/(QE*EM)) + bias*(1/(QE*EM)) + excess*(1/(QE*EM))
         return noisy
     else:
         background = normal(b, sigma_b, PSF.shape)
         background[background<0] = 0.
         noisy = poisson(PSF+background) + normal(0, sigma_r, PSF.shape) + bias
         return noisy
+
     
 def upsample(u, v, PSF, factor):
     device = PSF.device
