@@ -244,7 +244,7 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
         ''' torch version ''' 
         if len(phase.shape)==2: 
             ''' 1 PSF ''' 
-            freq = (torch.fft.fftshift(torch.fft.fftfreq(N+Npadding, Dx, device=device))*2*np.pi*f_tube/k)*MAG
+            freq = (torch.fft.fftshift(torch.fft.fftfreq(N+Npadding, Dx, device=device))*2*torch.pi*f_tube/k)*MAG
             ### WARNING torch.meshgrid() returns exactly the opposite of np.meshgrid() !!!!
             v, u = torch.meshgrid(freq, freq)
             
@@ -276,7 +276,7 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
              
         else: 
             ''' several PSF '''     
-            freq = (torch.fft.fftshift(torch.fft.fftfreq(N+Npadding, Dx, device=device))*2*np.pi*f_tube/k)*MAG
+            freq = (torch.fft.fftshift(torch.fft.fftfreq(N+Npadding, Dx, device=device))*2*torch.pi*f_tube/k)*MAG
             v, u = torch.meshgrid(freq, freq) 
             if second_plane!=None: # 2 planes
                 polar = [polar_offset, polar_offset2, polar_offset]
