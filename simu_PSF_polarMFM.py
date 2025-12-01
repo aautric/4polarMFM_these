@@ -292,7 +292,7 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                 ey1 = torch.stack([-torch.sin((polar_projections[ind]+polar[ind])*torch.pi/180)*Ex1 + torch.cos((polar_projections[ind]+polar[ind])*torch.pi/180)*Ey1 for ind in range(len(polar_projections))])
                 ey2 = torch.stack([-torch.sin((polar_projections[ind]+polar[ind])*torch.pi/180)*Ex2 + torch.cos((polar_projections[ind]+polar[ind])*torch.pi/180)*Ey2 for ind in range(len(polar_projections))])
                 
-                if len(polar_rad==True)!=0:
+                if polar_rad.any():
                     for pl in range(len(second_plane)):
                         if polar_rad[pl]:
                             ex0[pl], ey0[pl] = ex0[pl]*torch.cos(phi) +  ey0[pl]*torch.sin(phi), -ex0[pl]*torch.sin(phi) +  ey0[pl]*torch.cos(phi)
