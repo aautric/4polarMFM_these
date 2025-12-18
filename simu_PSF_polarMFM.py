@@ -172,7 +172,7 @@ def BFP_phase(theta, phi, d, xp, yp, zp, r_cut, zernike_order=4, zernike_coefs_x
     total_phase_y = zernike_phase_y + phase
     return (total_phase_x+total_phase_y)%(2*np.pi)
         
-def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_cut, k, f_o, phase_maskx, phase_masky, zernike_base, zernike_coefs_x=np.zeros(15), zernike_coefs_y=np.zeros(15), second_plane=None, polar_projections=None, N=80, l_pixel=16, NA=1.4, mag=100, lambd=617, f_tube=200, MAG=200/150, device='cpu', polar_offset=0., polar_offset2=0., BFP_version=False):
+def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_cut, k, f_o, phase_maskx, phase_masky, zernike_base, zernike_coefs_x=np.zeros(15), zernike_coefs_y=np.zeros(15), second_plane=None, polar_projections=None, N=80, l_pixel=16, NA=1.4, mag=100, lambd=617, f_tube=200, MAG=200/150, device='cpu', polar_offset=0., polar_offset2=0., BFP_version=False, J_dichroic=None):
     ''' This function takes all the geometrical parameters, dipole position and focal plane
     It also takes the microcope-dependant fields Ex0 ...
     If xp, yp, ... are tensors of length N, then N psf are computed
@@ -257,6 +257,11 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
             E10 = torch.fft.fftshift(torch.fft.fft2(pad(phase_masky*zernike_mask_y*Ey0*phase, Npadding)))
             E11 = torch.fft.fftshift(torch.fft.fft2(pad(phase_masky*zernike_mask_y*Ey1*phase, Npadding)))
             E12 = torch.fft.fftshift(torch.fft.fft2(pad(phase_masky*zernike_mask_y*Ey2*phase, Npadding)))
+            
+            if J_dichroic!=None:
+                E00, E10 = J_dichroic[0,0]*E00+J_dichroic[0,1]*E10, J_dichroic[1,0]*E00+J_dichroic[1,1]*E10
+                E01, E11 = J_dichroic[0,0]*E01+J_dichroic[0,1]*E11, J_dichroic[1,0]*E01+J_dichroic[1,1]*E11
+                E02, E12 = J_dichroic[0,0]*E02+J_dichroic[0,1]*E12, J_dichroic[1,0]*E02+J_dichroic[1,1]*E12
 
             if BFP_version:
                  '''version that is used for plotting the BFP intensity (no fft)'''
