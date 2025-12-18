@@ -520,7 +520,7 @@ def BFP_intensity(rho, eta, delta, M, N_photons=1000, device='cpu'):
     else:
         return PSF(rho, eta, delta, M, N_photons=N_photons, device=device)
 
-def noise(PSF, QE, EM, b, sigma_b, sigma_r, bias, sensitivity):
+def noise(PSF, QE, EM, b, sigma_b, sigma_r, bias):
     '''
     given a computed PSF, adds noise according to a mixed Poisson Gaussian noise
     shot noise is taken in account with Poisson distribution and backgound by Gaussian noise with b mean and standard deviation sigma_b
