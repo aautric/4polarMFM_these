@@ -18,7 +18,7 @@ c = 299792458 # speed of light
 
 # everything in micrometers 
     
-def vectorial_BFP_perfect_focus(N, NA=1.4, mag=100, lambd=617, f_tube=200, device='cpu'):
+def vectorial_BFP_perfect_focus(N, NA=1.4, mag=100, lambd=617, f_tube=200, device='cpu', J_dichroic=None):
     '''
     N is the discretization of the BFP before padding, ie the part that contains information
     returns the fields in the BFP emitted by dipoles along x, y, z, projected on x and y, emitting from perfect focus
@@ -63,6 +63,11 @@ def vectorial_BFP_perfect_focus(N, NA=1.4, mag=100, lambd=617, f_tube=200, devic
     Ey0[r>r_cut]=0.
     Ey1[r>r_cut]=0.
     Ey2[r>r_cut]=0.
+    
+    if J_dichroic is not None:
+        Ex0, Ey0 = J_dichroic[0,0]*Ex0+J_dichroic[0,1]*Ey0, J_dichroic[1,0]*Ex0+J_dichroic[1,1]*Ey0
+        Ex1, Ey1 = J_dichroic[0,0]*Ex1+J_dichroic[0,1]*Ey1, J_dichroic[1,0]*Ex1+J_dichroic[1,1]*Ey1
+        Ex2, Ey2 = J_dichroic[0,0]*Ex2+J_dichroic[0,1]*Ey2, J_dichroic[1,0]*Ex2+J_dichroic[1,1]*Ey2
     
     if isinstance(N, torch.Tensor):
         '''
@@ -172,7 +177,7 @@ def BFP_phase(theta, phi, d, xp, yp, zp, r_cut, zernike_order=4, zernike_coefs_x
     total_phase_y = zernike_phase_y + phase
     return (total_phase_x+total_phase_y)%(2*np.pi)
         
-def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_cut, k, f_o, phase_maskx, phase_masky, zernike_base, zernike_coefs_x=np.zeros(15), zernike_coefs_y=np.zeros(15), second_plane=None, polar_projections=None, N=80, l_pixel=16, NA=1.4, mag=100, lambd=617, f_tube=200, MAG=200/150, device='cpu', polar_offset=0., polar_offset2=0., BFP_version=False, J_dichroic=None):
+def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_cut, k, f_o, phase_maskx, phase_masky, zernike_base, zernike_coefs_x=np.zeros(15), zernike_coefs_y=np.zeros(15), second_plane=None, polar_projections=None, N=80, l_pixel=16, NA=1.4, mag=100, lambd=617, f_tube=200, MAG=200/150, device='cpu', polar_offset=0., polar_offset2=0., BFP_version=False):
     ''' This function takes all the geometrical parameters, dipole position and focal plane
     It also takes the microcope-dependant fields Ex0 ...
     If xp, yp, ... are tensors of length N, then N psf are computed
@@ -257,11 +262,6 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
             E10 = torch.fft.fftshift(torch.fft.fft2(pad(phase_masky*zernike_mask_y*Ey0*phase, Npadding)))
             E11 = torch.fft.fftshift(torch.fft.fft2(pad(phase_masky*zernike_mask_y*Ey1*phase, Npadding)))
             E12 = torch.fft.fftshift(torch.fft.fft2(pad(phase_masky*zernike_mask_y*Ey2*phase, Npadding)))
-            
-            if J_dichroic!=None:
-                E00, E10 = J_dichroic[0,0]*E00+J_dichroic[0,1]*E10, J_dichroic[1,0]*E00+J_dichroic[1,1]*E10
-                E01, E11 = J_dichroic[0,0]*E01+J_dichroic[0,1]*E11, J_dichroic[1,0]*E01+J_dichroic[1,1]*E11
-                E02, E12 = J_dichroic[0,0]*E02+J_dichroic[0,1]*E12, J_dichroic[1,0]*E02+J_dichroic[1,1]*E12
 
             if BFP_version:
                  '''version that is used for plotting the BFP intensity (no fft)'''
