@@ -66,7 +66,7 @@ def plot_raw_xy(raw, x, y, box=13, number=-1):
     vmax = np.max(raw)
     for i in range(2):
         for j in range(3):
-            im = ax[i,j].pcolormesh(raw[2*j+i].T, cmap='gray', vmin=0., vmax=vmax)
+            im = ax[i,j].pcolormesh(raw[2*j+i], cmap='gray', vmin=0., vmax=vmax)
             ax[i,j].set_aspect('equal')
             ax[i,j].set_title(str(i)+','+str(j)+'-->'+str(2*j+i))
             for k in range(len(x)):
@@ -74,7 +74,7 @@ def plot_raw_xy(raw, x, y, box=13, number=-1):
                     col = 'r'
                 else:
                     col='y'
-                rect = patches.Rectangle((x[k]/l_pixel_field-int(box/2), y[k]/l_pixel_field-int(box/2)), box, box, linewidth=2, edgecolor=col, facecolor='none')
+                rect = patches.Rectangle((y[k]/l_pixel_field-int(box/2), x[k]/l_pixel_field-int(box/2)), box, box, linewidth=2, edgecolor=col, facecolor='none')
                 ax[i,j].add_patch(rect)
     fig.colorbar(im, ax=ax.ravel().tolist(), shrink=0.8)
     plt.show()
