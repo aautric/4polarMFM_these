@@ -18,13 +18,7 @@ c = 299792458 # speed of light
 
 # everything in micrometers 
     
-def vectorial_BFP_perfect_focus(N, NA=1.4, mag=100, lambd=617, f_tube=200, device='cpu', J_dichroic=None):
-    '''
-    N is the discretization of the BFP before padding, ie the part that contains information
-    returns the fields in the BFP emitted by dipoles along x, y, z, projected on x and y, emitting from perfect focus
-    in x, y, z = 0
-    See Louise's thesis from page 106
-    '''
+def vectorial_BFP_perfect_focus(N, NA=1.4, mag=100, lambd=617, f_tube=200, SAF=False, device='cpu', J_dichroic=None):
     #compute parameters
     lambd = 10**(-3)*lambd
     f_tube = f_tube*1000
@@ -32,9 +26,17 @@ def vectorial_BFP_perfect_focus(N, NA=1.4, mag=100, lambd=617, f_tube=200, devic
     k = 2*n1*np.pi/lambd # wave vector
     # the maximum spatial frequency could be limited by the aperture or the total reflection on the coverslip
     if isinstance(NA, torch.Tensor):
-        r_cut = min(NA.detach().cpu().numpy()/n1, n2/n1) 
+        if SAF:
+            r_cut = NA.detach().cpu().numpy()/n1
+            r_cut_saf = n2/n1
+        else:
+            r_cut = min(NA.detach().cpu().numpy()/n1, n2/n1) 
     else:
-        r_cut = min(NA/n1, n2/n1) 
+        if SAF:
+            r_cut = NA/n1
+            r_cut_saf = n2/n1
+        else:
+            r_cut = min(NA/n1, n2/n1) 
     #x, y, and r are dimensionless
     x, y = np.meshgrid(np.linspace(-r_cut,r_cut,N), np.linspace(-r_cut,r_cut,N))
     r = np.sqrt(x**2+y**2) # radial coordinate, dimensionless, proportional to spatial frequency
@@ -43,31 +45,34 @@ def vectorial_BFP_perfect_focus(N, NA=1.4, mag=100, lambd=617, f_tube=200, devic
     th1 = np.zeros((N,N))
     th2 = np.zeros((N,N))
     th1[r<r_cut] = np.arcsin(r[r<r_cut])
-    th2[r<r_cut] = np.arcsin((n1/n2)*r[r<r_cut])
-
+    if SAF:
+        th2[r<r_cut_saf] = np.arcsin((n1/n2)*r[r<r_cut_saf])
+    else:
+        th2[r<r_cut] = np.arcsin((n1/n2)*r[r<r_cut])
+    
+    costh2 = np.cos(th2).astype(complex)
+    if SAF: # Born & Wolf p50-51
+        costh2[(r<r_cut)&(r>r_cut_saf)] = 1j*(np.sqrt((np.sin(th1[(r<r_cut)&(r>r_cut_saf)])*(n1/n2))**2-1))        
+    else:
+        costh2 = costh2.astype(float)
     #transmission coefficients
-    Ts = (2*n2*np.cos(th2)) / (n2*np.cos(th2) + n1*np.cos(th1))
-    Tp = (2*n2*np.cos(th2)) / (n2*np.cos(th1) + n1*np.cos(th2))
+    Ts = (2*n2*costh2) / (n2*costh2 + n1*np.cos(th1))
+    Tp = (2*n2*costh2) / (n2*np.cos(th1) + n1*costh2)
     
     # compute the fields
-    Ex0 = ((n1/n2) * ((np.cos(th1)/np.cos(th2))*Ts*(np.sin(phi)**2) + Tp*(np.cos(phi)**2)*np.cos(th1)))/np.sqrt(np.cos(th1))
-    Ex1 = (-((n1*np.sin(2*phi))/(2*n2))*((np.cos(th1)*Ts)/np.cos(th2) - Tp*np.cos(th1)))/np.sqrt(np.cos(th1))
-    Ex2 = (-((n1/n2)**2)*(np.cos(th1)/np.cos(th2))*Tp*np.cos(phi)*np.sin(th1))/np.sqrt(np.cos(th1))
+    Ex0 = ((n1/n2) * ((np.cos(th1)/costh2)*Ts*(np.sin(phi)**2) + Tp*(np.cos(phi)**2)*np.cos(th1)))/np.sqrt(np.cos(th1))
+    Ex1 = (-((n1*np.sin(2*phi))/(2*n2))*((np.cos(th1)*Ts)/costh2 - Tp*np.cos(th1)))/np.sqrt(np.cos(th1))
+    Ex2 = (-((n1/n2)**2)*(np.cos(th1)/costh2)*Tp*np.cos(phi)*np.sin(th1))/np.sqrt(np.cos(th1))
     Ex0[r>r_cut]=0.
     Ex1[r>r_cut]=0.
     Ex2[r>r_cut]=0.
 
-    Ey0 = (-0.5*np.sin(2*phi)*(n1/n2)*((np.cos(th1)/np.cos(th2))*Ts - Tp*np.cos(th1)))/np.sqrt(np.cos(th1))
-    Ey1 = ((n1/n2)*((np.cos(th1)/np.cos(th2))*Ts*(np.cos(phi)**2)+Tp*np.cos(th1)*(np.sin(phi)**2)))/np.sqrt(np.cos(th1))
-    Ey2 = (-((n1/n2)**2)*(np.cos(th1)/np.cos(th2))*Tp*np.sin(phi)*np.sin(th1))/np.sqrt(np.cos(th1))
+    Ey0 = (-0.5*np.sin(2*phi)*(n1/n2)*((np.cos(th1)/costh2)*Ts - Tp*np.cos(th1)))/np.sqrt(np.cos(th1))
+    Ey1 = ((n1/n2)*((np.cos(th1)/costh2)*Ts*(np.cos(phi)**2)+Tp*np.cos(th1)*(np.sin(phi)**2)))/np.sqrt(np.cos(th1))
+    Ey2 = (-((n1/n2)**2)*(np.cos(th1)/costh2)*Tp*np.sin(phi)*np.sin(th1))/np.sqrt(np.cos(th1))
     Ey0[r>r_cut]=0.
     Ey1[r>r_cut]=0.
     Ey2[r>r_cut]=0.
-    
-    if J_dichroic is not None:
-        Ex0, Ey0 = J_dichroic[0,0]*Ex0+J_dichroic[0,1]*Ey0, J_dichroic[1,0]*Ex0+J_dichroic[1,1]*Ey0
-        Ex1, Ey1 = J_dichroic[0,0]*Ex1+J_dichroic[0,1]*Ey1, J_dichroic[1,0]*Ex1+J_dichroic[1,1]*Ey1
-        Ex2, Ey2 = J_dichroic[0,0]*Ex2+J_dichroic[0,1]*Ey2, J_dichroic[1,0]*Ex2+J_dichroic[1,1]*Ey2
     
     if isinstance(N, torch.Tensor):
         '''
@@ -86,7 +91,10 @@ def vectorial_BFP_perfect_focus(N, NA=1.4, mag=100, lambd=617, f_tube=200, devic
         r = torch.tensor(r, device=device, requires_grad=False)
         r_cut = torch.tensor(r_cut, device=device, requires_grad=False)
     
-    return x, y, th1, phi, [Ex0, Ex1, Ex2], [Ey0, Ey1, Ey2], r, r_cut, k, f_o
+    if SAF:
+        return x, y, th1, phi, [Ex0, Ex1, Ex2], [Ey0, Ey1, Ey2], r, r_cut, r_cut_saf, k, f_o, costh2
+    else:
+        return x, y, th1, phi, [Ex0, Ex1, Ex2], [Ey0, Ey1, Ey2], r, r_cut, k, f_o
 
 '''   these three functions returns the phase shift in the BFP when changing the focus,and the position of the emitter '''
 
@@ -106,20 +114,28 @@ def psi_lat(x, y, theta, phi, NA=1.4, mag=100, lambd=0.617, f_tube=200000):
         ''' numpy case'''
         return np.sin(theta)*(x*np.cos(phi)+y*np.sin(phi))*(2*np.pi*n1)/(lambd)
 
-def psi_z(theta, z, NA=1.4, mag=100, lambd=0.617, f_tube=200000):
+def psi_z(theta, z, NA=1.4, mag=100, lambd=0.617, f_tube=200000, costh2=None):
     ''' version Yan et al . corrected '''
     if isinstance(z, torch.Tensor):
         if len(z.shape)==0:
             ''' if one PSF '''
-            return 2*torch.pi*n2*z*torch.sqrt(1-(n1*torch.sin(theta)/n2)**2)/lambd
+            if costh2 is not None:
+                return 2*torch.pi*n2*z*costh2/lambd
+            else:
+                return 2*torch.pi*n2*z*torch.sqrt(1-(n1*torch.sin(theta)/n2)**2)/lambd
         else:
             ''' if several PSF '''
-            return torch.reshape(torch.outer(z, 2*torch.pi*n2*torch.sqrt(1-(n1*torch.sin(theta.flatten())/n2)**2)/lambd), torch.Size(z.shape + theta.shape))
+            if costh2 is not None:
+                return torch.reshape(torch.outer(z, 2*torch.pi*n2*costh2/lambd), torch.Size(z.shape + theta.shape))
+            else:
+                return torch.reshape(torch.outer(z, 2*torch.pi*n2*torch.sqrt(1-(n1*torch.sin(theta.flatten())/n2)**2)/lambd), torch.Size(z.shape + theta.shape))
     else:
         ''' numpy '''
-        return 2*np.pi*n2*z*np.sqrt(1-(n1*np.sin(theta)/n2)**2)/lambd
+        if costh2 is not None:
+            return 2*np.pi*n2*z*costh2/lambd
+        else:
+            return 2*np.pi*n2*z*np.sqrt(1-(n1*np.sin(theta)/n2)**2)/lambd
     
-
 def psi_f(theta, d, NA=1.4, mag=100, lambd=0.617, f_tube=200000):
     ''' version Yan et al. corrected'''
     if isinstance(d, torch.Tensor):
@@ -164,20 +180,25 @@ def generate_zernike_base(r_cut, N, zernike_order=4, device='cpu'):
     return zernike_base
     
 
-def BFP_phase(theta, phi, d, xp, yp, zp, r_cut, zernike_order=4, zernike_coefs_x=np.zeros(15), zernike_coefs_y=np.zeros(15), N=80, NA=1.4, mag=100, lambd=0.617, f_tube=200000):
+def BFP_phase(theta, phi, d, xp, yp, zp, r_cut, zernike_order=4, zernike_coefs_x=np.zeros(15), zernike_coefs_y=np.zeros(15), N=80, NA=1.4, mag=100, lambd=0.617, f_tube=200000, SAF=False, costh2=None):
     if isinstance(phi, torch.Tensor):
         print('Function only in numpy case')
         return None
-    phase = psi_f(theta, d, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(theta, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_lat(xp,yp,theta,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)
+    if (SAF==True) & (costh2 is None):
+        raise ValueError("costh2 need to be given if SAF=True")
+    if SAF:
+        phase = psi_f(theta, d, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(theta, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube, costh2=costh2)+psi_lat(xp,yp,theta,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)
+    else:
+        phase = psi_f(theta, d, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(theta, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_lat(xp,yp,theta,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)
     phase[np.isnan(phase)] = 0.
     zernike_base = generate_zernike_base(r_cut, N, zernike_order=zernike_order, device='cpu')
     zernike_phase_x = np.sum(zernike_coefs_x.reshape(-1, 1, 1)*zernike_base, axis=0)
     zernike_phase_y = np.sum(zernike_coefs_y.reshape(-1, 1, 1)*zernike_base, axis=0)
     total_phase_x = zernike_phase_x + phase 
     total_phase_y = zernike_phase_y + phase
-    return (total_phase_x+total_phase_y)%(2*np.pi)
+    return (total_phase_x+total_phase_y)%(2*np.pi) 
         
-def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_cut, k, f_o, phase_maskx, phase_masky, zernike_base, zernike_coefs_x=np.zeros(15), zernike_coefs_y=np.zeros(15), second_plane=None, polar_projections=None, N=80, l_pixel=16, NA=1.4, mag=100, lambd=617, f_tube=200, MAG=200/150, device='cpu', polar_offset=0., polar_offset2=0., BFP_version=False):
+def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_cut, k, f_o, phase_maskx, phase_masky, zernike_base, zernike_coefs_x=np.zeros(15), zernike_coefs_y=np.zeros(15), second_plane=None, polar_projections=None, N=80, l_pixel=16, NA=1.4, mag=100, lambd=617, f_tube=200, MAG=200/150, device='cpu', polar_offset=0., polar_offset2=0., BFP_version=False, SAF=False, costh2=None):
     ''' This function takes all the geometrical parameters, dipole position and focal plane
     It also takes the microcope-dependant fields Ex0 ...
     If xp, yp, ... are tensors of length N, then N psf are computed
@@ -194,7 +215,12 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
     '''
     lambd = 10**(-3)*lambd # conversion nm to micrometers
     f_tube = f_tube*1000 # tube length focal. everything is in micrometers
-
+    
+    if (Ex0.shape[0]!=N) or (phase_maskx.shape[0]!=N):
+        raise ValueError("Shape mismatch")
+    if (SAF==True) & (costh2 is None):
+        raise ValueError("costh2 need to be given if SAF=True")
+        
     if isinstance(xp, torch.Tensor): 
         ''' torch version ''' 
         if second_plane!=None: 
@@ -203,13 +229,22 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                 ''' just in case we give second_plane under the wrong form '''
                 second_plane = [second_plane]
                 polar_projections = [polar_projections]
-            phase = torch.stack([torch.exp(1j*(psi_f(th1, d+second_plane[ind], NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(th1, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_lat(xp,yp,th1,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube))) for ind in range(len(second_plane))])
+            if SAF:
+                phase = torch.stack([torch.exp(1j*(psi_f(th1, d+second_plane[ind], NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(th1, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube, costh2=costh2)+psi_lat(xp,yp,th1,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube))) for ind in range(len(second_plane))])
+            else:
+                phase = torch.stack([torch.exp(1j*(psi_f(th1, d+second_plane[ind], NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(th1, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_lat(xp,yp,th1,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube))) for ind in range(len(second_plane))])
         else:
             ''' single plane '''     
-            phase = torch.exp(1j*(psi_f(th1, d, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(th1, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_lat(xp,yp,th1,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)))
+            if SAF:
+                phase = torch.exp(1j*(psi_f(th1, d, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(th1, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube, costh2=costh2)+psi_lat(xp,yp,th1,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)))
+            else:
+                phase = torch.exp(1j*(psi_f(th1, d, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(th1, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_lat(xp,yp,th1,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)))
     else:
         ''' numpy '''
-        phase = np.exp(1j*(psi_f(th1, d, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(th1, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_lat(xp,yp,th1,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)))
+        if SAF:
+            phase = np.exp(1j*(psi_f(th1, d, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(th1, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube, costh2=costh2)+psi_lat(xp,yp,th1,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)))
+        else:
+            phase = np.exp(1j*(psi_f(th1, d, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(th1, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_lat(xp,yp,th1,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)))
         phase[np.isnan(phase)] = 0.
         
     ##############################################################################

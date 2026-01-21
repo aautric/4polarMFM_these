@@ -66,7 +66,6 @@ def vectorial_BFP_perfect_focus_jax(
     sin_phi = jnp.sin(phi)
     cos_phi = jnp.cos(phi)
     sin2phi = jnp.sin(2.0 * phi)
-    cos2phi = jnp.cos(2.0 * phi)
 
     # Ex
     Ex0 = ((n1 / n2) * ((cos_th1 / cos_th2) * Ts * (sin_phi**2) + Tp * (cos_phi**2) * cos_th1) / sqrt_cos_th1)
