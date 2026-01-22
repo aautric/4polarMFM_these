@@ -18,19 +18,17 @@ c = 299792458 # speed of light
 
 # everything in micrometers 
     
-@partial(jax.jit, static_argnums=(0,))
 def vectorial_BFP_perfect_focus_jax(
     N: int,
     NA: float = 1.4,
     mag: float = 100.0,
     lambd_nm: float = 617.0,
     f_tube_mm: float = 200.0,
-    n1: float = 1.33,
-    n2: float = 1.0,
     dtype=jnp.float32,
 ):
     """
     JAX version of vectorial_BFP_perfect_focus.
+    Not jitted, this function defines all the sizes of folowing objects and is thus very important
     - N : grid size (static, int)
     - NA, mag, lambd_nm (nm), f_tube_mm (mm), refractive indices n1,n2
     - returns: x, y, th1, phi, (Ex0,Ex1,Ex2), (Ey0,Ey1,Ey2), r, r_cut, k, f_o
@@ -66,7 +64,6 @@ def vectorial_BFP_perfect_focus_jax(
     sin_phi = jnp.sin(phi)
     cos_phi = jnp.cos(phi)
     sin2phi = jnp.sin(2.0 * phi)
-    cos2phi = jnp.cos(2.0 * phi)
 
     # Ex
     Ex0 = ((n1 / n2) * ((cos_th1 / cos_th2) * Ts * (sin_phi**2) + Tp * (cos_phi**2) * cos_th1) / sqrt_cos_th1)
@@ -142,60 +139,39 @@ psi_f_jit = jax.jit(psi_f_jax)
 psi_z_jit = jax.jit(psi_z_jax)
 psi_lat_jit = jax.jit(psi_lat_jax)
 
-def generate_zernike_base_jax(r_cut, N, zernike_order=4):
-    """
-    Generate a Zernike polynomial basis on a square grid for JAX.
-    
-    Parameters
-    ----------
-    r_cut : float
-        Maximum radial coordinate (aperture radius).
-    N : int
-        Grid size (N x N).
-    zernike_order : int
-        Maximum Zernike order.
-    
-    Returns
-    -------
-    zernike_base : array
-        Array of shape (num_modes, N, N) containing Zernike modes.
-    """
-    from zernike import RZern  # Replace with your Zernike class compatible with numpy/jax
+def pad_jax(a, n):
+    """Traceable JAX padding."""
+    if a.ndim == 2:
+        padded = jnp.zeros((a.shape[0] + n, a.shape[1] + n), dtype=a.dtype)
+        padded = padded.at[n//2:-n//2, n//2:-n//2].set(a)
+    elif a.ndim == 3:
+        padded = jnp.zeros((a.shape[0], a.shape[1] + n, a.shape[2] + n), dtype=a.dtype)
+        padded = padded.at[:, n//2:-n//2, n//2:-n//2].set(a)
+    else:
+        raise ValueError("Unsupported number of dimensions for padding.")
+    return padded
 
-    cart = RZern(zernike_order)
-    ddx = jnp.linspace(-r_cut, r_cut, N)
-    ddy = jnp.linspace(-r_cut, r_cut, N)
-    xv, yv = jnp.meshgrid(ddx, ddy)
-    cart.make_cart_grid(xv, yv)  # your function to setup the grid
-
-    num_modes = (zernike_order + 1) * (zernike_order + 2) // 2
-    zernike_base = jnp.zeros((num_modes, N, N))
-    
-    # Loop over Zernike modes
-    for index in range(1, cart.nk):
-        zer = jnp.zeros(cart.nk)
-        zer = zer.at[index].set(1.0)
-        mode = cart.eval_grid(zer, matrix=True)  # returns a (N,N) array
-        mode = jnp.nan_to_num(mode, nan=0.0)
-        mask = (xv**2 + yv**2) <= r_cut**2
-        mode = mode * mask
-        zernike_base = zernike_base.at[index].set(mode)
-    
-    return zernike_base
+def padding(Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_cut, k, f_o,  N=80, l_pixel=16, NA=1.4, mag=100, lambd=617, 
+              f_tube=200, MAG=200/150, device='cpu'):
+    lambd = 10**(-3)*lambd # conversion nm to micrometers
+    f_tube = f_tube*1000 # tube length focal. everything is in micrometers
+    # --- Padding and frequency grid ---
+    Dx = 2 * r_cut * f_o / N
+    Npadding = int((2 * jnp.pi * MAG * f_tube) / (k * l_pixel * Dx)) - N
+    Npadding += Npadding % 2
+    freq = jnp.fft.fftshift(jnp.fft.fftfreq(N + Npadding, Dx)) * 2 * jnp.pi * f_tube / k * MAG
+    u, v = jnp.meshgrid(freq, freq)
+    return u, v, Npadding
 
 @jax.jit
-def compute_M_jax(xp, yp, zp, d, th1, phi, 
-                  Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, 
-                  r_cut, k, f_o, phase_maskx, phase_masky, 
-                  zernike_base, zernike_coefs_x, zernike_coefs_y,
-                  second_plane, polar_projections,
-                  N=80, l_pixel=16, MAG=200/150):
+def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u, v, Npadding, phase_maskx, 
+              phase_masky, zernike_base, zernike_coefs_x=jnp.zeros(15), zernike_coefs_y=jnp.zeros(15), 
+              second_plane=None, polar_projections=None, device='cpu', BFP_version=False, 
+              SAF=False, costh2=None):
     """
     JAX version of compute_M for multiple PSFs and multiple planes, fully JIT-compatible.
     Returns u, v coordinates and M matrix of shape (N_psf, K_plane, 2, 3, 3, N_pix, N_pix)
     """
-    lambd = 1e-3 * 617
-    f_tube = f_o * 1000  # assuming f_o passed as tube/mag
 
     # --- Phase for all planes (vectorized with vmap) ---
     def phase_per_plane(dp):
@@ -205,18 +181,11 @@ def compute_M_jax(xp, yp, zp, d, th1, phi,
             psi_lat_jit(xp, yp, th1, phi)
         ))
     
-    phase = jax.vmap(phase_per_plane)(jnp.array(second_plane))  # (K_plane, ...)
+    phase = jax.vmap(phase_per_plane)(jnp.array(second_plane))  # 3 planes
 
-    # --- Zernike masks ---
+    # --- Zernike masks --- dim N, 3, 2, Npix, Npix
     zernike_mask_x = jnp.exp(1j * jnp.tensordot(zernike_coefs_x, zernike_base, axes=1))
     zernike_mask_y = jnp.exp(1j * jnp.tensordot(zernike_coefs_y, zernike_base, axes=1))
-
-    # --- Padding and frequency grid ---
-    Dx = 2 * r_cut * f_o / N
-    Npadding = int((2 * jnp.pi * MAG * f_tube) / (k * l_pixel * Dx)) - N
-    Npadding += Npadding % 2
-    freq = jnp.fft.fftshift(jnp.fft.fftfreq(N + Npadding, Dx)) * 2 * jnp.pi * f_tube / k * MAG
-    v, u = jnp.meshgrid(freq, freq)
 
     # --- Polarization rotations (numeric, JIT-friendly) ---
     polar = jnp.array([0.0, 0.0, 0.0])  # adjust if needed
@@ -370,15 +339,3 @@ def noise_jax(key, PSF, QE=1.0, EM=1.0, b=0.0, sigma_b=0.0, sigma_r=0.0, bias=0.
     noisy = poiss + read / (QE*EM) + bias / (QE*EM) + excess / (QE*EM)
     
     return noisy
-
-def pad_jax(a, n):
-    """Traceable JAX padding."""
-    if a.ndim == 2:
-        padded = jnp.zeros((a.shape[0] + n, a.shape[1] + n), dtype=a.dtype)
-        padded = padded.at[n//2:-n//2, n//2:-n//2].set(a)
-    elif a.ndim == 3:
-        padded = jnp.zeros((a.shape[0], a.shape[1] + n, a.shape[2] + n), dtype=a.dtype)
-        padded = padded.at[:, n//2:-n//2, n//2:-n//2].set(a)
-    else:
-        raise ValueError("Unsupported number of dimensions for padding.")
-    return padded
