@@ -231,6 +231,7 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
         raise ValueError("costh2 need to be given if SAF=True")
         
     if isinstance(xp, torch.Tensor): 
+        
         ''' torch version ''' 
         if second_plane!=None: 
             ''' several plane case ''' 

@@ -164,17 +164,14 @@ def padding(Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_cut, k, f_o,  N=80, l_pixel=16, N
     return u, v, Npadding
 
 @jax.jit
-def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_cut, k, f_o, u, v, Npadding, phase_maskx, 
-              phase_masky, zernike_base, lambd=617, f_tube=200, zernike_coefs_x=jnp.zeros(15), 
-              zernike_coefs_y=jnp.zeros(15), 
+def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u, v, Npadding, phase_maskx, 
+              phase_masky, zernike_base, zernike_coefs_x=jnp.zeros(15), zernike_coefs_y=jnp.zeros(15), 
               second_plane=None, polar_projections=None, device='cpu', BFP_version=False, 
               SAF=False, costh2=None):
     """
     JAX version of compute_M for multiple PSFs and multiple planes, fully JIT-compatible.
     Returns u, v coordinates and M matrix of shape (N_psf, K_plane, 2, 3, 3, N_pix, N_pix)
     """
-    lambd = 10**(-3)*lambd # conversion nm to micrometers
-    f_tube = f_tube*1000 # tube length focal. everything is in micrometers
 
     # --- Phase for all planes (vectorized with vmap) ---
     def phase_per_plane(dp):
@@ -184,9 +181,9 @@ def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r
             psi_lat_jit(xp, yp, th1, phi)
         ))
     
-    phase = jax.vmap(phase_per_plane)(jnp.array(second_plane))  # (K_plane, ...)
+    phase = jax.vmap(phase_per_plane)(jnp.array(second_plane))  # 3 planes
 
-    # --- Zernike masks ---
+    # --- Zernike masks --- dim N, 3, 2, Npix, Npix
     zernike_mask_x = jnp.exp(1j * jnp.tensordot(zernike_coefs_x, zernike_base, axes=1))
     zernike_mask_y = jnp.exp(1j * jnp.tensordot(zernike_coefs_y, zernike_base, axes=1))
 
