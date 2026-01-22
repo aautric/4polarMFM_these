@@ -164,8 +164,9 @@ def padding(Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_cut, k, f_o,  N=80, l_pixel=16, N
     return u, v, Npadding
 
 @jax.jit
-def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u, v, Npadding, phase_maskx, 
-              phase_masky, zernike_base, zernike_coefs_x=jnp.zeros(15), zernike_coefs_y=jnp.zeros(15), 
+def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u, v, Npadding,
+                  zernike_base, zernike_coefs_x=jnp.zeros(15), zernike_coefs_y=jnp.zeros(15), 
+                  phase_maskx=None, phase_masky=None,
               second_plane=None, polar_projections=None, device='cpu', BFP_version=False, 
               SAF=False, costh2=None):
     """
@@ -181,26 +182,32 @@ def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u
             psi_lat_jit(xp, yp, th1, phi)
         ))
     
+    # dim N, 3, Npix, Npix
     phase = jax.vmap(phase_per_plane)(jnp.array(second_plane))  # 3 planes
 
-    # --- Zernike masks --- dim N, 3, 2, Npix, Npix
-    zernike_mask_x = jnp.exp(1j * jnp.tensordot(zernike_coefs_x, zernike_base, axes=1))
-    zernike_mask_y = jnp.exp(1j * jnp.tensordot(zernike_coefs_y, zernike_base, axes=1))
+    # --- Zernike masks --- dim 3, Npix, Npix
+    zernike_mask_x = jnp.exp(1j * jnp.einsum('pa,auv->puv', zernike_coefs_x, zernike_base))
+    zernike_mask_y = jnp.exp(1j * jnp.einsum('pa,auv->puv', zernike_coefs_y, zernike_base))
+    
+    # --- total phase mask --- dim N, 3, Npix, Npix for each polar
+    total_phase_x = jnp.einsum('npuv, puv -> npuv', phase, zernike_mask_x)
+    total_phase_y = jnp.einsum('npuv, puv -> npuv', phase, zernike_mask_y)
+    if phase_maskx is not None:
+        total_phase_x = jnp.einsum('npuv, puv -> npuv', total_phase_x, phase_maskx)
+        total_phase_y = jnp.einsum('npuv, puv -> npuv', total_phase_y, phase_maskx)
 
     # --- Polarization rotations (numeric, JIT-friendly) ---
-    polar = jnp.array([0.0, 0.0, 0.0])  # adjust if needed
-    polar_proj_vals = jnp.array(polar_projections, dtype=float)
 
-    def rotate_fields(Ex_list, Ey_list, proj):
-        ex_rot = jnp.stack([jnp.cos(proj[j]*jnp.pi/180) * Ex_list[j] +
-                            jnp.sin(proj[j]*jnp.pi/180) * Ey_list[j] for j in range(3)])
-        ey_rot = jnp.stack([-jnp.sin(proj[j]*jnp.pi/180) * Ex_list[j] +
-                             jnp.cos(proj[j]*jnp.pi/180) * Ey_list[j] for j in range(3)])
+    def rotate_fields(Ex_list, Ey_list, proj): # for 1 given projection angle
+        ex_rot = jnp.stack([jnp.cos(proj*jnp.pi/180) * Ex_list[j] +
+                            jnp.sin(proj*jnp.pi/180) * Ey_list[j] for j in range(3)])
+        ey_rot = jnp.stack([-jnp.sin(proj*jnp.pi/180) * Ex_list[j] +
+                             jnp.cos(proj*jnp.pi/180) * Ey_list[j] for j in range(3)])
         return ex_rot, ey_rot
 
     # Apply rotation for all planes
     def rotated_plane(plane_idx):
-        return rotate_fields([Ex0, Ex1, Ex2], [Ey0, Ey1, Ey2], polar_proj_vals)
+        return rotate_fields([Ex0, Ex1, Ex2], [Ey0, Ey1, Ey2], polar_projections[plane_idx])
 
     ex_stack, ey_stack = jax.vmap(rotated_plane)(jnp.arange(len(second_plane)))
 
