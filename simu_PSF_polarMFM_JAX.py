@@ -10,6 +10,7 @@ import jax.numpy as jnp
 from functools import partial
 from jax import random
 from zernike import RZern
+import numpy as np
 
 n1 = 1.52 # oil and sample indices
 n2 = 1.33 # water index
@@ -84,12 +85,7 @@ def vectorial_BFP_perfect_focus_jax(
     Ey1 *= mask
     Ey2 *= mask
 
-    return (
-        x, y, th1, phi,
-        (Ex0, Ex1, Ex2),
-        (Ey0, Ey1, Ey2),
-        r, r_cut, k, f_o
-    )
+    return x, y, th1, phi, (Ex0, Ex1, Ex2), (Ey0, Ey1, Ey2), r, r_cut, k, f_o
 
 def psi_lat_jax(x, y, theta, phi, n1=1.518, lambd=0.617):
     """
@@ -112,7 +108,6 @@ def psi_z_jax(theta, z, NA=1.4, mag=100, lambd=0.617, f_tube=200_000, n1=1.33, n
 
     sqrt_term = jnp.sqrt(1 - (n1 * jnp.sin(theta) / n2)**2)
     factor = 2 * jnp.pi * n2 / lambd
-    print(sqrt_term.shape)
     # If z is scalar, broadcast automatically
     
     return jnp.einsum('a, bc -> abc', z, factor*sqrt_term)
@@ -125,33 +120,34 @@ def psi_f_jax(theta, d, NA=1.4, mag=100, lambd=0.617, f_tube=200_000, n1=1.33, n
 
     # Refractive index depending on sign of d
     n = n1 + (n2 - n1) * (1 + jnp.sign(d)) / 2
-
-    # Scalar case
-    if d.ndim == 0:
-        return jnp.einsum('a, bc -> abc', d, 2 * jnp.pi * n * jnp.cos(theta) / lambd)
-    else:
-        # Multiple PSFs: outer product of d*n and cos(theta)
-        # Use jnp.cos(theta) for general theta array
-        cos_theta = jnp.sqrt(1 - jnp.sin(theta.flatten())**2)
-        return jnp.outer(d * n, cos_theta) * 2 * jnp.pi / lambd
+    return d * 2 * jnp.pi * n * jnp.cos(theta) / lambd
 
 psi_f_jit = jax.jit(psi_f_jax)
 psi_z_jit = jax.jit(psi_z_jax)
 psi_lat_jit = jax.jit(psi_lat_jax)
 
-def pad_jax(a, n):
-    """Traceable JAX padding."""
-    if a.ndim == 2:
-        padded = jnp.zeros((a.shape[0] + n, a.shape[1] + n), dtype=a.dtype)
-        padded = padded.at[n//2:-n//2, n//2:-n//2].set(a)
-    elif a.ndim == 3:
-        padded = jnp.zeros((a.shape[0], a.shape[1] + n, a.shape[2] + n), dtype=a.dtype)
-        padded = padded.at[:, n//2:-n//2, n//2:-n//2].set(a)
-    else:
-        raise ValueError("Unsupported number of dimensions for padding.")
-    return padded
+def generate_zernike_base(r_cut, N, zernike_order=4, device='cpu'):
+    cart = RZern(zernike_order)
+    if device!='cpu':
+        ddx = np.linspace(-r_cut.cpu(), r_cut.cpu(), N.cpu())
+        ddy = np.linspace(-r_cut.cpu(), r_cut.cpu(), N.cpu())
+    else:        
+        ddx = np.linspace(-r_cut, r_cut, N)
+        ddy = np.linspace(-r_cut, r_cut, N)
+    xv, yv = np.meshgrid(ddx, ddy)
+    cart.make_cart_grid(xv, yv)
+    
+    zernike_base = np.zeros(((zernike_order+1)*(zernike_order+2)//2, xv.shape[0], xv.shape[1]))
+    zer = np.zeros(cart.nk)
+    for index in range(1,cart.nk):
+        zer[index]=1.
+        zernike_base[index] = cart.eval_grid(zer, matrix=True)
+        zernike_base[index][np.isnan(zernike_base[index])] = 0.
+        zernike_base[index][(xv**2+yv**2)>r_cut**2]=0.
+        zer[index]=0.
+    return jnp.array(zernike_base)
 
-def padding(Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_cut, k, f_o,  N=80, l_pixel=16, NA=1.4, mag=100, lambd=617, 
+def padding(r, r_cut, k, f_o,  N=80, l_pixel=16, NA=1.4, mag=100, lambd=617, 
               f_tube=200, MAG=200/150, device='cpu'):
     lambd = 10**(-3)*lambd # conversion nm to micrometers
     f_tube = f_tube*1000 # tube length focal. everything is in micrometers
@@ -163,9 +159,27 @@ def padding(Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_cut, k, f_o,  N=80, l_pixel=16, N
     u, v = jnp.meshgrid(freq, freq)
     return u, v, Npadding
 
-@jax.jit
+Npadding = 100
+
+def pad_jax(a):
+    """Traceable JAX padding."""
+    if a.ndim == 2:
+        padded = jnp.zeros((a.shape[0] + Npadding, a.shape[1] + Npadding), dtype=a.dtype)
+        padded = padded.at[Npadding//2:-Npadding//2, Npadding//2:-Npadding//2].set(a)
+    elif a.ndim == 3:
+        padded = jnp.zeros((a.shape[0], a.shape[1] + Npadding, a.shape[2] + Npadding), dtype=a.dtype)
+        padded = padded.at[:, Npadding//2:-Npadding//2, Npadding//2:-Npadding//2].set(a)
+    elif a.ndim == 4:
+        padded = jnp.zeros((a.shape[0], a.shape[1], a.shape[2] + Npadding, a.shape[3] + Npadding), dtype=a.dtype)
+        padded = padded.at[:,:, Npadding//2:-Npadding//2, Npadding//2:-Npadding//2].set(a)
+    else:
+        raise ValueError("Unsupported number of dimensions for padding.")
+    return padded
+
+# Npadding is used as a global variable
+
 def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u, v, Npadding,
-                  zernike_base, zernike_coefs_x=jnp.zeros(15), zernike_coefs_y=jnp.zeros(15), 
+                  zernike_base, zernike_coefs_x=jnp.zeros((3,15)), zernike_coefs_y=jnp.zeros((3,15)), 
                   phase_maskx=None, phase_masky=None,
               second_plane=None, polar_projections=None, device='cpu', BFP_version=False, 
               SAF=False, costh2=None):
@@ -182,16 +196,16 @@ def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u
             psi_lat_jit(xp, yp, th1, phi)
         ))
     
-    # dim N, 3, Npix, Npix
+    # dim 3, N, Npix, Npix
     phase = jax.vmap(phase_per_plane)(jnp.array(second_plane))  # 3 planes
 
     # --- Zernike masks --- dim 3, Npix, Npix
     zernike_mask_x = jnp.exp(1j * jnp.einsum('pa,auv->puv', zernike_coefs_x, zernike_base))
     zernike_mask_y = jnp.exp(1j * jnp.einsum('pa,auv->puv', zernike_coefs_y, zernike_base))
     
-    # --- total phase mask --- dim N, 3, Npix, Npix for each polar
-    total_phase_x = jnp.einsum('npuv, puv -> npuv', phase, zernike_mask_x)
-    total_phase_y = jnp.einsum('npuv, puv -> npuv', phase, zernike_mask_y)
+    # --- total phase mask --- dim N, 3, uv for each polar
+    total_phase_x = jnp.einsum('pnuv, puv -> npuv', phase, zernike_mask_x)
+    total_phase_y = jnp.einsum('pnuv, puv -> npuv', phase, zernike_mask_y)
     if phase_maskx is not None:
         total_phase_x = jnp.einsum('npuv, puv -> npuv', total_phase_x, phase_maskx)
         total_phase_y = jnp.einsum('npuv, puv -> npuv', total_phase_y, phase_maskx)
@@ -203,37 +217,44 @@ def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u
                             jnp.sin(proj*jnp.pi/180) * Ey_list[j] for j in range(3)])
         ey_rot = jnp.stack([-jnp.sin(proj*jnp.pi/180) * Ex_list[j] +
                              jnp.cos(proj*jnp.pi/180) * Ey_list[j] for j in range(3)])
-        return ex_rot, ey_rot
+        return ex_rot, ey_rot # 3, uv
 
     # Apply rotation for all planes
     def rotated_plane(plane_idx):
         return rotate_fields([Ex0, Ex1, Ex2], [Ey0, Ey1, Ey2], polar_projections[plane_idx])
 
-    ex_stack, ey_stack = jax.vmap(rotated_plane)(jnp.arange(len(second_plane)))
+    ex_stack, ey_stack = jax.vmap(rotated_plane)(jnp.arange(len(second_plane))) # dim p, 3, Npix, Npix
 
     # --- FFT with padding ---
-    def fft_pad(field, mask):
-        return jnp.fft.fftshift(jnp.fft.fft2(pad_jax(field * mask, Npadding)), axes=(-2,-1))
+    def fft_padX(mask):
+        return jnp.fft.fftshift(jnp.fft.fft2(pad_jax(jnp.einsum('pauv, puv -> apuv', ex_stack, mask))), axes=(-2,-1))
+    def fft_padY(mask):
+        return jnp.fft.fftshift(jnp.fft.fft2(pad_jax(jnp.einsum('pauv, puv -> apuv', ey_stack, mask))), axes=(-2,-1))
 
-    E_ex = jax.vmap(lambda plane: jax.vmap(lambda comp: fft_pad(comp, zernike_mask_x))(plane))(ex_stack)
-    E_ey = jax.vmap(lambda plane: jax.vmap(lambda comp: fft_pad(comp, zernike_mask_y))(plane))(ey_stack)
+    # dim n, 3, p, uv
+    E_ex = jax.vmap(fft_padX)(total_phase_x) 
+    E_ey = jax.vmap(fft_padY)(total_phase_y)
 
     # --- Compute M matrices ---
-    def compute_plane_M(Eplane):
-        E0, E1, E2 = Eplane  # shape: (3, N_pix, N_pix)
+    def compute_plane_M(Eplane): 
+        E0, E1, E2 = Eplane  # shape: 3, p, uv
         M_plane = jnp.stack([
             jnp.stack([E0*jnp.conj(E0), E0*jnp.conj(E1), E0*jnp.conj(E2)]),
             jnp.stack([E1*jnp.conj(E0), E1*jnp.conj(E1), E1*jnp.conj(E2)]),
             jnp.stack([E2*jnp.conj(E0), E2*jnp.conj(E1), E2*jnp.conj(E2)])
-        ])  # shape: (3,3,N_pix,N_pix)
+        ])  # shape: (3,3, p, uv)
         return M_plane
 
+    #dim n, 3, 3, p, uv
     Mx_list = jax.vmap(compute_plane_M)(E_ex)
-    My_list = jax.vmap(compute_plane_M)(E_ey)
+    My_list = jax.vmap(compute_plane_M)(E_ey) # parallelized over n
+    #dim 2, n, 3, 3, p, uv to n, 3, 3, p, 2, uv 
+    M = jnp.transpose(jnp.stack([Mx_list, My_list]), (1,2,3,4,0,5,6))
+    return M
 
-    M = jnp.stack([Mx_list, My_list], axis=1)  # (K_plane, 2, 3,3, N_pix, N_pix)
+    return M
 
-    return u, v, M
+compute_M_jax_jit = jax.jit(compute_M_jax)
 
 def PSF_jax(rho, eta, delta, M, N_photons=1000):
     """
@@ -289,22 +310,19 @@ def PSF_jax(rho, eta, delta, M, N_photons=1000):
     lam_exp = lam[:, None, :]  # shape: (N_psf, 1, 3)
 
     # Compute PSF for each polarization
-    def psf_projection(Mpol):
+    def psf_projection(Mpol, Rpol, lam_exppol):
         # Mpol: (N_psf, K_plane, 3, 3, Nx, Ny)
         # einsum: rotate basis functions and compute weighted sum
-        rotated = jnp.einsum('nij,njkpq->nikpq', R.transpose(0, 2, 1), jnp.einsum('nijkpq,nkj->nijpq', Mpol, R * lam_exp))
-        diag = jnp.diagonal(rotated, axis1=2, axis2=3)  # take diagonal over rotated 3x3
+        rotated = jnp.einsum('da,acpquv->dcpquv', Rpol.transpose(1,0), jnp.einsum('abpquv,bc->acpquv', Mpol, Rpol * lam_exppol))
+        diag = jnp.diagonal(rotated, axis1=0, axis2=1)  # take diagonal over rotated 3x3
         psf = jnp.sum(diag, axis=-1)  # sum over eigenvalues
         return jnp.clip(jnp.real(psf), a_min=0.0)
 
-    psf_x = psf_projection(M[:, :, 0])
-    psf_y = psf_projection(M[:, :, 1])
-
-    psf = jnp.stack([psf_x, psf_y], axis=2)  # shape: (N_psf, K_plane, 2, Nx, Ny)
+    psf = jax.vmap(psf_projection)(M, R, lam_exp)
 
     # Normalize each PSF
     norm = jnp.sum(psf, axis=(2, 3, 4), keepdims=True)
-    psf = psf * N_photons / norm
+    psf = psf * N_photons[:,None,None,None,None] / norm
 
     return psf
 
