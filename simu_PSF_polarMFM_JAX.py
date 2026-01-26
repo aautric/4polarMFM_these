@@ -144,7 +144,7 @@ def generate_zernike_base_jax(r_cut, N, zernike_order=4, device='cpu'):
         zer[index]=0.
     return jnp.array(zernike_base)
 
-def padding(r, r_cut, k, f_o,  N=80, l_pixel=16, NA=1.4, mag=100, lambd=617, 
+def padding_jax(r, r_cut, k, f_o,  N=80, l_pixel=16, NA=1.4, mag=100, lambd=617, 
               f_tube=200, MAG=200/150, device='cpu'):
     lambd = 10**(-3)*lambd # conversion nm to micrometers
     f_tube = f_tube*1000 # tube length focal. everything is in micrometers
@@ -220,17 +220,6 @@ def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u
         return rotate_fields([Ex0, Ex1, Ex2], [Ey0, Ey1, Ey2], polar_projections[plane_idx])
 
     ex_stack, ey_stack = jax.vmap(rotated_plane)(jnp.arange(len(second_plane))) # dim p, 3, Npix, Npix
-    '''
-    # --- FFT with padding --- done outside the function
-    def fft_padX(mask):
-        return jnp.fft.fftshift(jnp.fft.fft2(pad_jax(jnp.einsum('pauv, puv -> apuv', ex_stack, mask))), axes=(-2,-1))
-    def fft_padY(mask):
-        return jnp.fft.fftshift(jnp.fft.fft2(pad_jax(jnp.einsum('pauv, puv -> apuv', ey_stack, mask))), axes=(-2,-1))
-
-    # dim n, 3, p, uv
-    E_ex = jax.vmap(fft_padX)(total_phase_x) 
-    E_ey = jax.vmap(fft_padY)(total_phase_y)
-    '''
     
     E_ex = jnp.fft.fftshift(jnp.fft.fft2(jnp.einsum('pauv, npuv -> napuv', ex_stack, total_phase_x)), axes=(-2,-1))
     E_ey = jnp.fft.fftshift(jnp.fft.fft2(jnp.einsum('pauv, npuv -> napuv', ey_stack, total_phase_y)), axes=(-2,-1))
