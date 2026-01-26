@@ -103,7 +103,7 @@ def vectorial_BFP_perfect_focus(N, NA=1.4, mag=100, lambd=617, f_tube=200, SAF=F
 
 '''   these three functions returns the phase shift in the BFP when changing the focus,and the position of the emitter '''
 
-def psi_lat(x, y, theta, phi, NA=1.4, mag=100, lambd=0.617, f_tube=200000):
+def psi_lat(x, y, theta, phi, lambd=0.617):
     ''' a translation in the real space is a multiplication by an exponential in the Fourier space'''
     if isinstance(x, torch.Tensor): 
         ''' torch case'''
@@ -119,7 +119,7 @@ def psi_lat(x, y, theta, phi, NA=1.4, mag=100, lambd=0.617, f_tube=200000):
         ''' numpy case'''
         return np.sin(theta)*(x*np.cos(phi)+y*np.sin(phi))*(2*np.pi*n1)/(lambd)
 
-def psi_z(theta, z, NA=1.4, mag=100, lambd=0.617, f_tube=200000, costh2=None):
+def psi_z(theta, z, lambd=0.617, costh2=None):
     ''' version Yan et al . corrected '''
     if isinstance(z, torch.Tensor):
         if len(z.shape)==0:
@@ -141,7 +141,7 @@ def psi_z(theta, z, NA=1.4, mag=100, lambd=0.617, f_tube=200000, costh2=None):
         else:
             return 2*np.pi*n2*z*np.sqrt(1-(n1*np.sin(theta)/n2)**2)/lambd
     
-def psi_f(theta, d, NA=1.4, mag=100, lambd=0.617, f_tube=200000):
+def psi_f(theta, d, lambd=0.617):
     ''' version Yan et al. corrected'''
     if isinstance(d, torch.Tensor):
         n = n1 + (n2-n1)*(1+torch.sign(d))/2
@@ -159,8 +159,8 @@ def psi_f(theta, d, NA=1.4, mag=100, lambd=0.617, f_tube=200000):
             return 2*np.pi*n2*np.cos(theta)*d/lambd
 
 def generate_zernike_base(r_cut, N, zernike_order=4, device='cpu'):
-    cart = RZern(zernike_order)
-    if device!='cpu':
+    cart = RZern(zernike_order)        
+    if (device!='cpu') & (isinstance(N, torch.Tensor)):
         ddx = np.linspace(-r_cut.cpu(), r_cut.cpu(), N.cpu())
         ddy = np.linspace(-r_cut.cpu(), r_cut.cpu(), N.cpu())
     else:        
@@ -192,9 +192,9 @@ def BFP_phase(theta, phi, d, xp, yp, zp, r_cut, zernike_order=4, zernike_coefs_x
     if (SAF==True) & (costh2 is None):
         raise ValueError("costh2 need to be given if SAF=True")
     if SAF:
-        phase = psi_f(theta, d, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(theta, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube, costh2=costh2)+psi_lat(xp,yp,theta,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)
+        phase = psi_f(theta, d, lambd=lambd)+psi_z(theta, zp, lambd=lambd, costh2=costh2)+psi_lat(xp, yp, theta, phi, lambd=lambd)
     else:
-        phase = psi_f(theta, d, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(theta, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_lat(xp,yp,theta,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)
+        phase = psi_f(theta, d, lambd=lambd)+psi_z(theta, zp, lambd=lambd)+psi_lat(xp,yp,theta,phi, lambd=lambd)
     phase[np.isnan(phase)] = 0.
     zernike_base = generate_zernike_base(r_cut, N, zernike_order=zernike_order, device='cpu')
     zernike_phase_x = np.sum(zernike_coefs_x.reshape(-1, 1, 1)*zernike_base, axis=0)
@@ -240,21 +240,21 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                 second_plane = [second_plane]
                 polar_projections = [polar_projections]
             if SAF:
-                phase = torch.stack([torch.exp(1j*(psi_f(th1, d+second_plane[ind], NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(th1, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube, costh2=costh2)+psi_lat(xp,yp,th1,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube))) for ind in range(len(second_plane))])
-            else:
-                phase = torch.stack([torch.exp(1j*(psi_f(th1, d+second_plane[ind], NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(th1, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_lat(xp,yp,th1,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube))) for ind in range(len(second_plane))])
+                phase = torch.stack([torch.exp(1j*(psi_f(th1, d+second_plane[ind], lambd=lambd)+psi_z(th1, zp, lambd=lambd, costh2=costh2)+psi_lat(xp,yp,th1,phi, lambd=lambd))) for ind in range(len(second_plane))])
+            else:#
+                phase = torch.stack([torch.exp(1j*(psi_f(th1, d+second_plane[ind], lambd=lambd)+psi_z(th1, zp, lambd=lambd)+psi_lat(xp,yp,th1,phi, lambd=lambd))) for ind in range(len(second_plane))])
         else:
             ''' single plane '''     
             if SAF:
-                phase = torch.exp(1j*(psi_f(th1, d, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(th1, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube, costh2=costh2)+psi_lat(xp,yp,th1,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)))
+                phase = torch.exp(1j*(psi_f(th1, d, lambd=lambd)+psi_z(th1, zp, lambd=lambd, costh2=costh2)+psi_lat(xp,yp,th1,phi, lambd=lambd)))
             else:
-                phase = torch.exp(1j*(psi_f(th1, d, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(th1, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_lat(xp,yp,th1,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)))
+                phase = torch.exp(1j*(psi_f(th1, d, lambd=lambd)+psi_z(th1, zp, lambd=lambd)+psi_lat(xp,yp,th1,phi, lambd=lambd)))
     else:
         ''' numpy '''
         if SAF:
-            phase = np.exp(1j*(psi_f(th1, d, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(th1, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube, costh2=costh2)+psi_lat(xp,yp,th1,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)))
+            phase = np.exp(1j*(psi_f(th1, d, lambd=lambd)+psi_z(th1, zp, lambd=lambd, costh2=costh2)+psi_lat(xp,yp,th1,phi, lambd=lambd)))
         else:
-            phase = np.exp(1j*(psi_f(th1, d, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_z(th1, zp, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)+psi_lat(xp,yp,th1,phi, NA=NA, mag=mag, lambd=lambd, f_tube=f_tube)))
+            phase = np.exp(1j*(psi_f(th1, d, lambd=lambd)+psi_z(th1, zp, lambd=lambd)+psi_lat(xp,yp,th1,phi, lambd=lambd)))
         phase[np.isnan(phase)] = 0.
         
     ##############################################################################
@@ -365,7 +365,7 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                     E10 = torch.stack([torch.fft.fftshift(torch.fft.fft2(pad(phase_masky[ind]*zernike_mask_y[ind]*phase[ind]*ey0[ind,:,:], Npadding), dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
                     E11 = torch.stack([torch.fft.fftshift(torch.fft.fft2(pad(phase_masky[ind]*zernike_mask_y[ind]*phase[ind]*ey1[ind,:,:], Npadding), dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
                     E12 = torch.stack([torch.fft.fftshift(torch.fft.fft2(pad(phase_masky[ind]*zernike_mask_y[ind]*phase[ind]*ey2[ind,:,:], Npadding), dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
-                
+
                 ''' M is the matrix of the basis functions '''
                 M = torch.permute(torch.stack([
                     torch.stack([torch.stack([E00*torch.conj(E00), E00*torch.conj(E01), E00*torch.conj(E02)]), 
@@ -432,7 +432,7 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
             Mx = np.einsum('abc, ubc -> aubc', np.conj(Ex_im), Ex_im) 
             My = np.einsum('abc, ubc -> aubc', np.conj(Ey_im), Ey_im)
         M = np.array([Mx, My])
-        
+    #print(Npadding) 
     return u, v, M
 
 def PSF(rho, eta, delta, M, N_photons=1000, device='cpu'):

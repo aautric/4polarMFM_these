@@ -11,6 +11,7 @@ from functools import partial
 from jax import random
 from zernike import RZern
 import numpy as np
+import matplotlib.pyplot as plt
 
 n1 = 1.52 # oil and sample indices
 n2 = 1.33 # water index
@@ -87,7 +88,7 @@ def vectorial_BFP_perfect_focus_jax(
 
     return x, y, th1, phi, (Ex0, Ex1, Ex2), (Ey0, Ey1, Ey2), r, r_cut, k, f_o
 
-def psi_lat_jax(x, y, theta, phi, n1=1.518, lambd=0.617):
+def psi_lat_jax(x, y, theta, phi, lambd=0.617):
     """
     JAX version of psi_lat.
     Works for:
@@ -100,7 +101,7 @@ def psi_lat_jax(x, y, theta, phi, n1=1.518, lambd=0.617):
     phase = jnp.einsum('bc,abc->abc', jnp.sin(theta), (jnp.einsum('a,bc->abc', x, jnp.cos(phi)) +jnp.einsum('a,bc->abc', y, jnp.sin(phi))))
     return phase * (2*jnp.pi*n1) / lambd
 
-def psi_z_jax(theta, z, NA=1.4, mag=100, lambd=0.617, f_tube=200_000, n1=1.33, n2=1.515):
+def psi_z_jax(theta, z, lambd=0.617):
     """
     JAX version of psi_z (Yan et al. corrected)
     Computes the phase term along z for vectorial PSF simulations.
@@ -112,7 +113,7 @@ def psi_z_jax(theta, z, NA=1.4, mag=100, lambd=0.617, f_tube=200_000, n1=1.33, n
     
     return jnp.einsum('a, bc -> abc', z, factor*sqrt_term)
 
-def psi_f_jax(theta, d, NA=1.4, mag=100, lambd=0.617, f_tube=200_000, n1=1.33, n2=1.515):
+def psi_f_jax(theta, d, lambd=0.617):
     """
     JAX version of psi_f (Yan et al. corrected)
     Computes the phase term along the focal region for vectorial PSF simulations.
@@ -126,14 +127,10 @@ psi_f_jit = jax.jit(psi_f_jax)
 psi_z_jit = jax.jit(psi_z_jax)
 psi_lat_jit = jax.jit(psi_lat_jax)
 
-def generate_zernike_base(r_cut, N, zernike_order=4, device='cpu'):
-    cart = RZern(zernike_order)
-    if device!='cpu':
-        ddx = np.linspace(-r_cut.cpu(), r_cut.cpu(), N.cpu())
-        ddy = np.linspace(-r_cut.cpu(), r_cut.cpu(), N.cpu())
-    else:        
-        ddx = np.linspace(-r_cut, r_cut, N)
-        ddy = np.linspace(-r_cut, r_cut, N)
+def generate_zernike_base_jax(r_cut, N, zernike_order=4, device='cpu'):
+    cart = RZern(zernike_order)       
+    ddx = np.linspace(-r_cut, r_cut, N)
+    ddy = np.linspace(-r_cut, r_cut, N)
     xv, yv = np.meshgrid(ddx, ddy)
     cart.make_cart_grid(xv, yv)
     
@@ -159,42 +156,41 @@ def padding(r, r_cut, k, f_o,  N=80, l_pixel=16, NA=1.4, mag=100, lambd=617,
     u, v = jnp.meshgrid(freq, freq)
     return u, v, Npadding
 
-Npadding = 100
-
-def pad_jax(a):
+def pad_jax(a, n):
     """Traceable JAX padding."""
     if a.ndim == 2:
-        padded = jnp.zeros((a.shape[0] + Npadding, a.shape[1] + Npadding), dtype=a.dtype)
-        padded = padded.at[Npadding//2:-Npadding//2, Npadding//2:-Npadding//2].set(a)
+        padded = jnp.zeros((a.shape[0] + n, a.shape[1] + n), dtype=a.dtype)
+        padded = padded.at[n//2:-n//2, n//2:-n//2].set(a)
     elif a.ndim == 3:
-        padded = jnp.zeros((a.shape[0], a.shape[1] + Npadding, a.shape[2] + Npadding), dtype=a.dtype)
-        padded = padded.at[:, Npadding//2:-Npadding//2, Npadding//2:-Npadding//2].set(a)
+        padded = jnp.zeros((a.shape[0], a.shape[1] + n, a.shape[2] + n), dtype=a.dtype)
+        padded = padded.at[:, n//2:-n//2, n//2:-n//2].set(a)
     elif a.ndim == 4:
-        padded = jnp.zeros((a.shape[0], a.shape[1], a.shape[2] + Npadding, a.shape[3] + Npadding), dtype=a.dtype)
-        padded = padded.at[:,:, Npadding//2:-Npadding//2, Npadding//2:-Npadding//2].set(a)
+        padded = jnp.zeros((a.shape[0], a.shape[1], a.shape[2] + n, a.shape[3] + n), dtype=a.dtype)
+        padded = padded.at[:,:, n//2:-n//2, n//2:-n//2].set(a)
     else:
         raise ValueError("Unsupported number of dimensions for padding.")
     return padded
 
 # Npadding is used as a global variable
 
-def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u, v, Npadding,
+def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u, v,
                   zernike_base, zernike_coefs_x=jnp.zeros((3,15)), zernike_coefs_y=jnp.zeros((3,15)), 
-                  phase_maskx=None, phase_masky=None,
-              second_plane=None, polar_projections=None, device='cpu', BFP_version=False, 
+                  phase_maskx=None, phase_masky=None, lambd=617, f_tube=200,
+              second_plane=jnp.array([-0.35, 0, 0.35]), polar_projections=jnp.array([0., 45., 0.]), device='cpu', BFP_version=False, 
               SAF=False, costh2=None):
     """
     JAX version of compute_M for multiple PSFs and multiple planes, fully JIT-compatible.
     Returns u, v coordinates and M matrix of shape (N_psf, K_plane, 2, 3, 3, N_pix, N_pix)
     """
-
+    lambd = 10**(-3)*lambd # conversion nm to micrometers
+    f_tube = f_tube*1000 # tube length focal. everything is in micrometers
     # --- Phase for all planes (vectorized with vmap) ---
     def phase_per_plane(dp):
         return jnp.exp(1j * (
-            psi_f_jit(th1, d + dp) +
-            psi_z_jit(th1, zp) +
-            psi_lat_jit(xp, yp, th1, phi)
-        ))
+            psi_f_jit(th1, d + dp, lambd) +
+            psi_z_jit(th1, zp, lambd) +
+            psi_lat_jit(xp, yp, th1, phi, lambd)
+        ))#
     
     # dim 3, N, Npix, Npix
     phase = jax.vmap(phase_per_plane)(jnp.array(second_plane))  # 3 planes
@@ -209,7 +205,7 @@ def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u
     if phase_maskx is not None:
         total_phase_x = jnp.einsum('npuv, puv -> npuv', total_phase_x, phase_maskx)
         total_phase_y = jnp.einsum('npuv, puv -> npuv', total_phase_y, phase_maskx)
-
+    
     # --- Polarization rotations (numeric, JIT-friendly) ---
 
     def rotate_fields(Ex_list, Ey_list, proj): # for 1 given projection angle
@@ -218,14 +214,14 @@ def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u
         ey_rot = jnp.stack([-jnp.sin(proj*jnp.pi/180) * Ex_list[j] +
                              jnp.cos(proj*jnp.pi/180) * Ey_list[j] for j in range(3)])
         return ex_rot, ey_rot # 3, uv
-
+    #print(total_phase_x.shape)
     # Apply rotation for all planes
     def rotated_plane(plane_idx):
         return rotate_fields([Ex0, Ex1, Ex2], [Ey0, Ey1, Ey2], polar_projections[plane_idx])
 
     ex_stack, ey_stack = jax.vmap(rotated_plane)(jnp.arange(len(second_plane))) # dim p, 3, Npix, Npix
-
-    # --- FFT with padding ---
+    '''
+    # --- FFT with padding --- done outside the function
     def fft_padX(mask):
         return jnp.fft.fftshift(jnp.fft.fft2(pad_jax(jnp.einsum('pauv, puv -> apuv', ex_stack, mask))), axes=(-2,-1))
     def fft_padY(mask):
@@ -234,7 +230,11 @@ def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u
     # dim n, 3, p, uv
     E_ex = jax.vmap(fft_padX)(total_phase_x) 
     E_ey = jax.vmap(fft_padY)(total_phase_y)
-
+    '''
+    
+    E_ex = jnp.fft.fftshift(jnp.fft.fft2(jnp.einsum('pauv, npuv -> napuv', ex_stack, total_phase_x)), axes=(-2,-1))
+    E_ey = jnp.fft.fftshift(jnp.fft.fft2(jnp.einsum('pauv, npuv -> napuv', ey_stack, total_phase_y)), axes=(-2,-1))
+    
     # --- Compute M matrices ---
     def compute_plane_M(Eplane): 
         E0, E1, E2 = Eplane  # shape: 3, p, uv
@@ -248,10 +248,8 @@ def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u
     #dim n, 3, 3, p, uv
     Mx_list = jax.vmap(compute_plane_M)(E_ex)
     My_list = jax.vmap(compute_plane_M)(E_ey) # parallelized over n
-    #dim 2, n, 3, 3, p, uv to n, 3, 3, p, 2, uv 
-    M = jnp.transpose(jnp.stack([Mx_list, My_list]), (1,2,3,4,0,5,6))
-    return M
-
+    #dim 2, n, 3, 3, p, uv to n, p, 2, 3, 3, uv 
+    M = jnp.transpose(jnp.stack([Mx_list, My_list]), (1,4,0,2,3,5,6))
     return M
 
 compute_M_jax_jit = jax.jit(compute_M_jax)
@@ -313,7 +311,7 @@ def PSF_jax(rho, eta, delta, M, N_photons=1000):
     def psf_projection(Mpol, Rpol, lam_exppol):
         # Mpol: (N_psf, K_plane, 3, 3, Nx, Ny)
         # einsum: rotate basis functions and compute weighted sum
-        rotated = jnp.einsum('da,acpquv->dcpquv', Rpol.transpose(1,0), jnp.einsum('abpquv,bc->acpquv', Mpol, Rpol * lam_exppol))
+        rotated = jnp.einsum('da,acpquv->dcpquv', Rpol.transpose(1,0), jnp.einsum('pqabuv,bc->acpquv', Mpol, Rpol * lam_exppol))
         diag = jnp.diagonal(rotated, axis1=0, axis2=1)  # take diagonal over rotated 3x3
         psf = jnp.sum(diag, axis=-1)  # sum over eigenvalues
         return jnp.clip(jnp.real(psf), a_min=0.0)
