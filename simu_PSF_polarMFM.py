@@ -87,12 +87,12 @@ def vectorial_BFP_perfect_focus(N, NA=1.4, mag=100, lambd=617, f_tube=200, SAF=F
         y = torch.tensor(y, device=device, requires_grad=False)
         th1 = torch.tensor(th1, device=device, requires_grad=False)
         phi = torch.tensor(phi, device=device, requires_grad=False)
-        Ex0 = torch.tensor(Ex0, device=device, requires_grad=True)
-        Ex1 = torch.tensor(Ex1, device=device, requires_grad=True)
-        Ex2 = torch.tensor(Ex2, device=device, requires_grad=True)
-        Ey0 = torch.tensor(Ey0, device=device, requires_grad=True)
-        Ey1 = torch.tensor(Ey1, device=device, requires_grad=True)
-        Ey2 = torch.tensor(Ey2, device=device, requires_grad=True)
+        Ex0 = torch.tensor(Ex0, device=device, requires_grad=False)
+        Ex1 = torch.tensor(Ex1, device=device, requires_grad=False)
+        Ex2 = torch.tensor(Ex2, device=device, requires_grad=False)
+        Ey0 = torch.tensor(Ey0, device=device, requires_grad=False)
+        Ey1 = torch.tensor(Ey1, device=device, requires_grad=False)
+        Ey2 = torch.tensor(Ey2, device=device, requires_grad=False)
         r = torch.tensor(r, device=device, requires_grad=False)
         r_cut = torch.tensor(r_cut, device=device, requires_grad=False)
         costh2 = torch.tensor(costh2, device=device, requires_grad=False)
@@ -286,10 +286,9 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                 second_plane = [second_plane]
                 polar_projections = [polar_projections]
             if SAF:
-                print(psi_f(th1, d+second_plane[0], lambd=lambd).shape, psi_z(th1, zp, lambd=lambd, costh2=costh2).shape)
-                phase = torch.stack([torch.exp(1j*(psi_f(th1, d+second_plane[ind], lambd=lambd)+psi_z(th1, zp, lambd=lambd, costh2=costh2)+psi_lat(xp,yp,th1,phi, lambd=lambd))) for ind in range(len(second_plane))])
+                phase = torch.stack([torch.exp((1j*(psi_f(th1, d+second_plane[ind], lambd=lambd)+psi_z(th1, zp, lambd=lambd, costh2=costh2)+psi_lat(xp,yp,th1,phi, lambd=lambd))).to(torch.complex64)) for ind in range(len(second_plane))])
             else:#
-                phase = torch.stack([torch.exp(1j*(psi_f(th1, d+second_plane[ind], lambd=lambd)+psi_z(th1, zp, lambd=lambd)+psi_lat(xp,yp,th1,phi, lambd=lambd))) for ind in range(len(second_plane))])
+                phase = torch.stack([torch.exp((1j*(psi_f(th1, d+second_plane[ind], lambd=lambd)+psi_z(th1, zp, lambd=lambd)+psi_lat(xp,yp,th1,phi, lambd=lambd))).to(torch.complex64)) for ind in range(len(second_plane))])
         else:
             ''' single plane '''     
             if SAF:
@@ -315,8 +314,8 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
             ''' in case there are several planes, the parameters are lilstede in the plaene order 
             (the same as in several_planes, which give the distance from plane to a fictive nominal plane, 
              and polar_proj)'''
-            zernike_mask_x = torch.exp(1j * torch.sum(torch.einsum('ab, bcd->abcd', zernike_coefs_x, zernike_base), dim=1))
-            zernike_mask_y = torch.exp(1j * torch.sum(torch.einsum('ab, bcd->abcd', zernike_coefs_y, zernike_base), dim=1))
+            zernike_mask_x = torch.exp((1j * torch.sum(torch.einsum('ab, bcd->abcd', zernike_coefs_x, zernike_base), dim=1).to(torch.complex64)))
+            zernike_mask_y = torch.exp((1j * torch.sum(torch.einsum('ab, bcd->abcd', zernike_coefs_y, zernike_base), dim=1).to(torch.complex64)))
     else:
         '''numpy case'''
         zernike_mask_x = np.exp(1j * np.sum(zernike_coefs_x.reshape(-1, 1, 1)*zernike_base, axis=0))
@@ -352,7 +351,7 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                  
                  Mx = torch.einsum('abc, ubc -> aubc', torch.conj(Ex_im), Ex_im) 
                  My = torch.einsum('abc, ubc -> aubc', torch.conj(Ey_im), Ey_im)
-            M = torch.stack([Mx, My], dim=0)
+            M = torch.stack([Mx, My], dim=0).to(torch.complex64)
              
         else: 
             ''' several PSF '''     
@@ -361,14 +360,15 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                 ''' rotated polarizations as a function of the plane '''
                 polar_rad = (polar_projections=='rad')
                 polar_projections[polar_rad] = 0. # will be managed just after
+
                 polar_projections = torch.tensor(polar_projections.astype(float), device=device)
-                ex0 = torch.stack([torch.cos((polar_projections[ind])*torch.pi/180)*Ex0 + torch.sin((polar_projections[ind])*torch.pi/180)*Ey0 for ind in range(len(polar_projections))])
-                ex1 = torch.stack([torch.cos((polar_projections[ind])*torch.pi/180)*Ex1 + torch.sin((polar_projections[ind])*torch.pi/180)*Ey1 for ind in range(len(polar_projections))])
-                ex2 = torch.stack([torch.cos((polar_projections[ind])*torch.pi/180)*Ex2 + torch.sin((polar_projections[ind])*torch.pi/180)*Ey2 for ind in range(len(polar_projections))])
+                ex0 = torch.stack([torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex0 + torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey0 for ind in range(len(polar_projections))])
+                ex1 = torch.stack([torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex1 + torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey1 for ind in range(len(polar_projections))])
+                ex2 = torch.stack([torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex2 + torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey2 for ind in range(len(polar_projections))])
                 
-                ey0 = torch.stack([-torch.sin((polar_projections[ind])*torch.pi/180)*Ex0 + torch.cos((polar_projections[ind])*torch.pi/180)*Ey0 for ind in range(len(polar_projections))])
-                ey1 = torch.stack([-torch.sin((polar_projections[ind])*torch.pi/180)*Ex1 + torch.cos((polar_projections[ind])*torch.pi/180)*Ey1 for ind in range(len(polar_projections))])
-                ey2 = torch.stack([-torch.sin((polar_projections[ind])*torch.pi/180)*Ex2 + torch.cos((polar_projections[ind])*torch.pi/180)*Ey2 for ind in range(len(polar_projections))])
+                ey0 = torch.stack([-torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex0 + torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey0 for ind in range(len(polar_projections))])
+                ey1 = torch.stack([-torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex1 + torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey1 for ind in range(len(polar_projections))])
+                ey2 = torch.stack([-torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex2 + torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey2 for ind in range(len(polar_projections))])
                 
                 if polar_rad.any():
                     for pl in range(len(second_plane)):
@@ -403,7 +403,7 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                     torch.stack([torch.stack([E10*torch.conj(E10), E10*torch.conj(E11), E10*torch.conj(E12)]), 
                                   torch.stack([E11*torch.conj(E10), E11*torch.conj(E11), E11*torch.conj(E12)]),
                                    torch.stack([E12*torch.conj(E10), E12*torch.conj(E11), E12*torch.conj(E12)])])
-                    ]), (4, 3, 0, 1, 2, 5, 6))
+                    ]), (4, 3, 0, 1, 2, 5, 6)).to(torch.complex64)
             
             else: 
                 '''single plane sevral PSF'''
@@ -431,7 +431,7 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                         torch.stack([torch.stack([E10*torch.conj(E10), E10*torch.conj(E11), E10*torch.conj(E12)]), 
                                       torch.stack([E11*torch.conj(E10), E11*torch.conj(E11), E11*torch.conj(E12)]),
                                        torch.stack([E12*torch.conj(E10), E12*torch.conj(E11), E12*torch.conj(E12)])])
-                        ]), (3, 0, 1, 2, 4, 5))
+                        ]), (3, 0, 1, 2, 4, 5)).to(torch.complex64)
     else:
         '''numpy version'''
         ''' u v coordinates in image plane'''     
@@ -495,12 +495,12 @@ def PSF(rho, eta, delta, M, N_photons=1000, device='cpu'):
                 torch.stack([-torch.cos(rho_) * torch.sin(eta_), 
                              -torch.sin(rho_) * torch.sin(eta_), 
                              torch.cos(eta_)])
-            ]).to(torch.complex128)
+            ]).to(torch.complex64)
             ''' eigenvalues for computing the linear combination of basis functions with wobbling '''
             lam = torch.stack([
                 (1 - torch.cos(delta_ / 2)) * (torch.cos(delta_ / 2) + 2) / 6,
                 (1 - torch.cos(delta_ / 2)) * (torch.cos(delta_ / 2) + 2) / 6, 
-                ((torch.cos(delta_ / 2)**3 - 1) / (torch.cos(delta_ / 2) - 1)) / 3]).to(torch.complex128)
+                ((torch.cos(delta_ / 2)**3 - 1) / (torch.cos(delta_ / 2) - 1)) / 3]).to(torch.complex64)
         else:
             ''' rotation matrix if several PSF is simulated'''
             R = torch.permute(torch.stack([
@@ -513,12 +513,12 @@ def PSF(rho, eta, delta, M, N_photons=1000, device='cpu'):
                 torch.stack([-torch.cos(rho_) * torch.sin(eta_), 
                              -torch.sin(rho_) * torch.sin(eta_), 
                              torch.cos(eta_)])
-            ]).to(torch.complex128), (2,0,1))
+            ]).to(torch.complex64), (2,0,1))
             ''' eigenvalues for computing the linear combination of basis functions with wobbling '''
             lam = torch.permute(torch.stack([
                 (1 - torch.cos(delta_ / 2)) * (torch.cos(delta_ / 2) + 2) / 6,
                 (1 - torch.cos(delta_ / 2)) * (torch.cos(delta_ / 2) + 2) / 6, 
-                ((torch.cos(delta_ / 2)**3 - 1) / (torch.cos(delta_ / 2) - 1)) / 3]).to(torch.complex128), (1,0))
+                ((torch.cos(delta_ / 2)**3 - 1) / (torch.cos(delta_ / 2) - 1)) / 3]).to(torch.complex64), (1,0))
     else:
         ''' rotation matrix in numpy'''
         R = np.array([
@@ -550,7 +550,7 @@ def PSF(rho, eta, delta, M, N_photons=1000, device='cpu'):
             psf = torch.clamp(torch.real(psf), min=0.)
             ''' Normalize the PSF tensor '''
             norm = torch.sum(psf)
-            psf = psf * (N_photons / norm)
+            psf = (psf * (N_photons / norm)).to(torch.float32)
         else:
             if M.ndim==7:
                 ''' several psf and several planes '''
@@ -560,10 +560,10 @@ def PSF(rho, eta, delta, M, N_photons=1000, device='cpu'):
                 norm = torch.sum(psf, dim=list(range(1, psf.ndim)))
                 if N_photons.ndim==0:
                     ''' if Psf have same number of photons '''
-                    psf = torch.einsum('abcde, a -> abcde', psf*N_photons, 1/norm)
+                    psf = torch.einsum('abcde, a -> abcde', psf*N_photons, 1/norm).to(torch.float32)
                 else:
                     ''' if Psf have different number of photons '''
-                    psf = torch.einsum('abcde, a -> abcde', torch.einsum('abcde, a -> abcde', psf, N_photons), 1/norm)
+                    psf = torch.einsum('abcde, a -> abcde', torch.einsum('abcde, a -> abcde', psf, N_photons), 1/norm).to(torch.float32)
             else:
                 ''' several psf but one plane '''
                 psf = torch.sum(torch.diagonal(torch.einsum('uab, uvbdxy -> uvadxy', torch.transpose(R, 1, 2), torch.einsum('uvabxy,ubd->uvadxy', M, R*lam.unsqueeze(1))), dim1=2, dim2=3), dim=4)
@@ -572,9 +572,9 @@ def PSF(rho, eta, delta, M, N_photons=1000, device='cpu'):
                 ''' Normalize the PSF tensor '''
                 norm = torch.sum(psf, dim=list(range(1, psf.ndim)))
                 if N_photons.ndim==0:
-                    psf = psf*N_photons/norm.view(-1, 1, 1, 1)
+                    psf = psf*N_photons/norm.view(-1, 1, 1, 1).to(torch.float32)
                 else:
-                    psf = torch.einsum('abcd, a -> abcd', psf, N_photons)/norm.view(-1, 1, 1, 1)
+                    psf = torch.einsum('abcd, a -> abcd', psf, N_photons)/norm.view(-1, 1, 1, 1).to(torch.float32)
     else:
         psfx = (np.real(np.einsum('a, auv -> uv', lam, np.moveaxis(np.diagonal(np.einsum('ab, bcuv -> acuv', R.T, np.einsum('abuv, bc -> acuv', M[0], R)), axis1=0, axis2=1), -1, 0))))
         psfy = np.real(np.einsum('a, auv -> uv', lam, np.moveaxis(np.diagonal(np.einsum('ab, bcuv -> acuv', R.T, np.einsum('abuv, bc -> acuv', M[1], R)), axis1=0, axis2=1), -1, 0)))
@@ -592,7 +592,7 @@ def BFP_intensity(rho, eta, delta, M, N_photons=1000, device='cpu'):
     to compute this special M matrix, use BFP_version = True
     '''
     if isinstance(eta, torch.Tensor):
-        return PSF(rho, eta, delta, M.to(torch.complex128), N_photons=N_photons, device=device)
+        return PSF(rho, eta, delta, M.to(torch.complex64), N_photons=N_photons, device=device)
     else:
         return PSF(rho, eta, delta, M, N_photons=N_photons, device=device)
 
