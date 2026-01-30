@@ -186,7 +186,8 @@ def generate_zernike_base(r_cut, N, zernike_order=4, device='cpu'):
     return zernike_base
     
 
-def BFP_phase(theta, phi, d, xp, yp, zp, r_cut, zernike_order=4, zernike_coefs_x=np.zeros(15), zernike_coefs_y=np.zeros(15), N=80, NA=1.4, mag=100, lambd=0.617, f_tube=200000, SAF=False, costh2=None):
+def BFP_phase(theta, phi, d, xp, yp, zp, r_cut, N=80, NA=1.4, mag=100, lambd=0.617, f_tube=200000, 
+              SAF=False, costh2=None, zernike_base=None, zernike_coefs_x=np.zeros(15), zernike_coefs_y=np.zeros(15)):
     if isinstance(phi, torch.Tensor):
         print('Function only in numpy case')
         return None
@@ -197,12 +198,17 @@ def BFP_phase(theta, phi, d, xp, yp, zp, r_cut, zernike_order=4, zernike_coefs_x
     else:
         phase = psi_f(theta, d, lambd=lambd)+psi_z(theta, zp, lambd=lambd)+psi_lat(xp,yp,theta,phi, lambd=lambd)
     phase[np.isnan(phase)] = 0.
-    zernike_base = generate_zernike_base(r_cut, N, zernike_order=zernike_order, device='cpu')
-    zernike_phase_x = np.sum(zernike_coefs_x.reshape(-1, 1, 1)*zernike_base, axis=0)
-    zernike_phase_y = np.sum(zernike_coefs_y.reshape(-1, 1, 1)*zernike_base, axis=0)
-    total_phase_x = zernike_phase_x + phase 
-    total_phase_y = zernike_phase_y + phase
-    return (total_phase_x+total_phase_y)%(2*np.pi) 
+    if zernike_base is not None:
+        zernike_phase_x = np.sum(zernike_coefs_x.reshape(-1, 1, 1)*zernike_base, axis=0)
+        zernike_phase_y = np.sum(zernike_coefs_y.reshape(-1, 1, 1)*zernike_base, axis=0)
+        total_phase_x = zernike_phase_x + phase 
+        total_phase_y = zernike_phase_y + phase
+        return (total_phase_x)%(2*np.pi) ,  (total_phase_y)%(2*np.pi) 
+    else:
+        if SAF:
+            return (np.real(phase))%(2*np.pi)
+        else:
+            return (phase)%(2*np.pi)
 
 def padding(r, r_cut, k, f_o,  N=80, l_pixel=16, NA=1.4, mag=100, lambd=617, 
               f_tube=200, MAG=200/150, device='cpu'):
@@ -221,11 +227,11 @@ def padding(r, r_cut, k, f_o,  N=80, l_pixel=16, NA=1.4, mag=100, lambd=617,
         v, u = torch.meshgrid(freq, freq)
     else: 
         ''' numpy version ''' 
-        freq = (np.fft.fftshift(np.fft.fftfreq(N+Npadding, Dx))*2*np.pi*f_tube/k)*MAG
-        u, v = np.meshgrid(freq, freq)
         Npadding = int((2*np.pi*MAG*f_tube)/(k*l_pixel*Dx)) - N
         if Npadding%2==1:
             Npadding=Npadding+1
+        freq = (np.fft.fftshift(np.fft.fftfreq(N+Npadding, Dx))*2*np.pi*f_tube/k)*MAG
+        u, v = np.meshgrid(freq, freq)
     return u, v, Npadding
 
 def pad(a, n):
@@ -244,14 +250,19 @@ def pad(a, n):
             b = torch.zeros((a.shape[0], n+n0, n+n0), dtype=type, device=device)
             b[:] = 0.
             b[:,n//2:-n//2,n//2:-n//2] = a
-    else:    
-        b = np.zeros((n+n0, n+n0)).astype(type)
-        b[:] = 0.
-        b[n//2:-n//2,n//2:-n//2] = a
+    else: 
+        if len(a.shape)==2:
+            b = np.zeros((n+n0, n+n0)).astype(type)
+            b[:] = 0.
+            b[n//2:-n//2,n//2:-n//2] = a
+        if len(a.shape)==3:
+            b = np.zeros((a.shape[0], n+n0, n+n0)).astype(type)
+            b[:] = 0.
+            b[:,n//2:-n//2,n//2:-n//2] = a
     return b
         
 def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_cut, k, f_o, phase_maskx, 
-              phase_masky, zernike_base, zernike_coefs_x=np.zeros(15), zernike_coefs_y=np.zeros(15), 
+              phase_masky, zernike_base=None, zernike_coefs_x=None, zernike_coefs_y=None, 
               second_plane=None, polar_projections=None, lambd=617, 
               f_tube=200, device='cpu', BFP_version=False, 
               SAF=False, costh2=None):
@@ -305,21 +316,38 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
         
     ##############################################################################
     '''aberrations computations'''
-    if isinstance(phi, torch.Tensor):
-        '''torch case'''
-        if second_plane==None:
-            zernike_mask_x = torch.exp(1j * torch.sum(zernike_coefs_x.view(-1, 1, 1)*zernike_base, dim=0))
-            zernike_mask_y = torch.exp(1j * torch.sum(zernike_coefs_y.view(-1, 1, 1)*zernike_base, dim=0))
+    if zernike_base is not None:
+        if isinstance(phi, torch.Tensor):
+            '''torch case'''
+            if second_plane==None:
+                zernike_mask_x = torch.exp(1j * torch.sum(zernike_coefs_x.view(-1, 1, 1)*zernike_base, dim=0))
+                zernike_mask_y = torch.exp(1j * torch.sum(zernike_coefs_y.view(-1, 1, 1)*zernike_base, dim=0))
+            else:
+                ''' in case there are several planes, the parameters are lilstede in the plaene order 
+                (the same as in several_planes, which give the distance from plane to a fictive nominal plane, 
+                 and polar_proj)'''
+                zernike_mask_x = torch.exp((1j * torch.sum(torch.einsum('ab, bcd->abcd', zernike_coefs_x, zernike_base), dim=1).to(torch.complex64)))
+                zernike_mask_y = torch.exp((1j * torch.sum(torch.einsum('ab, bcd->abcd', zernike_coefs_y, zernike_base), dim=1).to(torch.complex64)))
         else:
-            ''' in case there are several planes, the parameters are lilstede in the plaene order 
-            (the same as in several_planes, which give the distance from plane to a fictive nominal plane, 
-             and polar_proj)'''
-            zernike_mask_x = torch.exp((1j * torch.sum(torch.einsum('ab, bcd->abcd', zernike_coefs_x, zernike_base), dim=1).to(torch.complex64)))
-            zernike_mask_y = torch.exp((1j * torch.sum(torch.einsum('ab, bcd->abcd', zernike_coefs_y, zernike_base), dim=1).to(torch.complex64)))
+            '''numpy case'''
+            zernike_mask_x = np.exp(1j * np.sum(zernike_coefs_x.reshape(-1, 1, 1)*zernike_base, axis=0))
+            zernike_mask_y = np.exp(1j * np.sum(zernike_coefs_y.reshape(-1, 1, 1)*zernike_base, axis=0))
     else:
-        '''numpy case'''
-        zernike_mask_x = np.exp(1j * np.sum(zernike_coefs_x.reshape(-1, 1, 1)*zernike_base, axis=0))
-        zernike_mask_y = np.exp(1j * np.sum(zernike_coefs_y.reshape(-1, 1, 1)*zernike_base, axis=0))
+            if isinstance(phi, torch.Tensor):
+                '''torch case'''
+                if second_plane==None:
+                    zernike_mask_x = torch.ones(Ex0.shape[-1], Ex0.shape[-1])
+                    zernike_mask_y = torch.ones(Ex0.shape[-1], Ex0.shape[-1])
+                else:
+                    ''' in case there are several planes, the parameters are lilstede in the plaene order 
+                    (the same as in several_planes, which give the distance from plane to a fictive nominal plane, 
+                     and polar_proj)'''
+                    zernike_mask_x = torch.ones(len(second_plane), Ex0.shape[-1], Ex0.shape[-1]).to(torch.complex64)
+                    zernike_mask_y = torch.ones(len(second_plane), Ex0.shape[-1], Ex0.shape[-1]).to(torch.complex64)
+            else:
+                '''numpy case'''
+                zernike_mask_x = np.ones(Ex0.shape[-1], Ex0.shape[-1])
+                zernike_mask_y = np.ones(Ex0.shape[-1], Ex0.shape[-1])
     ##############################################################################
     '''computing the M matrix'''
 
@@ -329,6 +357,8 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
             ''' 1 PSF 
             compute the field with the phase masks that takes defocus and position in account
             and compute the field in image plane with fft '''
+            if second_plane!=None:
+                raise ValueError("Cannot do multi-plane in the case of single PSF (not implemented)")
             E00 = torch.fft.fftshift(torch.fft.fft2(phase_maskx*zernike_mask_x*Ex0*phase))
             E01 = torch.fft.fftshift(torch.fft.fft2(phase_maskx*zernike_mask_x*Ex1*phase))
             E02 = torch.fft.fftshift(torch.fft.fft2(phase_maskx*zernike_mask_x*Ex2*phase))
@@ -355,7 +385,7 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
              
         else: 
             ''' several PSF '''     
-            if second_plane!=None: 
+            if second_plane is not None: 
                 ''' several planes '''
                 ''' rotated polarizations as a function of the plane '''
                 polar_rad = (polar_projections=='rad')
@@ -370,7 +400,8 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                 ey1 = torch.stack([-torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex1 + torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey1 for ind in range(len(polar_projections))])
                 ey2 = torch.stack([-torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex2 + torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey2 for ind in range(len(polar_projections))])
                 
-                if polar_rad.any():
+                '''Managing the case of radial/azimuthal polar'''
+                if polar_rad.any(): 
                     for pl in range(len(second_plane)):
                         if polar_rad[pl]:
                             ex0[pl], ey0[pl] = ex0[pl]*torch.cos(phi) +  ey0[pl]*torch.sin(phi), -ex0[pl]*torch.sin(phi) +  ey0[pl]*torch.cos(phi)
@@ -378,15 +409,22 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                             ex2[pl], ey2[pl] = ex2[pl]*torch.cos(phi) +  ey2[pl]*torch.sin(phi), -ex2[pl]*torch.sin(phi) +  ey2[pl]*torch.cos(phi)
                 
                 if BFP_version:
-                     '''version that is used for plotting the BFP intensity (no fft)'''
-                     E00 = torch.stack([ex0[ind,:,:] for ind in range(len(polar_projections))])
-                     E01 = torch.stack([ex1[ind,:,:] for ind in range(len(polar_projections))])
-                     E02 = torch.stack([ex2[ind,:,:] for ind in range(len(polar_projections))])
+                     '''version that is used for plotting the BFP intensity (no fft)
+                     version multiplane multi PSF
+                     each Exx is shape Kplanes, u, v
+                     adding the dim of NPSF artificially'''
+                     E00 = torch.stack([phase_maskx[ind]*zernike_mask_x[ind]*phase[ind]*ex0[ind,:,:] for ind in range(len(polar_projections))]).unsqueeze(1).expand(len(second_plane), len(xp), phi.shape[-1], phi.shape[-2])
+                     E01 = torch.stack([phase_maskx[ind]*zernike_mask_x[ind]*phase[ind]*ex1[ind,:,:] for ind in range(len(polar_projections))]).unsqueeze(1).expand(len(second_plane), len(xp), phi.shape[-1], phi.shape[-2])
+                     E02 = torch.stack([phase_maskx[ind]*zernike_mask_x[ind]*phase[ind]*ex2[ind,:,:] for ind in range(len(polar_projections))]).unsqueeze(1).expand(len(second_plane), len(xp), phi.shape[-1], phi.shape[-2])
                      
-                     E10 = torch.stack([ey0[ind,:,:] for ind in range(len(polar_projections))])
-                     E11 = torch.stack([ey1[ind,:,:] for ind in range(len(polar_projections))])
-                     E12 = torch.stack([ey2[ind,:,:] for ind in range(len(polar_projections))])
+                     E10 = torch.stack([phase_masky[ind]*zernike_mask_y[ind]*phase[ind]*ey0[ind,:,:] for ind in range(len(polar_projections))]).unsqueeze(1).expand(len(second_plane), len(xp), phi.shape[-1], phi.shape[-2])
+                     E11 = torch.stack([phase_masky[ind]*zernike_mask_y[ind]*phase[ind]*ey1[ind,:,:] for ind in range(len(polar_projections))]).unsqueeze(1).expand(len(second_plane), len(xp), phi.shape[-1], phi.shape[-2])
+                     E12 = torch.stack([phase_masky[ind]*zernike_mask_y[ind]*phase[ind]*ey2[ind,:,:] for ind in range(len(polar_projections))]).unsqueeze(1).expand(len(second_plane), len(xp), phi.shape[-1], phi.shape[-2])
+                     
                 else:
+                    '''version that is used for plotting the image plane intensity (fft)
+                    version multiplane multi PSF
+                    each Exx is shape Kplanes, NPSF, u, v'''
                     E00 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_maskx[ind]*zernike_mask_x[ind]*phase[ind]*ex0[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
                     E01 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_maskx[ind]*zernike_mask_x[ind]*phase[ind]*ex1[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
                     E02 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_maskx[ind]*zernike_mask_x[ind]*phase[ind]*ex2[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
@@ -394,8 +432,8 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                     E10 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_masky[ind]*zernike_mask_y[ind]*phase[ind]*ey0[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
                     E11 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_masky[ind]*zernike_mask_y[ind]*phase[ind]*ey1[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
                     E12 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_masky[ind]*zernike_mask_y[ind]*phase[ind]*ey2[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
-
-                ''' M is the matrix of the basis functions '''
+                ''' M is the matrix of the basis functions 
+                shape polar, 3, 3, Kplanes, NPSF, u, v'''
                 M = torch.permute(torch.stack([
                     torch.stack([torch.stack([E00*torch.conj(E00), E00*torch.conj(E01), E00*torch.conj(E02)]), 
                                   torch.stack([E01*torch.conj(E00), E01*torch.conj(E01), E01*torch.conj(E02)]), 
@@ -409,8 +447,8 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                 '''single plane sevral PSF'''
                 if BFP_version: 
                     '''version that is used for plotting the BFP intensity (no fft)'''
-                    Ex_bfp = torch.stack([Ex0, Ex1, Ex2], dim=0)
-                    Ey_bfp = torch.stack([Ey0, Ey1, Ey2], dim=0)
+                    Ex_bfp = torch.stack([Ex0*phase*phase_maskx*zernike_mask_x, Ex1*phase*phase_maskx*zernike_mask_x, Ex2*phase*phase_maskx*zernike_mask_x], dim=0)
+                    Ey_bfp = torch.stack([Ey0*phase_masky*zernike_mask_y*phase, Ey1*phase_masky*zernike_mask_y*phase, Ey2*phase_masky*zernike_mask_y*phase], dim=0)
                     
                     Mx = torch.einsum('abc, ubc -> aubc', torch.conj(Ex_bfp), Ex_bfp) 
                     My = torch.einsum('abc, ubc -> aubc', torch.conj(Ey_bfp), Ey_bfp)
@@ -446,9 +484,8 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
         
         if BFP_version:
             '''version that is used for plotting the BFP intensity (no fft)'''
-            Ex_bfp = np.array([Ex0, Ex1, Ex2])
-            Ey_bfp = np.array([Ey0, Ey1, Ey2])
-            
+            Ex_bfp = np.array([Ex0*phase*phase_maskx*zernike_mask_x, Ex1*phase*phase_maskx*zernike_mask_x, Ex2*phase*phase_maskx*zernike_mask_x])
+            Ey_bfp = np.array([Ey0*phase*phase_masky*zernike_mask_y, Ey1*phase*phase_masky*zernike_mask_y, Ey2*phase*phase_masky*zernike_mask_y])
             Mx = np.einsum('abc, ubc -> aubc', np.conj(Ex_bfp), Ex_bfp) 
             My = np.einsum('abc, ubc -> aubc', np.conj(Ey_bfp), Ey_bfp)
         else:
@@ -620,17 +657,3 @@ def noise(PSF, QE, EM, b, sigma_b, sigma_r, bias):
         background[background<0] = 0.
         noisy = poisson(PSF+background) + normal(0, sigma_r, PSF.shape) + bias
         return noisy
-
-    
-def upsample(u, v, PSF, factor):
-    device = PSF.device
-    N1 = u.shape[0]
-    N2 = u.shape[1]
-    u_, v_ = np.meshgrid(np.linspace(u[0,0], u[0,-1], N1*factor), np.linspace(v[0,0], v[-1,0], N2*factor))
-    PSF_ = np.zeros((2,factor*N1, factor*N2))
-    
-    for pol in [0,1]:
-        for i in range(N1*factor):
-            for j in range(N2*factor):
-                PSF_[pol,i,j] = PSF[pol, int((i)/factor), int((j)/factor)]
-    return u_, v_, torch.tensor(PSF_, requires_grad=True, device=device)
