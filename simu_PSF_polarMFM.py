@@ -336,14 +336,14 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
             if isinstance(phi, torch.Tensor):
                 '''torch case'''
                 if second_plane==None:
-                    zernike_mask_x = torch.ones(Ex0.shape[-1], Ex0.shape[-1])
-                    zernike_mask_y = torch.ones(Ex0.shape[-1], Ex0.shape[-1])
+                    zernike_mask_x = torch.ones(Ex0.shape[-1], Ex0.shape[-1]).to(device)
+                    zernike_mask_y = torch.ones(Ex0.shape[-1], Ex0.shape[-1]).to(device)
                 else:
                     ''' in case there are several planes, the parameters are lilstede in the plaene order 
                     (the same as in several_planes, which give the distance from plane to a fictive nominal plane, 
                      and polar_proj)'''
-                    zernike_mask_x = torch.ones(len(second_plane), Ex0.shape[-1], Ex0.shape[-1]).to(torch.complex64)
-                    zernike_mask_y = torch.ones(len(second_plane), Ex0.shape[-1], Ex0.shape[-1]).to(torch.complex64)
+                    zernike_mask_x = torch.ones(len(second_plane), Ex0.shape[-1], Ex0.shape[-1]).to(torch.complex64).to(device)
+                    zernike_mask_y = torch.ones(len(second_plane), Ex0.shape[-1], Ex0.shape[-1]).to(torch.complex64).to(device)
             else:
                 '''numpy case'''
                 zernike_mask_x = np.ones(Ex0.shape[-1], Ex0.shape[-1])
