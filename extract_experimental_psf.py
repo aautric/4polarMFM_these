@@ -29,8 +29,14 @@ def position_from_data(data, frame):
     x = data[data['frame']==frame]['x [nm]'].to_numpy()
     y = data[data['frame']==frame]['y [nm]'].to_numpy()
     z = data[data['frame']==frame]['z [nm]'].to_numpy()
-    rho = data[data['frame']==frame]['rho'].to_numpy()
-    delta = data[data['frame']==frame]['delta'].to_numpy()
+    if 'rho' in data.columns:
+        rho = data[data['frame']==frame]['rho'].to_numpy()
+    else:
+        rho = np.array([np.nan for i in range(len(x))])
+    if 'rho' in data.columns:
+        delta = data[data['frame']==frame]['delta'].to_numpy()
+    else:
+        delta = np.array([np.nan for i in range(len(x))])
     return x, y, z, rho, delta
 
 def extract_raw(path_raw):
