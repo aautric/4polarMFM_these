@@ -75,9 +75,17 @@ def vectorial_BFP_perfect_focus(N, NA=1.4, mag=100, lambd=617, f_tube=200, SAF=F
     Ey2[r>r_cut]=0.
     
     if J_dichroic is not None:
-        Ex0, Ey0 = J_dichroic[0,0]*Ex0+J_dichroic[0,1]*Ey0, J_dichroic[1,0]*Ex0+J_dichroic[1,1]*Ey0
-        Ex1, Ey1 = J_dichroic[0,0]*Ex1+J_dichroic[0,1]*Ey1, J_dichroic[1,0]*Ex1+J_dichroic[1,1]*Ey1
-        Ex2, Ey2 = J_dichroic[0,0]*Ex2+J_dichroic[0,1]*Ey2, J_dichroic[1,0]*Ex2+J_dichroic[1,1]*Ey2
+        Ex0_ = np.zeros((J_dichroic.shape[0], Ex0.shape[0], Ex0.shape[1])).astype(complex)
+        Ex1_ = np.zeros((J_dichroic.shape[0], Ex0.shape[0], Ex0.shape[1])).astype(complex)
+        Ex2_ = np.zeros((J_dichroic.shape[0], Ex0.shape[0], Ex0.shape[1])).astype(complex)
+        Ey0_ = np.zeros((J_dichroic.shape[0], Ex0.shape[0], Ex0.shape[1])).astype(complex)
+        Ey1_ = np.zeros((J_dichroic.shape[0], Ex0.shape[0], Ex0.shape[1])).astype(complex)
+        Ey2_ = np.zeros((J_dichroic.shape[0], Ex0.shape[0], Ex0.shape[1])).astype(complex)
+        for plane in range(J_dichroic.shape[0]):
+            Ex0_[plane], Ey0_[plane] = J_dichroic[plane,0,0]*Ex0+J_dichroic[plane,0,1]*Ey0, J_dichroic[plane,1,0]*Ex0+J_dichroic[plane,1,1]*Ey0
+            Ex1_[plane], Ey1_[plane] = J_dichroic[plane,0,0]*Ex1+J_dichroic[plane,0,1]*Ey1, J_dichroic[plane,1,0]*Ex1+J_dichroic[plane,1,1]*Ey1
+            Ex2_[plane], Ey2_[plane] = J_dichroic[plane,0,0]*Ex2+J_dichroic[plane,0,1]*Ey2, J_dichroic[plane,1,0]*Ex2+J_dichroic[plane,1,1]*Ey2
+        Ex0, Ex1, Ex2, Ey0, Ey1, Ey2 = Ex0_, Ex1_, Ex2_, Ey0_, Ey1_, Ey2_
     
     if isinstance(N, torch.Tensor):
         '''
@@ -265,7 +273,7 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
               phase_masky, zernike_base=None, zernike_coefs_x=None, zernike_coefs_y=None, 
               second_plane=None, polar_projections=None, lambd=617, 
               f_tube=200, device='cpu', BFP_version=False, 
-              SAF=False, costh2=None):
+              SAF=False, costh2=None, mode='polar projections'):
     ''' This function takes all the geometrical parameters, dipole position and focal plane
     It also takes the microcope-dependant fields Ex0 ...
     If xp, yp, ... are tensors of length N, then N psf are computed
@@ -390,16 +398,18 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                 ''' rotated polarizations as a function of the plane '''
                 polar_rad = (polar_projections=='rad')
                 polar_projections[polar_rad] = 0. # will be managed just after
-
-                polar_projections = torch.tensor(polar_projections.astype(float), device=device)
-                ex0 = torch.stack([torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex0 + torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey0 for ind in range(len(polar_projections))])
-                ex1 = torch.stack([torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex1 + torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey1 for ind in range(len(polar_projections))])
-                ex2 = torch.stack([torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex2 + torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey2 for ind in range(len(polar_projections))])
                 
-                ey0 = torch.stack([-torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex0 + torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey0 for ind in range(len(polar_projections))])
-                ey1 = torch.stack([-torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex1 + torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey1 for ind in range(len(polar_projections))])
-                ey2 = torch.stack([-torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex2 + torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey2 for ind in range(len(polar_projections))])
-                
+                if mode=='polar projections': # the simple case consists in projecting on different angles for each plane
+                # the update mode consists in calibrating each plane with a Stokes matrix, Then it is taken in account in the computation of Ex0 ...
+                    polar_projections = torch.tensor(polar_projections.astype(float), device=device)
+                    ex0 = torch.stack([torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex0 + torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey0 for ind in range(len(polar_projections))])
+                    ex1 = torch.stack([torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex1 + torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey1 for ind in range(len(polar_projections))])
+                    ex2 = torch.stack([torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex2 + torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey2 for ind in range(len(polar_projections))])
+                    
+                    ey0 = torch.stack([-torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex0 + torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey0 for ind in range(len(polar_projections))])
+                    ey1 = torch.stack([-torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex1 + torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey1 for ind in range(len(polar_projections))])
+                    ey2 = torch.stack([-torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex2 + torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey2 for ind in range(len(polar_projections))])
+                        
                 '''Managing the case of radial/azimuthal polar'''
                 if polar_rad.any(): 
                     for pl in range(len(second_plane)):
@@ -425,13 +435,21 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                     '''version that is used for plotting the image plane intensity (fft)
                     version multiplane multi PSF
                     each Exx is shape Kplanes, NPSF, u, v'''
-                    E00 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_maskx[ind]*zernike_mask_x[ind]*phase[ind]*ex0[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
-                    E01 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_maskx[ind]*zernike_mask_x[ind]*phase[ind]*ex1[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
-                    E02 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_maskx[ind]*zernike_mask_x[ind]*phase[ind]*ex2[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
-                    
-                    E10 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_masky[ind]*zernike_mask_y[ind]*phase[ind]*ey0[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
-                    E11 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_masky[ind]*zernike_mask_y[ind]*phase[ind]*ey1[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
-                    E12 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_masky[ind]*zernike_mask_y[ind]*phase[ind]*ey2[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
+                    if mode=='polar projections':
+                        E00 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_maskx[ind]*zernike_mask_x[ind]*phase[ind]*ex0[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
+                        E01 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_maskx[ind]*zernike_mask_x[ind]*phase[ind]*ex1[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
+                        E02 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_maskx[ind]*zernike_mask_x[ind]*phase[ind]*ex2[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
+                        
+                        E10 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_masky[ind]*zernike_mask_y[ind]*phase[ind]*ey0[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
+                        E11 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_masky[ind]*zernike_mask_y[ind]*phase[ind]*ey1[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
+                        E12 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_masky[ind]*zernike_mask_y[ind]*phase[ind]*ey2[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
+                    elif mode=='Stokes':
+                        E00 = torch.fft.fftshift(torch.fft.fft2(phase_maskx[:,None,:,:]*zernike_mask_x[:,None,:,:]*phase*Ex0[:,None,:,:]), dim=(-2, -1))
+                        E01 = torch.fft.fftshift(torch.fft.fft2(phase_maskx[:,None,:,:]*zernike_mask_x[:,None,:,:]*phase*Ex1[:,None,:,:]), dim=(-2, -1))
+                        E02 = torch.fft.fftshift(torch.fft.fft2(phase_maskx[:,None,:,:]*zernike_mask_x[:,None,:,:]*phase*Ex2[:,None,:,:]), dim=(-2, -1))
+                        E10 = torch.fft.fftshift(torch.fft.fft2(phase_masky[:,None,:,:]*zernike_mask_y[:,None,:,:]*phase*Ey0[:,None,:,:]), dim=(-2, -1))
+                        E11 = torch.fft.fftshift(torch.fft.fft2(phase_masky[:,None,:,:]*zernike_mask_y[:,None,:,:]*phase*Ey1[:,None,:,:]), dim=(-2, -1))
+                        E12 = torch.fft.fftshift(torch.fft.fft2(phase_masky[:,None,:,:]*zernike_mask_y[:,None,:,:]*phase*Ey2[:,None,:,:]), dim=(-2, -1))
                 ''' M is the matrix of the basis functions 
                 shape polar, 3, 3, Kplanes, NPSF, u, v'''
                 M = torch.permute(torch.stack([
