@@ -86,11 +86,11 @@ def vectorial_BFP_perfect_focus(N, NA=1.4, mag=100, lambd=617, f_tube=200, SAF=F
                 Ex0_[plane], Ey0_[plane] = J_dichroic[plane,0,0]*Ex0+J_dichroic[plane,0,1]*Ey0, J_dichroic[plane,1,0]*Ex0+J_dichroic[plane,1,1]*Ey0
                 Ex1_[plane], Ey1_[plane] = J_dichroic[plane,0,0]*Ex1+J_dichroic[plane,0,1]*Ey1, J_dichroic[plane,1,0]*Ex1+J_dichroic[plane,1,1]*Ey1
                 Ex2_[plane], Ey2_[plane] = J_dichroic[plane,0,0]*Ex2+J_dichroic[plane,0,1]*Ey2, J_dichroic[plane,1,0]*Ex2+J_dichroic[plane,1,1]*Ey2
-                Ex0, Ex1, Ex2, Ey0, Ey1, Ey2 = Ex0_, Ex1_, Ex2_, Ey0_, Ey1_, Ey2_
+            Ex0, Ex1, Ex2, Ey0, Ey1, Ey2 = Ex0_, Ex1_, Ex2_, Ey0_, Ey1_, Ey2_
         else:
-            Ex0_, Ey0_ = J_dichroic[0,0]*Ex0+J_dichroic[0,1]*Ey0, J_dichroic[1,0]*Ex0+J_dichroic[1,1]*Ey0
-            Ex1_, Ey1_ = J_dichroic[0,0]*Ex1+J_dichroic[0,1]*Ey1, J_dichroic[1,0]*Ex1+J_dichroic[1,1]*Ey1
-            Ex2_, Ey2_ = J_dichroic[0,0]*Ex2+J_dichroic[0,1]*Ey2, J_dichroic[1,0]*Ex2+J_dichroic[1,1]*Ey2
+            Ex0, Ey0 = J_dichroic[0,0]*Ex0+J_dichroic[0,1]*Ey0, J_dichroic[1,0]*Ex0+J_dichroic[1,1]*Ey0
+            Ex1, Ey1 = J_dichroic[0,0]*Ex1+J_dichroic[0,1]*Ey1, J_dichroic[1,0]*Ex1+J_dichroic[1,1]*Ey1
+            Ex2, Ey2 = J_dichroic[0,0]*Ex2+J_dichroic[0,1]*Ey2, J_dichroic[1,0]*Ex2+J_dichroic[1,1]*Ey2
     
     if isinstance(N, torch.Tensor):
         '''
