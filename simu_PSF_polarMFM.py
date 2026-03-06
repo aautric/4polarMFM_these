@@ -326,7 +326,8 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
         else:
             phase = np.exp(1j*(psi_f(th1, d, lambd=lambd)+psi_z(th1, zp, lambd=lambd)+psi_lat(xp,yp,th1,phi, lambd=lambd)))
         phase[np.isnan(phase)] = 0.
-        
+    #plt.imshow((psi_f(th1, d+second_plane[1], lambd=lambd)+psi_z(th1, zp, lambd=lambd)+psi_lat(xp,yp,th1,phi, lambd=lambd))[0], cmap='plasma')
+    #plt.show()
     ##############################################################################
     '''aberrations computations'''
     if zernike_base is not None:
@@ -449,6 +450,7 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                         E11 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_masky[ind]*zernike_mask_y[ind]*phase[ind]*ey1[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
                         E12 = torch.stack([torch.fft.fftshift(torch.fft.fft2(phase_masky[ind]*zernike_mask_y[ind]*phase[ind]*ey2[ind,:,:], dim=(-2, -1)), dim=(-2, -1)) for ind in range(len(polar_projections))])
                     elif mode=='Stokes':
+                        #print(phase_maskx[:,None,:,:].shape, zernike_mask_x[:,None,:,:].shape, phase.shape, Ex0[:,None,:,:].shape)
                         E00 = torch.fft.fftshift(torch.fft.fft2(phase_maskx[:,None,:,:]*zernike_mask_x[:,None,:,:]*phase*Ex0[:,None,:,:]), dim=(-2, -1))
                         E01 = torch.fft.fftshift(torch.fft.fft2(phase_maskx[:,None,:,:]*zernike_mask_x[:,None,:,:]*phase*Ex1[:,None,:,:]), dim=(-2, -1))
                         E02 = torch.fft.fftshift(torch.fft.fft2(phase_maskx[:,None,:,:]*zernike_mask_x[:,None,:,:]*phase*Ex2[:,None,:,:]), dim=(-2, -1))
