@@ -172,7 +172,7 @@ def psi_f(theta, d, lambd=0.617):
         else:
             return 2*np.pi*n2*np.cos(theta)*d/lambd
 
-def generate_zernike_base(r_cut, N, zernike_order=4, device='cpu'):
+def generate_zernike_base(r_cut, N, zernike_order=4, device='cpu', skip_indices = {0, 1, 2, 4}):
     cart = RZern(zernike_order)        
     if (device!='cpu') & (isinstance(N, torch.Tensor)):
         ddx = np.linspace(-r_cut.cpu(), r_cut.cpu(), N.cpu())
@@ -185,15 +185,16 @@ def generate_zernike_base(r_cut, N, zernike_order=4, device='cpu'):
     
     zernike_base = np.zeros(((zernike_order+1)*(zernike_order+2)//2, xv.shape[0], xv.shape[1]))
     zer = np.zeros(cart.nk)
-    for index in range(1,cart.nk):
-        zer[index]=1.
-        zernike_base[index] = cart.eval_grid(zer, matrix=True)
-        zernike_base[index][np.isnan(zernike_base[index])] = 0.
-        if isinstance(r_cut, torch.Tensor):
-            zernike_base[index][(xv**2+yv**2)>r_cut.cpu().numpy()**2]=0.
-        else:
-            zernike_base[index][(xv**2+yv**2)>r_cut**2]=0.
-        zer[index]=0.
+    for index in range(cart.nk):
+        if index not in skip_indices:
+            zer[index]=1.
+            zernike_base[index] = cart.eval_grid(zer, matrix=True)
+            zernike_base[index][np.isnan(zernike_base[index])] = 0.
+            if isinstance(r_cut, torch.Tensor):
+                zernike_base[index][(xv**2+yv**2)>r_cut.cpu().numpy()**2]=0.
+            else:
+                zernike_base[index][(xv**2+yv**2)>r_cut**2]=0.
+            zer[index]=0.
     if isinstance(r_cut, torch.Tensor):
         zernike_base = torch.tensor(zernike_base, device=device)
     return zernike_base
