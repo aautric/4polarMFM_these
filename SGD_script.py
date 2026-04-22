@@ -191,7 +191,7 @@ J_dichroic = np.array([J1, J2, J1])
 
 # %% SGD PARANETERS TO DEFINE
 Nphotons_speed1 = 10000
-bacground_speed = 40
+background_speed = 40
 LR1 = 0.03
 num_epochs_max1 = 100
 
@@ -346,7 +346,7 @@ for batch_number in range(N_batch):
 
     background_array = torch.tensor(background*np.ones((NPSF,3,2)) ,device=device).to(torch.float32)
     
-    params = torch.cat((x_start, y_start, z_exp, Nstart/Nphotons_speed1, background_array.flatten()/bacground_speed)).to(torch.float32)
+    params = torch.cat((x_start, y_start, z_exp, Nstart/Nphotons_speed1, background_array.flatten()/background_speed)).to(torch.float32)
     params.requires_grad=True
 
     angle_rd1 = torch.tensor([180. for k in range(NPSF)], requires_grad=False, device=device).to(torch.float32)
@@ -362,12 +362,12 @@ for batch_number in range(N_batch):
         optimizer.zero_grad()  # Reset gradients
         loss = loss_pos(params[0:NPSF], params[NPSF:2*NPSF], params[2*NPSF:3*NPSF], 
                            angle_rd2, angle_rd2, angle_rd1, params[3*NPSF:4*NPSF]*Nphotons_speed1, 
-                           noisy_psf, second_plane, params[4*NPSF:10*NPSF]*bacground_speed, sigma, dim_simu, plot=False)
+                           noisy_psf, second_plane, params[4*NPSF:10*NPSF]*background_speed, sigma, dim_simu, plot=False)
         loss_.append(loss.cpu().detach().numpy())
         z__.append(params[2*NPSF:3*NPSF].cpu().detach().numpy())
         N__.append((params[3*NPSF:4*NPSF]*Nphotons_speed1).cpu().detach().numpy())
         x__.append((params[0*NPSF:1*NPSF]).cpu().detach().numpy())
-        bck.append(params[4*NPSF:10*NPSF].cpu().detach().numpy()*bacground_speed)
+        bck.append(params[4*NPSF:10*NPSF].cpu().detach().numpy()*background_speed)
         loss.backward()
         optimizer.step()
     fig, ax = plt.subplots(2,3)
@@ -383,7 +383,7 @@ for batch_number in range(N_batch):
     y_found = params[NPSF:2*NPSF].detach()
     z_found = params[2*NPSF:3*NPSF].detach()
     N_found = params[3*NPSF:4*NPSF].detach()*Nphotons_speed1
-    background_array_found = params[4*NPSF:10*NPSF].detach()*bacground_speed
+    background_array_found = params[4*NPSF:10*NPSF].detach()*background_speed
     del(params, loss)
     
 
