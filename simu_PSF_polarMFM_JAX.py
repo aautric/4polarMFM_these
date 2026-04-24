@@ -26,6 +26,7 @@ def vectorial_BFP_perfect_focus_jax(
     mag: float = 100.0,
     lambd_nm: float = 617.0,
     f_tube_mm: float = 200.0,
+    J_dichroic=jnp.array([[[1,0],[0,1]],[[1,0],[0,1]],[[1,0],[0,1]]]),
     dtype=jnp.float32,
 ):
     """
@@ -60,7 +61,7 @@ def vectorial_BFP_perfect_focus_jax(
     Ts = jnp.where(r < r_cut, (2.0 * n2 * cos_th2) / (n2 * cos_th2 + n1 * cos_th1), 0.0)
     Tp = jnp.where(r < r_cut, (2.0 * n2 * cos_th2) / (n2 * cos_th1 + n1 * cos_th2), 0.0)
 
-    sqrt_cos_th1 = jnp.sqrt(jnp.clip(cos_th1, a_min=1e-12))  # stable sqrt
+    sqrt_cos_th1 = jnp.sqrt(jnp.clip(cos_th1, min=1e-12))  # stable sqrt
 
     # components
     sin_phi = jnp.sin(phi)
@@ -85,8 +86,24 @@ def vectorial_BFP_perfect_focus_jax(
     Ey0 *= mask
     Ey1 *= mask
     Ey2 *= mask
+    
+    # J_dichroic: (planes, 2, 2), E: (H, W)
+    # Stack E fields into (2, H, W) then apply Jones matrix
+    E0 = jnp.stack([Ex0, Ey0])  # (2, H, W)
+    E1 = jnp.stack([Ex1, Ey1])
+    E2 = jnp.stack([Ex2, Ey2])
+    
+    # einsum: for each plane, apply 2x2 Jones matrix to 2xHxW field
+    E0_ = jnp.einsum('pij,jhw->pihw', J_dichroic, E0)  # (planes, 2, H, W)
+    E1_ = jnp.einsum('pij,jhw->pihw', J_dichroic, E1)
+    E2_ = jnp.einsum('pij,jhw->pihw', J_dichroic, E2)
+    
+    # unpack
+    Ex0_, Ey0_ = E0_[:,0], E0_[:,1]
+    Ex1_, Ey1_ = E1_[:,0], E1_[:,1]
+    Ex2_, Ey2_ = E2_[:,0], E2_[:,1]
 
-    return x, y, th1, phi, (Ex0, Ex1, Ex2), (Ey0, Ey1, Ey2), r, r_cut, k, f_o
+    return x, y, th1, phi, (Ex0_, Ex1_, Ex2_), (Ey0_, Ey1_, Ey2_), r, r_cut, k, f_o
 
 def psi_lat_jax(x, y, theta, phi, lambd=0.617):
     """
@@ -127,7 +144,7 @@ psi_f_jit = jax.jit(psi_f_jax)
 psi_z_jit = jax.jit(psi_z_jax)
 psi_lat_jit = jax.jit(psi_lat_jax)
 
-def generate_zernike_base_jax(r_cut, N, zernike_order=4, device='cpu'):
+def generate_zernike_base_jax(r_cut, N, zernike_order=4, skip_indices = {0, 1, 2, 4}):
     cart = RZern(zernike_order)       
     ddx = np.linspace(-r_cut, r_cut, N)
     ddy = np.linspace(-r_cut, r_cut, N)
@@ -136,12 +153,13 @@ def generate_zernike_base_jax(r_cut, N, zernike_order=4, device='cpu'):
     
     zernike_base = np.zeros(((zernike_order+1)*(zernike_order+2)//2, xv.shape[0], xv.shape[1]))
     zer = np.zeros(cart.nk)
-    for index in range(1,cart.nk):
-        zer[index]=1.
-        zernike_base[index] = cart.eval_grid(zer, matrix=True)
-        zernike_base[index][np.isnan(zernike_base[index])] = 0.
-        zernike_base[index][(xv**2+yv**2)>r_cut**2]=0.
-        zer[index]=0.
+    for index in range(cart.nk):
+        if index not in skip_indices:
+            zer[index]=1.
+            zernike_base[index] = cart.eval_grid(zer, matrix=True)
+            zernike_base[index][np.isnan(zernike_base[index])] = 0.
+            zernike_base[index][(xv**2+yv**2)>r_cut**2]=0.
+            zer[index]=0.
     return jnp.array(zernike_base)
 
 def padding_jax(r, r_cut, k, f_o,  N=80, l_pixel=16, NA=1.4, mag=100, lambd=617, 
@@ -174,9 +192,9 @@ def pad_jax(a, n):
 # Npadding is used as a global variable
 
 def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u, v,
-                  zernike_base, zernike_coefs_x=jnp.zeros((3,15)), zernike_coefs_y=jnp.zeros((3,15)), 
+                  zernike_base=None, zernike_coefs_x=None, zernike_coefs_y=None, 
                   phase_maskx=None, phase_masky=None, lambd=617, f_tube=200,
-              second_plane=jnp.array([-0.35, 0, 0.35]), polar_projections=jnp.array([0., 45., 0.]), device='cpu', BFP_version=False, 
+              second_plane=jnp.array([-0.35, 0, 0.35]), polar_projections=jnp.array([0., 45., 0.]), BFP_version=False, 
               SAF=False, costh2=None):
     """
     JAX version of compute_M for multiple PSFs and multiple planes, fully JIT-compatible.
@@ -195,9 +213,14 @@ def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u
     # dim 3, N, Npix, Npix
     phase = jax.vmap(phase_per_plane)(jnp.array(second_plane))  # 3 planes
 
-    # --- Zernike masks --- dim 3, Npix, Npix
-    zernike_mask_x = jnp.exp(1j * jnp.einsum('pa,auv->puv', zernike_coefs_x, zernike_base))
-    zernike_mask_y = jnp.exp(1j * jnp.einsum('pa,auv->puv', zernike_coefs_y, zernike_base))
+    # --- Zernike masks --- dim 15, Npix, Npix
+    '''aberrations computations'''
+    if zernike_base is not None:
+        zernike_mask_x = jnp.exp(1j * jnp.einsum('pa,auv->puv', zernike_coefs_x, zernike_base))
+        zernike_mask_y = jnp.exp(1j * jnp.einsum('pa,auv->puv', zernike_coefs_y, zernike_base))
+    else:
+        zernike_mask_x = jnp.ones((Ex0.shape[-1], Ex0.shape[-1]))
+        zernike_mask_y = jnp.ones((Ex0.shape[-1], Ex0.shape[-1]))
     
     # --- total phase mask --- dim N, 3, uv for each polar
     total_phase_x = jnp.einsum('pnuv, puv -> npuv', phase, zernike_mask_x)
@@ -206,6 +229,7 @@ def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u
         total_phase_x = jnp.einsum('npuv, puv -> npuv', total_phase_x, phase_maskx)
         total_phase_y = jnp.einsum('npuv, puv -> npuv', total_phase_y, phase_maskx)
     
+    '''  version before the Stokes matrix version
     # --- Polarization rotations (numeric, JIT-friendly) ---
 
     def rotate_fields(Ex_list, Ey_list, proj): # for 1 given projection angle
@@ -220,9 +244,11 @@ def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u
         return rotate_fields([Ex0, Ex1, Ex2], [Ey0, Ey1, Ey2], polar_projections[plane_idx])
 
     ex_stack, ey_stack = jax.vmap(rotated_plane)(jnp.arange(len(second_plane))) # dim p, 3, Npix, Npix
-    
-    E_ex = jnp.fft.fftshift(jnp.fft.fft2(jnp.einsum('pauv, npuv -> napuv', ex_stack, total_phase_x)), axes=(-2,-1))
-    E_ey = jnp.fft.fftshift(jnp.fft.fft2(jnp.einsum('pauv, npuv -> napuv', ey_stack, total_phase_y)), axes=(-2,-1))
+    '''
+    ex_stack = jnp.array([Ex0, Ex1, Ex2])
+    ey_stack = jnp.array([Ey0, Ey1, Ey2])
+    E_ex = jnp.fft.fftshift(jnp.fft.fft2(jnp.einsum('apuv, npuv -> napuv', ex_stack, total_phase_x)), axes=(-2,-1))
+    E_ey = jnp.fft.fftshift(jnp.fft.fft2(jnp.einsum('apuv, npuv -> napuv', ey_stack, total_phase_y)), axes=(-2,-1))
     
     # --- Compute M matrices ---
     def compute_plane_M(Eplane): 
@@ -303,7 +329,7 @@ def PSF_jax(rho, eta, delta, M, N_photons=1000):
         rotated = jnp.einsum('da,acpquv->dcpquv', Rpol.transpose(1,0), jnp.einsum('pqabuv,bc->acpquv', Mpol, Rpol * lam_exppol))
         diag = jnp.diagonal(rotated, axis1=0, axis2=1)  # take diagonal over rotated 3x3
         psf = jnp.sum(diag, axis=-1)  # sum over eigenvalues
-        return jnp.clip(jnp.real(psf), a_min=0.0)
+        return jnp.clip(jnp.real(psf), min=0.0)
 
     psf = jax.vmap(psf_projection)(M, R, lam_exp)
 
@@ -331,18 +357,18 @@ def noise_jax(key, PSF, QE=1.0, EM=1.0, b=0.0, sigma_b=0.0, sigma_r=0.0, bias=0.
     
     # Gaussian background
     background = b + sigma_b * random.normal(key_b, PSF.shape)
-    background = jnp.clip(background, a_min=0.0)
+    background = jnp.clip(background, min=0.0)
     
     # Poisson shot noise
     lam = PSF + background
-    lam = jnp.clip(lam, a_min=1e-6)  # prevent zero
+    lam = jnp.clip(lam, min=1e-6)  # prevent zero
     poiss = random.poisson(key_poiss, lam)
     
     # Gaussian read noise
     read = sigma_r * random.normal(key_r, PSF.shape)
     
     # Gamma excess noise from EM gain
-    gamma_conc = jnp.clip(poiss * QE, a_min=1e-6)
+    gamma_conc = jnp.clip(poiss * QE, min=1e-6)
     gamma_rate = EM
     # sample Gamma: Gamma(k, theta) with mean k*theta; JAX uses concentration, rate
     excess = random.gamma(key_gamma, gamma_conc) / gamma_rate
