@@ -418,6 +418,7 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                     ey1 = torch.stack([-torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex1 + torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey1 for ind in range(len(polar_projections))])
                     ey2 = torch.stack([-torch.sin((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ex2 + torch.cos((polar_projections[ind]).to(torch.complex64)*torch.pi/180)*Ey2 for ind in range(len(polar_projections))])
                         
+                # nothing needed for mode Stokes
                 '''Managing the case of radial/azimuthal polar'''
                 if polar_rad.any(): 
                     for pl in range(len(second_plane)):
