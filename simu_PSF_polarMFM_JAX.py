@@ -36,6 +36,7 @@ def vectorial_BFP_perfect_focus_jax(
     - NA, mag, lambd_nm (nm), f_tube_mm (mm), refractive indices n1,n2
     - returns: x, y, th1, phi, (Ex0,Ex1,Ex2), (Ey0,Ey1,Ey2), r, r_cut, k, f_o
     """
+    print("Compiling vectorial_BFP_perfect_focus_jax")
     # convert units
     lambd = jnp.array(1e-3 * lambd_nm, dtype=dtype)      # nm -> um
     f_tube = jnp.array(1000.0 * f_tube_mm, dtype=dtype)  # mm -> um
@@ -114,7 +115,7 @@ def psi_lat_jax(x, y, theta, phi, lambd=0.617):
         - 2D grids x,y
         - theta, phi arrays (broadcasting)
     """
-
+    print("Compiling psi_lat_jax")
     phase = jnp.einsum('bc,abc->abc', jnp.sin(theta), (jnp.einsum('a,bc->abc', x, jnp.cos(phi)) +jnp.einsum('a,bc->abc', y, jnp.sin(phi))))
     return phase * (2*jnp.pi*n1) / lambd
 
@@ -123,7 +124,7 @@ def psi_z_jax(theta, z, lambd=0.617):
     JAX version of psi_z (Yan et al. corrected)
     Computes the phase term along z for vectorial PSF simulations.
     """
-
+    print("Compiling psi_z_jax")
     sqrt_term = jnp.sqrt(1 - (n1 * jnp.sin(theta) / n2)**2)
     factor = 2 * jnp.pi * n2 / lambd
     # If z is scalar, broadcast automatically
@@ -135,7 +136,7 @@ def psi_f_jax(theta, d, lambd=0.617):
     JAX version of psi_f (Yan et al. corrected)
     Computes the phase term along the focal region for vectorial PSF simulations.
     """
-
+    print("Compiling psi_f_jax")
     # Refractive index depending on sign of d
     n = n1 + (n2 - n1) * (1 + jnp.sign(d)) / 2
     return d * 2 * jnp.pi * n * jnp.cos(theta) / lambd
@@ -145,6 +146,7 @@ psi_z_jit = jax.jit(psi_z_jax)
 psi_lat_jit = jax.jit(psi_lat_jax)
 
 def generate_zernike_base_jax(r_cut, N, zernike_order=4, skip_indices = {0, 1, 2, 4}):
+    print("Compiling generate_zernike_base_jax")
     cart = RZern(zernike_order)       
     ddx = np.linspace(-r_cut, r_cut, N)
     ddy = np.linspace(-r_cut, r_cut, N)
@@ -164,6 +166,7 @@ def generate_zernike_base_jax(r_cut, N, zernike_order=4, skip_indices = {0, 1, 2
 
 def padding_jax(r, r_cut, k, f_o,  N=80, l_pixel=16, NA=1.4, mag=100, lambd=617, 
               f_tube=200, MAG=200/150, device='cpu'):
+    print("Compiling padding_jax")
     lambd = 10**(-3)*lambd # conversion nm to micrometers
     f_tube = f_tube*1000 # tube length focal. everything is in micrometers
     # --- Padding and frequency grid ---
@@ -174,8 +177,10 @@ def padding_jax(r, r_cut, k, f_o,  N=80, l_pixel=16, NA=1.4, mag=100, lambd=617,
     u, v = jnp.meshgrid(freq, freq)
     return u, v, Npadding
 
+#@partial(jax.jit, static_argnums=(1,))
 def pad_jax(a, n):
     """Traceable JAX padding."""
+    print("Compiling pad_jax")
     if a.ndim == 2:
         padded = jnp.zeros((a.shape[0] + n, a.shape[1] + n), dtype=a.dtype)
         padded = padded.at[n//2:-n//2, n//2:-n//2].set(a)
@@ -200,6 +205,7 @@ def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u
     JAX version of compute_M for multiple PSFs and multiple planes, fully JIT-compatible.
     Returns u, v coordinates and M matrix of shape (N_psf, K_plane, 2, 3, 3, N_pix, N_pix)
     """
+    print("Compiling compute_M_jax")
     lambd = 10**(-3)*lambd # conversion nm to micrometers
     f_tube = f_tube*1000 # tube length focal. everything is in micrometers
     # --- Phase for all planes (vectorized with vmap) ---
@@ -287,7 +293,7 @@ def PSF_jax(rho, eta, delta, M, N_photons=1000):
     psf : array, shape (N_psf, K_plane, 2, Nx, Ny)
         PSF for each PSF and plane, for two polarization projections.
     """
-
+    print(f"Compiling PSF_jax - shapes: rho={rho.shape}, eta={eta.shape}, delta={delta.shape}, M={M.shape}, N_photons={type(N_photons)}")
     # Convert angles to radians
     rho = jnp.deg2rad(rho)
     eta = jnp.deg2rad(eta)

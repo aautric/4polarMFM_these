@@ -448,7 +448,7 @@ for batch_number in range(N_batch):
     M = compute_M(xp=x_found, yp=y_found, zp=z_found, d=d_, x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2
                     , Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, r=r, r_cut=r_cut, k=k_, f_o=f_o, phase_maskx=phase_mask, phase_masky=phase_mask, zernike_base=zernike_base, zernike_coefs_x=zernike_coefs_x, zernike_coefs_y=zernike_coefs_x,
                         second_plane=second_plane, polar_projections=polar_projections, lambd=lambd, f_tube=f_tube, device=device, mode=mode)
-    score = score_eval(M.detach().cpu(), rho_found.cpu(), eta_found.cpu(), delta_found.cpu(), N_found2.cpu(), noisy_psf.cpu(), background, sigma, dim_simu)
+    score = score_eval(M.detach().cpu(), rho_found.cpu(), eta_found.cpu(), delta_found.cpu(), N_found2.cpu(), noisy_psf.cpu(), background_array_found.cpu(), sigma, dim_simu)
     x_ = (x/120).astype(int)*120 + 1000*x_found.cpu().detach().numpy()
     y_ = (y/120).astype(int)*120 + 1000*y_found.cpu().detach().numpy()
     np.savez_compressed(save_folder+'\\'+str(int(batch_number)+1+batch_offset)+'.npz', frame = Nframe*(batch_number+batch_offset)+index_frame, x=x_, y=y_, z=1000*z_found.cpu().detach().numpy(), N_photons=N_found2.cpu().detach().numpy(), rho=rho_found.cpu().detach().numpy(), eta=eta_found.cpu().detach().numpy(), delta=delta_found.cpu().detach().numpy(), score=score, x_start=x, y_start=y, z_start=z, rho_start=rho, delta_start=delta, background_array_found=background_array_found.cpu().detach().numpy())

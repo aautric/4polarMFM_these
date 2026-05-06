@@ -22,6 +22,7 @@ import copy
 from tqdm import tqdm
 import shutil
 import functools
+import threading
 # %% PARAMETERS TO BE DEFINED
 
 QE = 0.92
@@ -82,7 +83,7 @@ def limit(x, lim, slope, upper=True):
     else:
         return jnp.sum(jnp.exp(-1*(x-lim)*slope))
     
-def loss_pos(params, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, sigma, dim_simu, plot):
+def loss_pos(params, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, sigma, dim_simu, d_, plot):
     Mj = compute_M_jax(xp=params['xp'], yp=params['yp'], zp=params['zp'], d=d_, x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2
                     , Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, phase_maskx=phase_mask, phase_masky=phase_mask, zernike_base=zernike_base, zernike_coefs_x=zernike_coefs_x, zernike_coefs_y=zernike_coefs_y
                     , second_plane=second_plane, polar_projections=polar_projections, lambd=lambd, f_tube=f_tube)
@@ -97,7 +98,7 @@ def loss_pos(params, Nphotons_speed1, background_speed, rho, eta, delta, data, s
     z_bound = limit(params['zp'], 5., 100, upper=True) + limit(params['zp'], 0, 100, upper=False)
     return (loss +x_bound+y_bound+z_bound).astype(jnp.float32)
 
-def loss_angle_with_M(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, data, background, sigma, dim_simu, plot):
+def loss_angle_with_M(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, data, background, sigma, dim_simu, d_, plot):
     dim_data = 6
     dim_simu = int(dim_simu)
     Mj = compute_M_jax(xp=params['x']*xy_speed2, yp=params['y']*xy_speed2, zp=params['z']*z_speed2, d=d_, x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2
@@ -106,7 +107,7 @@ def loss_angle_with_M(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2,
     h = PSF_jax(rho=params['rho'], eta=params['eta'], delta=params['delta']*delta_speed, M=Mj, N_photons=params['N_photons']*nphotons_speed2)[:,:,:,dim_simu-dim_data:dim_simu+dim_data+1,dim_simu-dim_data:dim_simu+dim_data+1]
     
     loss = jnp.sum(jnp.pow(jnp.sum(jnp.add(h+jnp.reshape(background, (h.shape[0],3,2))[:, :, :, None, None], -data), axis=(2,)), 2))
-    delta_bound = limit(delta, 180, 100, upper=True) + limit(delta, 1, 100, upper=False)
+    delta_bound = limit(params['delta'], 180, 100, upper=True) + limit(params['delta'], 1, 100, upper=False)
     if plot:
         for nb in range(data.shape[0]):
             maxi = max(np.max(data[nb,:,:].flatten()), np.max(h[nb,:,:].flatten()))
@@ -142,12 +143,21 @@ def loss_angle_with_M(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2,
             del(fig, ax)
     return (loss + 1000.*(delta_bound)).astype(jnp.float32) 
 
+@functools.partial(jax.jit, static_argnames=['dim_simu'])
 def score_eval(M_, rho, eta, delta, N_photons, data, background, sigma, dim_simu):
     dim_data = 6
     h = PSF_jax(rho=rho, eta=eta, delta=delta, M=M_, N_photons=N_photons)[:,:,:,dim_simu-dim_data:dim_simu+dim_data+1,dim_simu-dim_data:dim_simu+dim_data+1]
-    score = jnp.sum(jnp.add(h, -(data+sigma**2)*jnp.log(h+background+sigma**2)), axis=(1,2,3,4))
+    score = jnp.sum(jnp.add(h, -(data+sigma**2)*jnp.log(h+jnp.reshape(background, (h.shape[0],3,2))[:, :, :, None, None]+sigma**2)), axis=(1,2,3,4))
     return score
 
+@functools.partial(jax.jit, static_argnames=['dim_simu'])
+def eval_batch(x_found, y_found, z_found, zernx, zerny, rho_found, eta_found, delta_found, N_found2, noisy_psf, background, sigma, dim_simu):
+    M = compute_M_jax(xp=x_found, yp=y_found, zp=z_found, d=d_, x=xx, y=yy, th1=th1, phi=phi, 
+                      Ex0=Ex0, Ex1=Ex1, Ex2=Ex2, Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, 
+                      zernike_base=zernike_base, zernike_coefs_x=zernx, zernike_coefs_y=zerny,
+                      second_plane=second_plane, polar_projections=polar_projections, 
+                      lambd=lambd, f_tube=f_tube)
+    return score_eval(M, rho_found, eta_found, delta_found, N_found2, noisy_psf, background, sigma, dim_simu)
 #%% extracting positions/pre-loc
 
 data = pos_from_csv(path_info)
@@ -156,7 +166,7 @@ data = pos_from_csv(path_info)
 
 jax.clear_caches()
 intermediate_folder = '/mnt/c/Users/Amaury/Documents/Github/4polarMFM_these/working_folder_jax_sgd'
-shutil.rmtree(intermediate_folder)       # delete the folder
+#shutil.rmtree(intermediate_folder)       # delete the folder
 os.makedirs(intermediate_folder)
 index_psf = 0
 
@@ -199,7 +209,7 @@ for batch_number in tqdm(range(N_batch)):
     for ii in range(NPSF):
         #print(ii)
         np.savez_compressed(intermediate_folder+'/'+str(index_psf+ii)+'.npz',
-                            single_psf=single_psf[ii], x=x[ii], y=y[ii], sigma=sigma, background=background)
+                            single_psf=single_psf[ii], x=x[ii], y=y[ii], sigma=sigma, background=background, frame=Nframe*(batch_number)+index_frame)
     index_psf+=NPSF
 
 #%% defining useful variables
@@ -226,22 +236,24 @@ J_dichroic = jnp.array([J1, J2, J1])
 Nphotons_speed1 = jax.device_put(10000)
 background_speed = jax.device_put(40)
 LR1 = jax.device_put(0.03)
-num_epochs_max1 = jax.device_put(100)
+num_epochs_max1 = 100
 
-num_epochs_max2 = jax.device_put(200)
-LR2 = jax.device_put(0.7)
+num_epochs_max2 = 150
+LR2 = jax.device_put(0.8)
 delta_speed = jax.device_put(1.)
 nphotons_speed2 = jax.device_put(100)
-xy_speed2 = jax.device_put(1/30)
-z_speed2=jax.device_put(1)
+xy_speed2 = jax.device_put(1/50)
+z_speed2=jax.device_put(1/30)
+
+threading = False
 
 save_folder = '/mnt/z/DATA/polMFM_experimental_processed/these_4polar_MFM/test_jax'
 #%%   #################### gradient descent ##################
-
+intermediate_folder = '/mnt/c/Users/Amaury/Documents/Github/4polarMFM_these/working_folder_jax_sgd'
 NPSF = 100
 
 # microscope parameters
-d_ = -jax.device_put(d[1])
+d_ = -float(d[1])#-jax.device_put(d[1])
 second_plane = jax.device_put(jnp.array([d[1]-d[0], 0, d[1]-d[2]]))
 polar_projections = jax.device_put(jnp.array([0, 45, 0]))
 
@@ -304,41 +316,94 @@ htest = PSF_jax(rho=rho_start, eta=eta_start, delta=delta_start, M=Mtest, N_phot
 
 dim_simu = int(htest.shape[-1]//2)
 
-N_total = 1000000
-
-index_psf=0
-for batch_start in range(0, N_total, NPSF):
-    batch_end = min(batch_start + NPSF, N_total)
-    print(f'Loading batch {batch_start} to {batch_end-1}')
-    single_psf = np.zeros((NPSF, 3, 2, 13, 13))
+def load_batch(index_psf, NPSF, result):
+    noisy_psf = np.zeros((NPSF, 3, 2, 13, 13))
     x = np.zeros(NPSF)
     y = np.zeros(NPSF)
     for ii in range(NPSF):
         data__ = np.load(intermediate_folder + '/' + str(index_psf + ii) + '.npz')
-        single_psf[ii] = data__['single_psf']
+        noisy_psf[ii] = data__['single_psf']
         x[ii] = data__['x']
         y[ii] = data__['y']
         background = data__['background']
         sigma = data__['sigma']
-    index_psf+=NPSF
-
-    single_psf = jnp.array(single_psf)
-    x = jnp.array(x)
-    y = jnp.array(y)
-
-    Nstart_by_plane = copy.deepcopy(np.sum(single_psf, axis=(2,3,4)) - background*len(single_psf[0,0].flatten()))
+        #frame = data__['frame']
+    
+    noisy_psf_jax = jnp.array(noisy_psf)
+    x_jax = jnp.array(x)
+    y_jax = jnp.array(y)
+    Nstart_by_plane = np.sum(noisy_psf, axis=(2,3,4)) - background*len(noisy_psf[0,0].flatten())
     Nstart = jnp.array(jnp.sum(Nstart_by_plane, axis=1)).astype(jnp.float32)
-
-    # convert to tensor
-    noisy_psf = jnp.array(jnp.array([single_psf[k] for k in range(NPSF)]))
-
     background_array = jnp.array(background*jnp.ones((NPSF,3,2))).astype(jnp.float32)
+
+    result['noisy_psf'] = noisy_psf_jax
+    result['x'] = x_jax
+    result['y'] = y_jax
+    result['Nstart'] = Nstart
+    result['background_array'] = background_array
+    result['sigma'] = jnp.array(sigma)
+
+# functions for the SGD steps
+@functools.partial(jax.jit, static_argnames=['dim_simu', 'd_', 'plot'])#, donate_argnums=(0, 1))
+def step1(params, opt_state, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, sigma, dim_simu, d_, plot):
+    loss, grads = jax.value_and_grad(loss_pos)(params, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, sigma, dim_simu, d_, plot)
+    updates, opt_state = optimizer1.update(grads, opt_state, params)
+    params = optax.apply_updates(params, updates)
+    return params, opt_state, loss
+
+@functools.partial(jax.jit, static_argnames=['dim_simu', 'd_', 'plot'])#, donate_argnums=(0, 1))
+def step2(params, opt_state, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, data, background, sigma, dim_simu, d_, plot):
+    loss, grads = jax.value_and_grad(loss_angle_with_M)(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, data, background, sigma, dim_simu, d_, plot)
+    updates, opt_state = optimizer2.update(grads, opt_state, params)
+    params = optax.apply_updates(params, updates)
+    return params, opt_state, loss
+
+optimizer1 = optax.adam(learning_rate=LR1)
+optimizer2 = optax.adam(learning_rate=LR2)
+
+# --- main loop ---
+N_total = 1000000
+batch_offset = 0
+index_psf = 0
+batches = range(0 + batch_offset*NPSF, N_total + batch_offset*NPSF, NPSF)
+
+if threading:
+    # preload first batch
+    next_result = {}
+    next_thread = threading.Thread(target=load_batch, args=(index_psf, NPSF, next_result))
+    next_thread.start()
+    index_psf += NPSF
+
+for batch_start in batches:
+    batch_end = min(batch_start + NPSF, N_total)
+    print(f'Loading batch {batch_start} to {batch_end-1}')
+    if threading:
+        # wait for current batch to be ready
+        next_thread.join()
+        current = next_result
+    
+        # start loading next batch in background
+        if batch_start + NPSF < N_total + batch_offset*NPSF:
+            next_result = {}
+            next_thread = threading.Thread(target=load_batch, args=(index_psf, NPSF, next_result))
+            next_thread.start()
+            index_psf += NPSF
+    else:
+        current = {}
+        load_batch(index_psf, NPSF, current)
+        index_psf += NPSF
+    # build params from current batch
+    noisy_psf = current['noisy_psf']  
+    sigma = current['sigma']        
+    x = current['x']  
+    y = current['y']  
+    #frame = current['frame']  
     params = {
-    'xp': x_start,
-    'yp': y_start,
-    'zp': z_exp,
-    'N_photons': Nstart/Nphotons_speed1,
-    'background': background_array.flatten()/background_speed
+        'xp': x_start,
+        'yp': y_start,
+        'zp': z_exp,
+        'N_photons': current['Nstart'] / Nphotons_speed1,
+        'background': current['background_array'].flatten() / background_speed
     }
 
     angle_rd1 = jnp.array([180. for k in range(NPSF)]).astype(jnp.float32)
@@ -351,19 +416,14 @@ for batch_start in range(0, N_total, NPSF):
     N__ = []
     x__ =[]
     bck = []
-    @functools.partial(jax.jit, static_argnames=['dim_simu', 'plot'])
-    def step(params, opt_state, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, sigma, dim_simu, plot):
-        loss, grads = jax.value_and_grad(loss_pos)(params, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, sigma, dim_simu, plot)
-        updates, opt_state = optimizer.update(grads, opt_state, params)
-        params = optax.apply_updates(params, updates)
-        return params, opt_state, loss
+    
     for i in tqdm(range(num_epochs_max1)):
-        params, opt_state, loss = step(params, opt_state, Nphotons_speed1, background_speed, angle_rd2, angle_rd2, angle_rd1, noisy_psf, second_plane, sigma, dim_simu, plot=False)
-        loss_.append(loss)
-        z__.append(params['zp'])
-        N__.append((params['N_photons']*Nphotons_speed1))
-        x__.append((params['xp']))
-        bck.append(params['background']*background_speed)
+        params, opt_state, loss = step1(params, opt_state, Nphotons_speed1, background_speed, angle_rd2, angle_rd2, angle_rd1, noisy_psf, second_plane, sigma, dim_simu, d_, plot=False)
+        loss_.append(float(loss))
+        z__.append(np.array(params['zp']))
+        N__.append(np.array(params['N_photons'] * Nphotons_speed1))
+        x__.append(np.array(params['xp']))
+        bck.append(np.array(params['background'] * background_speed))
     
     fig, ax = plt.subplots(2,3)
     ax[0,0].plot(loss_)
@@ -377,8 +437,8 @@ for batch_start in range(0, N_total, NPSF):
     x_found = params['xp']
     y_found = params['yp']
     z_found = params['zp']
-    N_found = params['N_photons']*Nphotons_speed1
-    background_array_found = params['background']*background_speed
+    N_found = params['N_photons'] * Nphotons_speed1
+    background_array_found = params['background'] * background_speed
     del(params, loss)
     
 
@@ -407,21 +467,15 @@ for batch_start in range(0, N_total, NPSF):
     z_ = []
     Np_ = []
     
-    @functools.partial(jax.jit, static_argnames=['dim_simu', 'plot'])
-    def step(params, opt_state, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, data, background, sigma, dim_simu, plot):
-        loss, grads = jax.value_and_grad(loss_angle_with_M)(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, data, background, sigma, dim_simu, plot)
-        updates, opt_state = optimizer.update(grads, opt_state, params)
-        params = optax.apply_updates(params, updates)
-        return params, opt_state, loss
-    for i in tqdm(range(num_epochs_max1)):
-        params, opt_state, loss = step(params, opt_state, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern_x, zern_y, noisy_psf, background_array_found, sigma, dim_simu, plot=False)
-        loss_.append(loss)
-        eta_.append(params['eta'])
-        rho_.append(params['rho'])
-        delta_.append(params['delta']*delta_speed)
-        x_.append(params['x']*xy_speed2)
-        z_.append(params['z']*z_speed2)
-        Np_.append(params['N_photons']*nphotons_speed2)
+    for i in tqdm(range(num_epochs_max2)):
+        params, opt_state, loss = step2(params, opt_state, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern_x, zern_y, noisy_psf, background_array_found, sigma, dim_simu, d_, plot=False)
+        loss_.append(float(loss))
+        eta_.append(np.array(params['eta']))
+        rho_.append(np.array(params['rho']))
+        delta_.append(np.array(params['delta'] * delta_speed))
+        x_.append(np.array(params['x'] * xy_speed2))
+        z_.append(np.array(params['z'] * z_speed2))
+        Np_.append(np.array(params['N_photons'] * nphotons_speed2))
     fig, ax = plt.subplots(4,2)
     ax[0,0].plot(loss_) 
     ax[0,1].plot(eta_)
@@ -435,34 +489,35 @@ for batch_start in range(0, N_total, NPSF):
     plt.show()
     del(fig, ax, eta_, rho_, delta_, x_, z_)
 
-    rho_found=np.array(params['rho']%360)
-    eta_found=np.array(params['eta']%180)
-
+    rho_found=params['rho']%360
+    eta_found=params['eta']%180
+    
+    delta_found=params['delta']*delta_speed
+    N_found2 = params['N_photons']*nphotons_speed2
+    x_found = params['x']*xy_speed2
+    y_found = params['y']*xy_speed2
+    z_found = params['z']*z_speed2
+    zernx = jnp.reshape(zern_x, (3,15))
+    zerny = jnp.reshape(zern_y, (3,15))
+    del(params, loss)
+    
+    score = eval_batch(x_found, y_found, z_found, zernx, zerny, rho_found, eta_found, delta_found, N_found2, noisy_psf, background_array_found, sigma, dim_simu)
+    
+    rho_found = np.array(rho_found)
+    eta_found = np.array(eta_found)
+    x_found = np.array(x_found)
+    y_found = np.array(y_found)
     mask = (rho_found>180)
     eta_found[mask] = (180-eta_found[mask])%180
     rho_found = rho_found%180
     
-    delta_found=np.array(params['delta']*delta_speed)
-    N_found2 = np.array(params['N_photons']*nphotons_speed2)
-    x_found = np.array(params['x']*xy_speed2)
-    y_found = np.array(params['y']*xy_speed2)
-    z_found = np.array(params['z']*z_speed2)
-    zernx = np.array(jnp.reshape(zern_x, (3,15)))
-    zerny = np.array(jnp.reshape(zern_x, (3,15)))
-    del(params, loss)
-    M = compute_M_jax(xp=x_found, yp=y_found, zp=z_found, d=d_, x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2
-                    , Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, zernike_base=zernike_base
-                    , zernike_coefs_x=zernx, zernike_coefs_y=zerny
-                    ,  second_plane=second_plane
-                  , polar_projections=polar_projections, lambd=lambd, f_tube=f_tube)
-    score = score_eval(M, rho_found, eta_found, delta_found, N_found2, noisy_psf, background, sigma, dim_simu)
     x_ = (x/120).astype(int)*120 + 1000*x_found
     y_ = (y/120).astype(int)*120 + 1000*y_found
-    np.savez_compressed(save_folder+'\\'+str(int(batch_number)+1+batch_offset)+'.npz', 
-                        frame = np.array(Nframe*(batch_number+batch_offset)+index_frame), x=np.array(x_), 
+    np.savez_compressed(save_folder+'/'+str(int(batch_start))+'.npz', 
+                        frame = np.nan, x=np.array(x_), 
                         y=np.array(y_), z=np.array(1000*z_found), N_photons=np.array(N_found2), 
                         rho=np.array(rho_found), eta=np.array(eta_found), 
                         delta=np.array(delta_found), score=np.array(score), x_start=np.array(x), 
-                        y_start=np.array(y), z_start=np.array(z),
-                        rho_start=np.array(rho), delta_start=np.array(delta), 
+                        y_start=np.array(y), z_start=np.nan,
+                        rho_start=np.nan, delta_start=np.nan, 
                         background_array_found=np.array(background_array_found))
