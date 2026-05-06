@@ -166,7 +166,7 @@ data = pos_from_csv(path_info)
 
 jax.clear_caches()
 intermediate_folder = '/mnt/c/Users/Amaury/Documents/Github/4polarMFM_these/working_folder_jax_sgd'
-#shutil.rmtree(intermediate_folder)       # delete the folder
+shutil.rmtree(intermediate_folder)       # delete the folder
 os.makedirs(intermediate_folder)
 index_psf = 0
 
@@ -327,7 +327,7 @@ def load_batch(index_psf, NPSF, result):
         y[ii] = data__['y']
         background = data__['background']
         sigma = data__['sigma']
-        #frame = data__['frame']
+        frame = data__['frame']
     
     noisy_psf_jax = jnp.array(noisy_psf)
     x_jax = jnp.array(x)
@@ -342,6 +342,7 @@ def load_batch(index_psf, NPSF, result):
     result['Nstart'] = Nstart
     result['background_array'] = background_array
     result['sigma'] = jnp.array(sigma)
+    result['frame'] = jnp.array(frame)
 
 # functions for the SGD steps
 @functools.partial(jax.jit, static_argnames=['dim_simu', 'd_', 'plot'])#, donate_argnums=(0, 1))
@@ -397,7 +398,7 @@ for batch_start in batches:
     sigma = current['sigma']        
     x = current['x']  
     y = current['y']  
-    #frame = current['frame']  
+    frame = current['frame']  
     params = {
         'xp': x_start,
         'yp': y_start,
@@ -514,7 +515,7 @@ for batch_start in batches:
     x_ = (x/120).astype(int)*120 + 1000*x_found
     y_ = (y/120).astype(int)*120 + 1000*y_found
     np.savez_compressed(save_folder+'/'+str(int(batch_start))+'.npz', 
-                        frame = np.nan, x=np.array(x_), 
+                        frame = frame, x=np.array(x_), 
                         y=np.array(y_), z=np.array(1000*z_found), N_photons=np.array(N_found2), 
                         rho=np.array(rho_found), eta=np.array(eta_found), 
                         delta=np.array(delta_found), score=np.array(score), x_start=np.array(x), 
