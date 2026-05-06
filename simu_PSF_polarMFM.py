@@ -236,6 +236,7 @@ def padding(r, r_cut, k, f_o,  N=80, l_pixel=16, NA=1.4, mag=100, lambd=617,
         Npadding = ((2*torch.pi*MAG*f_tube)/(k*l_pixel*Dx)).to(torch.int32) - N
         if Npadding%2==1:
             Npadding=Npadding+1
+        #print(N.device, Npadding.device, k.device, f_tube.device, MAG.device)
         freq = (torch.fft.fftshift(torch.fft.fftfreq(N+Npadding, Dx, device=device))*2*torch.pi*f_tube/k)*MAG
         ### WARNING torch.meshgrid() returns exactly the opposite of np.meshgrid() !!!!
         v, u = torch.meshgrid(freq, freq)
@@ -525,7 +526,7 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
     #print(Npadding) 
     return M
 
-def PSF(rho, eta, delta, M, N_photons=1000, device='cpu'):
+def PSF(rho, eta, delta, M, N_photons=1000, device='cpu', return_norm=False):
     '''
     This function somputes the PSF from the orientation parameters and the calibration matrix M
     that contains templates. It could be computed using GPU ('cuda')
@@ -646,7 +647,10 @@ def PSF(rho, eta, delta, M, N_photons=1000, device='cpu'):
         ''' Normalize the PSF tensor '''
         norm = np.sum(psf)
         psf = psf * (N_photons / norm)
-    return psf
+    if return_norm:
+        return psf, norm
+    else:
+        return psf
 
 def BFP_intensity(rho, eta, delta, M, N_photons=1000, device='cpu'):
     '''

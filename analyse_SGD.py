@@ -31,7 +31,7 @@ from scipy.ndimage import gaussian_filter1d
 import bisect
 # %%
 
-#data = pd.read_csv("\\\\NAS_LOCCO\\Amaury\\DATA\\4_polar_MFM_these\\sperm_souris_7.csv", delimiter=';')
+data = pd.read_csv("\\\\NAS_LOCCO\\Amaury\\DATA\\4_polar_MFM_these\\test_jax.csv", delimiter=';')
 
 root = Tk()
 root.withdraw()
@@ -39,9 +39,8 @@ root.withdraw()
 # Open file dialog
 file_path = filedialog.askopenfilename()
 data = pd.read_csv(file_path, delimiter=';')
-
-if "background_array_found" in data.index: # case to process SGD data
-    frame = data['frame'].to_numpy().astype(int)
+if "eta" in data.columns: # case to process SGD data
+    #frame = data['frame'].to_numpy().astype(int)
     x = data['x'].to_numpy()
     y = data['y'].to_numpy()
     z = data['z'].to_numpy()
@@ -49,13 +48,12 @@ if "background_array_found" in data.index: # case to process SGD data
     eta = data['eta'].to_numpy()
     delta = data['delta'].to_numpy()
     N_photons = data['N_photon'].to_numpy()
-    background_array_found = data['background_array_found'].to_numpy()
     score = data['score'].to_numpy()
-    x_start = data['x_start'].to_numpy()
-    y_start = data['y_start'].to_numpy()
-    z_start = data['z_start'].to_numpy()
-    rho_start = data['rho_start'].to_numpy()
-    delta_start = data['delta_start'].to_numpy()
+    #x_start = data['x_start'].to_numpy()
+    #y_start = data['y_start'].to_numpy()
+    #z_start = data['z_start'].to_numpy()
+    #rho_start = data['rho_start'].to_numpy()
+    #delta_start = data['delta_start'].to_numpy()
 else: # case ratiometric only
     data = pd.read_csv(file_path, delimiter=',')
     frame = data['frame'].to_numpy()
@@ -89,6 +87,7 @@ ax[2].set_ylabel('Occurences')
 
 loss_thresh = 200
 mask1 = (score<loss_thresh) & (delta<150) & (delta>10) & (N_photons>500) & (N_photons<5000) & (z<2500) & (z>-2500) #& (eta>30) & (eta<150)
+mask1 = (z<2500)
 
 #%%DRIFT CORRECTION
 
