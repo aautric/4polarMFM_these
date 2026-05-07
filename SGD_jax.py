@@ -22,21 +22,14 @@ import copy
 from tqdm import tqdm
 import shutil
 import functools
-import threading
 # %% PARAMETERS TO BE DEFINED
 
+total_n_frame = 10000
 QE = 0.92
 EM = 200
 sensitivity = 15.4
-Nframe= 10
-total_n_frame = 15000
 path_info = '/mnt/z/DATA/4polar_data_raw/2026_02_02_SLB_1um/SM_tres_haut/Calib_Polar_2026-02-02/images/RAW_DATA/image_Pos0.ome_results_fr1to15000_method=Propagation matrix_box-method=Fixed_box5.csv'
 path_data_folder = '/mnt/z/DATA/4polar_data_raw/2026_02_02_SLB_1um/SM_tres_haut/Calib_Polar_2026-02-02/images/RAW_DATA/image_Pos0_reco_concat/'
-
-N_batch = 20000
-batch_offset = 0
-
-raw = np.zeros((Nframe,6,214,129))
 
 # %% functions
 def extract_frames(frame_0, N_frame):
@@ -162,55 +155,6 @@ def eval_batch(x_found, y_found, z_found, zernx, zerny, rho_found, eta_found, de
 
 data = pos_from_csv(path_info)
 
-#%% extracting data
-
-jax.clear_caches()
-intermediate_folder = '/mnt/c/Users/Amaury/Documents/Github/4polarMFM_these/working_folder_jax_sgd'
-shutil.rmtree(intermediate_folder)       # delete the folder
-os.makedirs(intermediate_folder)
-index_psf = 0
-
-for batch_number in tqdm(range(N_batch)):
-    # extracteing the raw 6-stack tiff files
-    raw, error_indices = extract_frames((batch_number+batch_offset)*Nframe+1, Nframe)
-    # extracting the position from Louise pipeline
-    x, y, z, rho, delta, index_frame = extract_positions((batch_number+batch_offset)*Nframe+1, Nframe, error_indices)
-    # converting to photon count
-    raw = raw*sensitivity/(QE*EM)
-    sigma = jnp.std(raw.flatten())
-    background = jnp.mean(raw.flatten())
-    L = raw.shape[2]*120
-    W = raw.shape[3]*120
-    # removing all the PSF where a parameter is evaluated to nan in Louise pipeline
-    nb = len(x)
-    L = raw.shape[2]*120
-    W = raw.shape[3]*120
-    for k, ele in enumerate(x):
-        if np.isnan(x[nb-1-k]) or np.isnan(y[nb-1-k]) or np.isnan(z[nb-1-k]) or (y[nb-1-k]<6*120) or (x[nb-1-k]<6*120) or (x[nb-1-k]>L-6*120) or (y[nb-1-k]>W-6*120):
-            x = np.delete(x,nb-1-k,0)
-            y = np.delete(y,nb-1-k,0)
-            z = np.delete(z,nb-1-k,0)
-            rho = np.delete(rho,nb-1-k,0)
-            delta = np.delete(delta,nb-1-k,0)
-            index_frame = np.delete(index_frame,nb-1-k,0)
-    # extracting the psf from the files
-    
-    single_psf = extract_raw_xy(raw[0], x[index_frame==0], y[index_frame==0])
-    for i in range(1,Nframe):
-        single_psf = np.concatenate((single_psf, extract_raw_xy(raw[i], x[index_frame==i], y[index_frame==i])))
-
-    # dimenstion matching to have x in horizontal and y in vertical when considering what appears in a tiff file
-    single_psf = single_psf[:,::-1,:,::-1,:]
-    x, y = y, -x
-
-    NPSF = len(x)
-    print('NPSF = ', NPSF)
-    
-    for ii in range(NPSF):
-        #print(ii)
-        np.savez_compressed(intermediate_folder+'/'+str(index_psf+ii)+'.npz',
-                            single_psf=single_psf[ii], x=x[ii], y=y[ii], sigma=sigma, background=background, frame=Nframe*(batch_number)+index_frame)
-    index_psf+=NPSF
 
 #%% defining useful variables
 
@@ -218,6 +162,7 @@ lambda_emission = jax.device_put(620) # nm
 middle_plane = jax.device_put(1.2)
 interplane = jax.device_put(0.385)
 d = jnp.array([middle_plane-interplane, middle_plane, middle_plane+interplane])
+
 
 # %% calibration data
 '''
@@ -245,12 +190,20 @@ nphotons_speed2 = jax.device_put(100)
 xy_speed2 = jax.device_put(1/50)
 z_speed2=jax.device_put(1/30)
 
-threading = False
-
 save_folder = '/mnt/z/DATA/polMFM_experimental_processed/these_4polar_MFM/test_jax'
+
+# extraction parameters
+Nframe= 10 # nb of frame per batch of extraction
+last_frame_processed=-1 #starting point 
+NPSF = 100 # nb of PSF per batch
+
+# nb of batch of SGD
+batch_nb = 1000
+
+raw = np.zeros((Nframe,6,214,129))
+buffer = (np.array([]), np.array([]), np.array([]), np.array([]), np.array([]), np.array([]))
+psf_buffer = np.empty((0, 3, 2, 13, 13))  # adjust shape to match your PSF dimensions
 #%%   #################### gradient descent ##################
-intermediate_folder = '/mnt/c/Users/Amaury/Documents/Github/4polarMFM_these/working_folder_jax_sgd'
-NPSF = 100
 
 # microscope parameters
 d_ = -float(d[1])#-jax.device_put(d[1])
@@ -316,43 +269,88 @@ htest = PSF_jax(rho=rho_start, eta=eta_start, delta=delta_start, M=Mtest, N_phot
 
 dim_simu = int(htest.shape[-1]//2)
 
-def load_batch(index_psf, NPSF, result):
-    noisy_psf = np.zeros((NPSF, 3, 2, 13, 13))
-    x = np.zeros(NPSF)
-    y = np.zeros(NPSF)
-    for ii in range(NPSF):
-        data__ = np.load(intermediate_folder + '/' + str(index_psf + ii) + '.npz')
-        noisy_psf[ii] = data__['single_psf']
-        x[ii] = data__['x']
-        y[ii] = data__['y']
-        background = data__['background']
-        sigma = data__['sigma']
-        frame = data__['frame']
-    
-    noisy_psf_jax = jnp.array(noisy_psf)
-    x_jax = jnp.array(x)
-    y_jax = jnp.array(y)
-    Nstart_by_plane = np.sum(noisy_psf, axis=(2,3,4)) - background*len(noisy_psf[0,0].flatten())
-    Nstart = jnp.array(jnp.sum(Nstart_by_plane, axis=1)).astype(jnp.float32)
-    background_array = jnp.array(background*jnp.ones((NPSF,3,2))).astype(jnp.float32)
 
-    result['noisy_psf'] = noisy_psf_jax
-    result['x'] = x_jax
-    result['y'] = y_jax
-    result['Nstart'] = Nstart
-    result['background_array'] = background_array
+def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result):
+    bufferx, buffery, bufferz, bufferrho, bufferdelta, bufferindex = buffer
+    x, y, z, rho, delta, index_frame = bufferx, buffery, bufferz, bufferrho, bufferdelta, bufferindex
+    single_psf = psf_buffer    
+    while len(x)<NPSF:
+        # extracteing the raw 6-stack tiff files
+        raw, error_indices = extract_frames(last_frame_processed+1, Nframe)
+        # extracting the position from Louise pipeline
+        x_, y_, z_, rho_, delta_, index_frame_ = extract_positions(last_frame_processed+1, Nframe, error_indices)
+        
+        # converting to photon count
+        raw = raw*sensitivity/(QE*EM)
+        sigma = np.std(raw.flatten())
+        background = np.mean(raw.flatten())
+        L = raw.shape[2]*120
+        W = raw.shape[3]*120
+        # removing all the PSF where a parameter is evaluated to nan in Louise pipeline
+        nb = len(x_)
+        L = raw.shape[2]*120
+        W = raw.shape[3]*120
+        for k in range(nb-1, -1, -1):  # iterate backwards to safely delete
+            if np.isnan(x_[k]) or np.isnan(y_[k]) or np.isnan(z_[k]) or \
+               (y_[k]<6*120) or (x_[k]<6*120) or (x_[k]>L-6*120) or (y_[k]>W-6*120):
+                x_ = np.delete(x_, k, 0)
+                y_ = np.delete(y_, k, 0)
+                z_ = np.delete(z_, k, 0)
+                rho_ = np.delete(rho_, k, 0)
+                delta_ = np.delete(delta_, k, 0)
+                index_frame_ = np.delete(index_frame_, k, 0)
+                
+        index_frame_ = last_frame_processed+1+index_frame_
+        
+        # extracting the psf from the files
+        
+        single_psf_ = extract_raw_xy(raw[0], x_[index_frame_==last_frame_processed+1], y_[index_frame_==last_frame_processed+1])
+        
+        for i in range(1, Nframe):
+            frame_id = last_frame_processed + 1 + i
+            single_psf_ = np.concatenate((single_psf_, extract_raw_xy(raw[i], x_[index_frame_==frame_id], y_[index_frame_==frame_id])))
+        
+        # dimenstion matching to have x in horizontal and y in vertical when considering what appears in a tiff file
+        single_psf_ = single_psf_[:,::-1,:,::-1,:]
+        x_, y_ = y_, -x_
+        
+        x = np.concatenate((x, x_))
+        y = np.concatenate((y, y_))
+        z = np.concatenate((z, z_))
+        rho = np.concatenate((rho, rho_))
+        delta = np.concatenate((delta, delta_))
+        index_frame = np.concatenate((index_frame, index_frame_))
+        single_psf = np.concatenate((single_psf, single_psf_))
+        
+        last_frame_processed+=Nframe
+    
+    buffer = x[NPSF:], y[NPSF:], z[NPSF:], rho[NPSF:], delta[NPSF:], index_frame[NPSF:]
+    psf_buffer = single_psf[NPSF:]
+    noisy_psf = single_psf[:NPSF]
+    x, y = x[:NPSF], y[:NPSF]
+
+    Nstart_by_plane = np.sum(noisy_psf, axis=(2,3,4)) - background*len(noisy_psf[0,0].flatten())
+    
+    result['buffer'] = buffer        
+    result['psf_buffer'] = psf_buffer 
+    result['noisy_psf'] = jnp.array(noisy_psf)
+    result['x'] = jnp.array(x)
+    result['y'] = jnp.array(y)
+    result['Nstart'] = jnp.array(jnp.sum(Nstart_by_plane, axis=1)).astype(jnp.float32)
+    result['background_array'] = jnp.array(background*jnp.ones((NPSF,3,2))).astype(jnp.float32)
     result['sigma'] = jnp.array(sigma)
-    result['frame'] = jnp.array(frame)
+    result['frame'] = index_frame
+    result['last_frame_processed'] = last_frame_processed
 
 # functions for the SGD steps
-@functools.partial(jax.jit, static_argnames=['dim_simu', 'd_', 'plot'])#, donate_argnums=(0, 1))
+@functools.partial(jax.jit, static_argnames=['dim_simu', 'plot'])#, donate_argnums=(0, 1))
 def step1(params, opt_state, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, sigma, dim_simu, d_, plot):
     loss, grads = jax.value_and_grad(loss_pos)(params, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, sigma, dim_simu, d_, plot)
     updates, opt_state = optimizer1.update(grads, opt_state, params)
     params = optax.apply_updates(params, updates)
     return params, opt_state, loss
 
-@functools.partial(jax.jit, static_argnames=['dim_simu', 'd_', 'plot'])#, donate_argnums=(0, 1))
+@functools.partial(jax.jit, static_argnames=['dim_simu', 'plot'])#, donate_argnums=(0, 1))
 def step2(params, opt_state, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, data, background, sigma, dim_simu, d_, plot):
     loss, grads = jax.value_and_grad(loss_angle_with_M)(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, data, background, sigma, dim_simu, d_, plot)
     updates, opt_state = optimizer2.update(grads, opt_state, params)
@@ -362,37 +360,17 @@ def step2(params, opt_state, delta_speed, nphotons_speed2, xy_speed2, z_speed2, 
 optimizer1 = optax.adam(learning_rate=LR1)
 optimizer2 = optax.adam(learning_rate=LR2)
 
-# --- main loop ---
-N_total = 1000000
-batch_offset = 0
-index_psf = 0
-batches = range(0 + batch_offset*NPSF, N_total + batch_offset*NPSF, NPSF)
 
-if threading:
-    # preload first batch
-    next_result = {}
-    next_thread = threading.Thread(target=load_batch, args=(index_psf, NPSF, next_result))
-    next_thread.start()
-    index_psf += NPSF
+################# main loop ########################
 
-for batch_start in batches:
-    batch_end = min(batch_start + NPSF, N_total)
-    print(f'Loading batch {batch_start} to {batch_end-1}')
-    if threading:
-        # wait for current batch to be ready
-        next_thread.join()
-        current = next_result
-    
-        # start loading next batch in background
-        if batch_start + NPSF < N_total + batch_offset*NPSF:
-            next_result = {}
-            next_thread = threading.Thread(target=load_batch, args=(index_psf, NPSF, next_result))
-            next_thread.start()
-            index_psf += NPSF
-    else:
-        current = {}
-        load_batch(index_psf, NPSF, current)
-        index_psf += NPSF
+for batch in range(batch_nb):
+   
+    current = {}
+    load_batch(last_frame_processed, buffer, psf_buffer, NPSF, current)
+    buffer = current.get('buffer', buffer)
+    psf_buffer = current.get('psf_buffer', psf_buffer)
+    last_frame_processed = current.get('last_frame_processed', last_frame_processed)
+
     # build params from current batch
     noisy_psf = current['noisy_psf']  
     sigma = current['sigma']        
