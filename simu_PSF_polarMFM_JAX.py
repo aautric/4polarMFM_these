@@ -139,7 +139,7 @@ def psi_f_jax(theta, d, lambd=0.617):
     print("Compiling psi_f_jax")
     # Refractive index depending on sign of d
     n = n1 + (n2 - n1) * (1 + jnp.sign(d)) / 2
-    return d * 2 * jnp.pi * n * jnp.cos(theta) / lambd
+    return jnp.einsum('a, bc -> abc', d*n , 2 * jnp.pi * jnp.cos(theta) / lambd)
 
 psi_f_jit = jax.jit(psi_f_jax)
 psi_z_jit = jax.jit(psi_z_jax)

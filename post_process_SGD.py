@@ -9,15 +9,23 @@ amaury.autric@polytechnique.edu
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+from tkinter import Tk, filedialog
 from matplotlib.colors import hsv_to_rgb
+import sys
+sys.path.append(os.path.abspath('/mnt/c/Users/Amaury/'))
 
 #%%
-folder = '\\\\NAS_LOCCO\\Amaury\\DATA\\polMFM_experimental_processed\\these_4polar_MFM\\test_jax'
-storing_folder = "\\\\NAS_LOCCO\\Amaury\\DATA\\4_polar_MFM_these\\test_jax.csv"
+look_up_folder = '/mnt/c/Users/Amaury/Desktop/DATA/'#'/mnt/z/DATA/4_polar_MFM_these/'
+path = filedialog.askdirectory(
+    initialdir=look_up_folder)
+storing_folder = path+'/fit.csv'
+folder = path+'/NPZ/'
+#storing_folder = '/mnt/c/Users/Amaury/Desktop/DATA/2026_02_10_actin_Moein/sm/fit.csv'
+#"\\\\NAS_LOCCO\\Amaury\\DATA\\4_polar_MFM_these\\test_jax.csv"
 frame, x, y, z, N_photons, background_array_found, rho, eta, delta, score, x_start, y_start, z_start, rho_start, delta_start = [], [], [], [], [], [], [], [], [], [], [], [], [], [], []
 for filename in sorted(os.listdir(folder), key=lambda x: int(x.replace('.npz',''))):
-    data = np.load(rf"{folder}\{filename}")
-    #frame = np.concatenate((frame, data['frame']))
+    data = np.load(rf"{folder}/{filename}")
+    frame = np.concatenate((frame, data['frame']))
     x = np.concatenate((x, data['x']))
     y = np.concatenate((y, data['y']))
     z = np.concatenate((z, data['z'])) 
@@ -52,7 +60,27 @@ threshold = (N_photons>0)
 #%%
 plt.scatter(x , y , c = rho / 180.0, cmap='hsv', s=1)
 plt.axis('equal')
+
 #%%
+%matplotlib qt
+plt.rcParams['figure.figsize'] = [5, 5]
+plt.rcParams.update({'font.size': 15})
+sc = plt.scatter(x[threshold]/1000, y[threshold]/1000,
+                 c=rho[threshold] / 180.0,
+                 cmap='hsv', s=2.)
+cbar = plt.colorbar(sc)
+ticks = np.linspace(0, 1, 7)  # 0 → 1
+cbar.set_ticks(ticks)
+cbar.set_ticklabels((ticks * 180).astype(int))
+cbar.set_label("$\\rho$")
+plt.axis('equal')
+#plt.xlim((10000, 22500))
+#plt.ylim((2200, 14000))
+plt.xlabel('x ($\\mu$m)')
+plt.ylabel('y ($\\mu$m)')
+plt.show()
+
+#%% storing as a csv
 '''
 data = np.column_stack((
     frame[threshold], x[threshold], y[threshold], z[threshold], rho[threshold],
@@ -61,7 +89,7 @@ data = np.column_stack((
     rho_start[threshold], delta_start[threshold]
 ))'''
 data = np.column_stack((
-    x[threshold], y[threshold], z[threshold], rho[threshold],
+    frame[threshold], x[threshold], y[threshold], z[threshold], rho[threshold],
     eta[threshold], delta[threshold], N_photons[threshold], score[threshold],
 ))
 
@@ -71,7 +99,7 @@ np.savetxt(
     storing_folder,
     data,
     delimiter=";",
-    header="x;y;z;rho;eta;delta;N_photon;score",#"frame;x;y;z;rho;eta;delta;N_photon;score;x_start;y_start;z_start;rho_start;delta_start",
+    header="frame;x;y;z;rho;eta;delta;N_photon;score",#"frame;x;y;z;rho;eta;delta;N_photon;score;x_start;y_start;z_start;rho_start;delta_start",
     comments='',
     fmt='%.15f'
 )
