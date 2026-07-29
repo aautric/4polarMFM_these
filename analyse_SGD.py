@@ -36,7 +36,7 @@ sys.path.append(os.path.abspath('/mnt/c/Users/Amaury/'))
 
 #data = pd.read_csv("\\\\NAS_LOCCO\\Amaury\\DATA\\4_polar_MFM_these\\test_jax.csv", delimiter=';')
 #data = pd.read_csv("/mnt/z/DATA/4_polar_MFM_these/test_jax.csv", delimiter=';')
-look_up_folder = '/mnt/c/Users/Amaury/Desktop/DATA/'#'/mnt/z/DATA/4_polar_MFM_these/'
+look_up_folder = '/mnt/d/Amaury/DATA'
 path = filedialog.askopenfilename(
     initialdir=look_up_folder,
     filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
@@ -90,9 +90,9 @@ ax[2].set_ylabel('Occurences')
 
 # %% TO BE MODIFIED
 
-loss_thresh = -3*10**6
-mask1 = (score<loss_thresh) & (delta<150) & (delta>50) & (N_photons>300) & (N_photons<10000) & (z<3000) & (z>1000) #& (eta>30) & (eta<150)
-mask1 = (delta<150) & (delta>60)
+loss_thresh = -6*10**6
+mask1 = (score<loss_thresh) & (delta<120) & (delta>50) & (N_photons>300) & (N_photons<10000) & (z<1000) & (z>400) #& (eta>30) & (eta<150)
+#mask1 = (delta<150) & (delta>60)
 
 #%% mask selection
 
@@ -162,7 +162,7 @@ correct_z = False
 plt.rcParams['figure.figsize'] = [5,5]
 fig = plt.figure()
 ax = fig.add_subplot()
-sc = ax.scatter(x , y, c=N_photons , cmap='coolwarm', s=0.1)
+sc = ax.scatter(x , y, c=N_photons , cmap='coolwarm', s=0.1, vmax=10000)
 ax.set_title("Select the zone of the fiducial")
 ax.axis('equal')
 cb = plt.colorbar(sc)
@@ -179,14 +179,44 @@ lasso = LassoSelector(ax, onselect)
 #%%
 _, unique_indices = np.unique(frame[mask_fiducial], return_index=True)
 mask_fiducial_clean = np.where(mask_fiducial)[0][unique_indices]
-
 frames_fiducial = frame[mask_fiducial_clean]
 indices_fiducial = mask_fiducial_clean
 
 frames_array = np.array(sorted(frames_fiducial))
 diffs = np.diff(frames_array)
-if (diffs!=1).any():
-    raise ValueError('Duplicates or missing frames')
+
+if (diffs != 1).any():
+    missing_or_dup = frames_array[:-1][diffs != 1]
+    print(f'Non-consecutive frames at: {missing_or_dup}')
+    
+    # first remove duplicates
+    _, unique_indices2 = np.unique(frames_fiducial, return_index=True)
+    indices_fiducial = indices_fiducial[unique_indices2]
+    frames_fiducial = frames_fiducial[unique_indices2]
+    
+    # then fill missing frames by repeating previous
+    full_range = np.arange(frames_fiducial.min(), frames_fiducial.max() + 1)
+    new_indices = []
+    new_frames = []
+    for f in full_range:
+        if f in frames_fiducial:
+            idx = np.where(frames_fiducial == f)[0][0]
+            new_indices.append(indices_fiducial[idx])
+            new_frames.append(f)
+        else:
+            # repeat previous index
+            print(f'Missing frame {f}, repeating previous')
+            new_indices.append(new_indices[-1])
+            new_frames.append(f)
+    
+    frames_fiducial = np.array(new_frames)
+    indices_fiducial = np.array(new_indices)
+    frames_array = frames_fiducial
+    
+    diffs = np.diff(frames_array)
+    if (diffs != 1).any():
+        raise ValueError('Could not fix frames')
+    print('Frames fixed successfully')
 filter_kernel = 101
 xcorr = gaussian_filter1d(x[indices_fiducial]-x[indices_fiducial[0]],filter_kernel)
 ycorr = gaussian_filter1d(y[indices_fiducial]-y[indices_fiducial[0]],filter_kernel)
@@ -211,7 +241,7 @@ for ind, frame_ in tqdm(enumerate(frame)):
     
 #%% correction doublons
 def recursive_call(i, x, y, z, rho, eta, delta, frame, previous_index, not_counted):
-    mask = ((frame==frame[i]+1)|(frame==frame[i]+1)|(frame==frame[i]+1)) & ((x-x[i])**2+(y-y[i])**2<10**2) & ((z-z[i])**2<30**2) #& ((rho-rho[i])<30)
+    mask = ((frame==frame[i]+1)|(frame==frame[i]+1)|(frame==frame[i]+1)) & ((x-x[i])**2+(y-y[i])**2<30**2) & ((z-z[i])**2<60**2) #& ((rho-rho[i])<30)
     if (mask==True).any():
         not_counted[i] = False
         return recursive_call(np.where(mask)[0][0], x, y, z, rho, eta, delta, frame, 
@@ -292,13 +322,14 @@ hh = plt.hist(stddelta, bins=100)
 plt.xlabel('std $\\delta$ (degree)')
 plt.show()
 #%%
-mask1 = (score<loss_thresh) & (delta<150) &  (delta>50) & (N_photons>300) & (N_photons<10000) & (z<2500) & (z>1600)
+mask1 = (score<loss_thresh) & (delta<150) &  (delta>50) & (N_photons>300) & (N_photons<10000) & (z<1000) & (z>400)
 #%% select mask
 %matplotlib qt
 plt.rcParams['figure.figsize'] = [5,5]
 fig = plt.figure()
 ax = fig.add_subplot()
 vals = frame[mask1]
+
 sc = ax.scatter(x[mask1] , y[mask1] , c=vals , cmap='coolwarm', s=1)
 ax.set_title("select a point cloud")
 ax.axis('equal')
@@ -326,8 +357,8 @@ ax0.set_facecolor('black')
 #ax1.set_facecolor('black')
 sc = ax0.scatter(x[mask]/1000, y[mask]/1000,
                  c=rho[mask] / 180.0,
-                 cmap='hsv', s=0.1)
-cax = fig.add_axes([0.4, 0.62, 0.15, 0.15], projection='polar')
+                 cmap='hsv', s=0.01)
+cax = fig.add_axes([0.5, 0.62, 0.15, 0.15], projection='polar')
 theta = np.linspace(0, np.pi, 512)
 r = np.array([0.8, 1.0])
 Theta, R = np.meshgrid(theta, r)
@@ -382,7 +413,7 @@ fig, ax = plt.subplots()
 ax.set_facecolor('black')
 sc = ax.scatter(x[mask]/1000, y[mask]/1000,
                  c=z[mask] / 1000 ,
-                 cmap='coolwarm', s=1)#, vmax=1.25)
+                 cmap='coolwarm', s=0.1, vmin=0.4, vmax=1.)
 cbar = plt.colorbar(sc)
 cbar.set_label("$z$ ($\\mu$m)")
 plt.axis('equal')
@@ -402,7 +433,7 @@ ax1 = fig.add_subplot(1, 2, 2, projection='polar')
 ax0.set_facecolor('black')
 sc = ax0.scatter(x[mask]/1000, y[mask]/1000,
                  c=delta[mask] / 180.0,
-                 cmap='coolwarm', s=0.1, vmin=50/180, vmax=150/180)
+                 cmap='coolwarm', s=0.001, vmin=50/180, vmax=150/180)
 cax = fig.add_axes([0.47, 0.62, 0.15, 0.15], projection='polar')
 theta = np.linspace(0, np.pi, 512)
 r = np.array([0.9, 1.0])
@@ -461,7 +492,7 @@ fig, ax = plt.subplots(1,2)
 ax[0].set_facecolor('black')
 sc = ax[0].scatter(x[mask]/1000, y[mask]/1000,
                  c=eta[mask] / 180.0,
-                 cmap='spring', s=.1, vmin=30/180, vmax=150/180)
+                 cmap='spring', s=0.01, vmin=30/180, vmax=150/180)
 # radial colorbar inset
 cax = fig.add_axes([0.35, 0.63, 0.16, 0.16], projection='polar')
 
@@ -470,7 +501,7 @@ r = np.array([0.8, 1.0])
 
 Theta, R = np.meshgrid(theta, r)
 C = np.tile(np.linspace(30, 150, theta.size), (2, 1))
-
+cax.set_facecolor('black')
 cax.pcolormesh(
     Theta,
     R,
@@ -485,7 +516,11 @@ cax.pcolormesh(
 # orientation
 cax.set_theta_zero_location('N')   # 0° at top
 cax.set_theta_direction(-1)        # clockwise
-
+cax.set_facecolor('white')
+cax.spines['polar'].set_color('black')
+cax.tick_params(axis='x', colors='black')
+cax.tick_params(axis='y', colors='black')
+cax.yaxis.label.set_color('black')
 # ticks
 ticks = np.arange(30, 151, 30)
 cax.set_thetagrids(ticks, labels=[f'{t}°' for t in ticks])
@@ -502,7 +537,7 @@ cax.text(
     r'$\eta$ (°)',
     ha='center',
     va='center',
-    fontsize=14
+    fontsize=14, color='black'
 )
 
 ax[0].set_aspect('equal')
@@ -535,6 +570,13 @@ colors = plt.cm.spring(norm(np.rad2deg(centers_folded)))
 ax[1].remove()
 ax1 = fig.add_subplot(1, 2, 2, projection='polar')
 
+# White angular tick labels
+for label in ax1.get_xticklabels():
+    label.set_color('black')
+
+# White radial tick labels
+for label in ax1.get_yticklabels():
+    label.set_color('black')
 ax1.bar(
     centers,
     counts,
@@ -544,11 +586,20 @@ ax1.bar(
     edgecolor='none',
     alpha=0.95
 )
-
 # orientation: 0° top, clockwise
 ax1.set_theta_zero_location('N')
 ax1.set_theta_direction(-1)
+ax1.set_facecolor('white')
+ax1.spines['polar'].set_color('black')
+ax1.tick_params(axis='x', colors='black')
+ax1.tick_params(axis='y', colors='black')
+ax1.yaxis.label.set_color('black')
 
+for label in ax1.get_xticklabels():
+    label.set_color('black')
+
+for label in ax1.get_yticklabels():
+    label.set_color('black')
 # show only 0–360 but symmetric meaning is enforced
 ax1.set_thetagrids(
     np.arange(0, 360, 60),
@@ -566,9 +617,53 @@ plt.rcParams.update({'font.size': 15})
 fig, ax = plt.subplots()
 ax.set_facecolor('black')
 sc = ax.scatter(y[mask]/1000, z[mask]/1000,
-                 c=eta[mask] / 180.0,
-                 cmap='spring', s=1, vmin=0/180, vmax=180/180)
+                 c=N_photons[mask] / 180.0,
+                 cmap='gnuplot2', s=3, vmin=0/180, vmax=180/180)
 plt.axis('equal')
+# radial colorbar inset
+cax = fig.add_axes([0.7, 0.6, 0.16, 0.16], projection='polar')
+
+theta = np.linspace(np.deg2rad(0), np.deg2rad(180), 512)
+r = np.array([0.8, 1.0])
+
+Theta, R = np.meshgrid(theta, r)
+C = np.tile(np.linspace(0, 180, theta.size), (2, 1))
+
+cax.pcolormesh(
+    Theta,
+    R,
+    C,
+    cmap='gnuplot2',
+    vmin=0,
+    vmax=180,
+    shading='auto',
+    edgecolors='none'
+)
+
+# orientation
+cax.set_theta_zero_location('N')   # 0° at top
+cax.set_theta_direction(-1)        # clockwise
+
+# ticks
+ticks = np.arange(0, 181, 60)
+cax.set_thetagrids(ticks, labels=[f'{t}°' for t in ticks])
+
+cax.set_facecolor('black')
+cax.tick_params(axis='x', colors='white')
+# cosmetics
+cax.set_rticks([])
+cax.grid(False)
+cax.spines['polar'].set_visible(False)
+
+# label
+cax.text(
+    np.deg2rad(90),
+    0.2,
+    r'$\eta$',
+    ha='center',
+    va='center',
+    fontsize=14, color='white'
+)
 #%%
 %matplotlib qt
 plt.rcParams['figure.figsize'] = [5,5]
@@ -581,3 +676,23 @@ ticks = np.linspace(0, 1, 7)  # 0 → 1
 cbar.set_ticks(ticks)
 cbar.set_ticklabels((ticks * 180).astype(int))
 cbar.set_label("$\\rho$")
+
+#%%
+
+path_filtered = path[:-4]+'_filtered.csv'
+
+data = np.column_stack((
+    frame[mask], x[mask], y[mask], z[mask], rho[mask],
+    eta[mask], delta[mask], N_photons[mask], score[mask],
+))
+
+# Save to CSV with many digits and proper header
+# Ensure newline="" to avoid issues when reading in Excel
+np.savetxt(
+    path_filtered,
+    data,
+    delimiter=";",
+    header="frame;x;y;z;rho;eta;delta;N_photon;score",#"frame;x;y;z;rho;eta;delta;N_photon;score;x_start;y_start;z_start;rho_start;delta_start",
+    comments='',
+    fmt='%.15f'
+)

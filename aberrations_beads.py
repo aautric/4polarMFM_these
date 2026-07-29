@@ -47,16 +47,16 @@ def pick_threshold(img, cmap="gray", vmax=None, initial_vmin=None):
     img_min, img_max = float(np.nanmin(img)), float(np.nanmax(img))
     if vmax is None:
         vmax = img_max
- 
+    
     vmin = initial_vmin if initial_vmin is not None else img_min
- 
+    print('vmin = ', vmin, ' vmax = ', vmax)
     print(f"Image range: [{img_min:.3g}, {img_max:.3g}]  (vmax fixed at {vmax:.3g})")
     print("After each plot closes, type a new vmin and press Enter,")
     print("or just press Enter to accept, or 'q' to abort.\n")
  
     while True:
         fig, ax = plt.subplots(figsize=(6, 6))
-        im = ax.imshow(img, cmap=cmap, vmin=vmin, vmax=vmin+(vmax-vmin)/5)
+        im = ax.imshow(img, cmap=cmap, vmin=vmin, vmax=vmax)#in+(vmax-vmin)/5)
         ax.set_title(f"vmin = {vmin:.4g}")
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         plt.show()  # blocks until the window/figure is closed (or renders inline in notebooks)
@@ -177,7 +177,7 @@ def extract_reconstructed(path_raw, first_frame=None, last_frame=None):
         return None
 #%% 
 def detection_beads():
-    start_folder = Path(r"/mnt/c/Users/Amaury/Desktop/DATA")
+    start_folder = Path(r"/mnt/d/Amaury/DATA")
 
     filename = filedialog.askopenfilename(
         initialdir=start_folder,
@@ -192,6 +192,7 @@ def detection_beads():
 #%%
 def predetection_zstack_beads():
     ref, parent = detection_beads()
+    
     vmin = pick_threshold(ref) 
     centers, labeled = find_island_centers(ref, vmin)
     print("Found centers (row, col):")

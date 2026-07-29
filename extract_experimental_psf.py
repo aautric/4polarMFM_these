@@ -39,6 +39,11 @@ def position_from_data(data, frame):
         delta = np.array([np.nan for i in range(len(x))])
     return x, y, z, rho, delta
 
+def position_from_data2(data, frame):
+    x = data[data['frame']==frame]['row'].to_numpy()
+    y = data[data['frame']==frame]['col'].to_numpy()
+    return x, y
+
 def extract_raw(path_raw):
     if not os.path.exists(path_raw):
         raise FileNotFoundError(f"File not found: {path_raw}")
@@ -48,6 +53,22 @@ def extract_raw(path_raw):
             if len(tif.pages) < 6:
                 raise ValueError(f"File {path_raw} has only {len(tif.pages)} frames")
             raw = np.zeros((6, 214, 129))
+            for i in range(6):
+                raw[i] = tif.pages[i].asarray()
+        return raw
+    except Exception as e:
+        print(f"Error reading {path_raw}: {e}")
+        return None
+    
+def extract_raw2(path_raw):
+    if not os.path.exists(path_raw):
+        raise FileNotFoundError(f"File not found: {path_raw}")
+    
+    try:
+        with tifffile.TiffFile(path_raw) as tif:
+            if len(tif.pages) < 6:
+                raise ValueError(f"File {path_raw} has only {len(tif.pages)} frames")
+            raw = np.zeros((6, 215, 160))
             for i in range(6):
                 raw[i] = tif.pages[i].asarray()
         return raw

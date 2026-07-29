@@ -27,6 +27,7 @@ def vectorial_BFP_perfect_focus_jax(
     lambd_nm: float = 617.0,
     f_tube_mm: float = 200.0,
     J_dichroic=jnp.array([[[1,0],[0,1]],[[1,0],[0,1]],[[1,0],[0,1]]]),
+    SAF=False,
     dtype=jnp.float32,
 ):
     """
@@ -44,7 +45,11 @@ def vectorial_BFP_perfect_focus_jax(
     k = 2.0 * n1 * jnp.pi / lambd
 
     # spatial cutoff
-    r_cut = jnp.minimum(NA / n1, n2 / n1)
+    if SAF:
+        r_cut_SAF = n2/n1
+        r_cut = NA/n1
+    else:
+        r_cut = jnp.minimum(NA / n1, n2 / n1)
 
     # meshgrid
     coords = jnp.linspace(-r_cut, r_cut, N, dtype=dtype)
@@ -54,11 +59,19 @@ def vectorial_BFP_perfect_focus_jax(
 
     # angles
     th1 = jnp.where(r < r_cut, jnp.arcsin(r), 0.0)
-    th2 = jnp.where(r < r_cut, jnp.arcsin((n1 / n2) * r), 0.0)
+    if SAF:
+        th2 = jnp.where(r < r_cut_SAF, jnp.arcsin((n1 / n2) * r), 0.0)
+    else:
+        th2 = jnp.where(r < r_cut, jnp.arcsin((n1 / n2) * r), 0.0)
 
     # transmission coefficients
     cos_th1 = jnp.cos(th1)
     cos_th2 = jnp.cos(th2)
+    
+    if SAF:
+        mask_saf = (r < r_cut) & (r > r_cut_SAF)
+        new_vals = 1j * jnp.sqrt((jnp.sin(th1) * (n1 / n2))**2 - 1)
+        cos_th2 = jnp.where(mask_saf, new_vals, cos_th2)    
     Ts = jnp.where(r < r_cut, (2.0 * n2 * cos_th2) / (n2 * cos_th2 + n1 * cos_th1), 0.0)
     Tp = jnp.where(r < r_cut, (2.0 * n2 * cos_th2) / (n2 * cos_th1 + n1 * cos_th2), 0.0)
 
@@ -103,8 +116,11 @@ def vectorial_BFP_perfect_focus_jax(
     Ex0_, Ey0_ = E0_[:,0], E0_[:,1]
     Ex1_, Ey1_ = E1_[:,0], E1_[:,1]
     Ex2_, Ey2_ = E2_[:,0], E2_[:,1]
-
-    return x, y, th1, phi, (Ex0_, Ex1_, Ex2_), (Ey0_, Ey1_, Ey2_), r, r_cut, k, f_o
+    
+    if SAF:
+        return x, y, th1, phi, (Ex0_, Ex1_, Ex2_), (Ey0_, Ey1_, Ey2_), r, r_cut, r_cut_SAF, k, f_o, cos_th2
+    else:
+        return x, y, th1, phi, (Ex0_, Ex1_, Ex2_), (Ey0_, Ey1_, Ey2_), r, r_cut, k, f_o
 
 def psi_lat_jax(x, y, theta, phi, lambd=0.617):
     """
@@ -119,17 +135,16 @@ def psi_lat_jax(x, y, theta, phi, lambd=0.617):
     phase = jnp.einsum('bc,abc->abc', jnp.sin(theta), (jnp.einsum('a,bc->abc', x, jnp.cos(phi)) +jnp.einsum('a,bc->abc', y, jnp.sin(phi))))
     return phase * (2*jnp.pi*n1) / lambd
 
-def psi_z_jax(theta, z, lambd=0.617):
-    """
-    JAX version of psi_z (Yan et al. corrected)
-    Computes the phase term along z for vectorial PSF simulations.
-    """
+def psi_z_jax(theta, z, lambd=0.617, cos_th2=None):
     print("Compiling psi_z_jax")
-    sqrt_term = jnp.sqrt(1 - (n1 * jnp.sin(theta) / n2)**2)
+    if cos_th2 is None:
+        sqrt_term = jnp.sqrt(1 - (n1 * jnp.sin(theta) / n2)**2)
+    else:
+        sqrt_term = cos_th2
+    #jax.debug.print("z nan: {}", jnp.isnan(z).any())
     factor = 2 * jnp.pi * n2 / lambd
-    # If z is scalar, broadcast automatically
-    
-    return jnp.einsum('a, bc -> abc', z, factor*sqrt_term)
+    out = jnp.einsum('a, bc -> abc', z, factor*sqrt_term)
+    return out
 
 def psi_f_jax(theta, d, lambd=0.617):
     """
@@ -145,7 +160,7 @@ psi_f_jit = jax.jit(psi_f_jax)
 psi_z_jit = jax.jit(psi_z_jax)
 psi_lat_jit = jax.jit(psi_lat_jax)
 
-def generate_zernike_base_jax(r_cut, N, zernike_order=4, skip_indices = {0, 1, 2, 4}):
+def generate_zernike_base_jax(r_cut, N, zernike_order=4, skip_indices = {0, 1, 2, 3}):
     print("Compiling generate_zernike_base_jax")
     cart = RZern(zernike_order)       
     ddx = np.linspace(-r_cut, r_cut, N)
@@ -199,20 +214,22 @@ def pad_jax(a, n):
 def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u, v,
                   zernike_base=None, zernike_coefs_x=None, zernike_coefs_y=None, 
                   phase_maskx=None, phase_masky=None, lambd=617, f_tube=200,
-              second_plane=jnp.array([-0.35, 0, 0.35]), polar_projections=jnp.array([0., 45., 0.]), BFP_version=False, 
-              SAF=False, costh2=None):
+              second_plane=jnp.array([0.35, 0, -0.35]), polar_projections=jnp.array([0., 45., 0.]), BFP_version=False, 
+              SAF=False, cos_th2=None):
     """
     JAX version of compute_M for multiple PSFs and multiple planes, fully JIT-compatible.
     Returns u, v coordinates and M matrix of shape (N_psf, K_plane, 2, 3, 3, N_pix, N_pix)
     """
     print("Compiling compute_M_jax")
+    #jax.debug.print("z: {}", zp)    
+    #jax.debug.print("d: {}", jnp.mean(d))
     lambd = 10**(-3)*lambd # conversion nm to micrometers
     f_tube = f_tube*1000 # tube length focal. everything is in micrometers
     # --- Phase for all planes (vectorized with vmap) ---
     def phase_per_plane(dp):
         return jnp.exp(1j * (
             psi_f_jit(th1, d + dp, lambd) +
-            psi_z_jit(th1, zp, lambd) +
+            psi_z_jit(th1, zp, lambd, cos_th2) +
             psi_lat_jit(xp, yp, th1, phi, lambd)
         ))#
     
@@ -233,8 +250,7 @@ def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u
     total_phase_y = jnp.einsum('pnuv, puv -> npuv', phase, zernike_mask_y)
     if phase_maskx is not None:
         total_phase_x = jnp.einsum('npuv, puv -> npuv', total_phase_x, phase_maskx)
-        total_phase_y = jnp.einsum('npuv, puv -> npuv', total_phase_y, phase_maskx)
-    
+        total_phase_y = jnp.einsum('npuv, puv -> npuv', total_phase_y, phase_masky)
     '''  version before the Stokes matrix version
     # --- Polarization rotations (numeric, JIT-friendly) ---
 
@@ -358,28 +374,25 @@ def noise_jax(key, PSF, QE=1.0, EM=1.0, b=0.0, sigma_b=0.0, sigma_r=0.0, bias=0.
     sigma_r  : read noise std
     bias     : camera bias (offset)
     """
-    # split key for randomness
     key_poiss, key_b, key_r, key_gamma = random.split(key, 4)
-    
-    # Gaussian background
+
+    # Gaussian background (added only inside Poisson)
     background = b + sigma_b * random.normal(key_b, PSF.shape)
     background = jnp.clip(background, min=0.0)
     
-    # Poisson shot noise
-    lam = PSF + background
-    lam = jnp.clip(lam, min=1e-6)  # prevent zero
+    # Poisson shot noise on PSF + background
+    lam = jnp.clip(PSF + background, min=1e-6)
     poiss = random.poisson(key_poiss, lam)
     
-    # Gaussian read noise
-    read = sigma_r * random.normal(key_r, PSF.shape)
+    # Gaussian read noise with bias as mean
+    read = bias + sigma_r * random.normal(key_r, PSF.shape)
     
     # Gamma excess noise from EM gain
-    gamma_conc = jnp.clip(poiss * QE, min=1e-6)
-    gamma_rate = EM
-    # sample Gamma: Gamma(k, theta) with mean k*theta; JAX uses concentration, rate
-    excess = random.gamma(key_gamma, gamma_conc) / gamma_rate
+    #gamma_conc = jnp.clip(poiss * QE, min=1e-6)
+    #excess = random.gamma(key_gamma, gamma_conc) / (QE )
     
-    # Combine all terms
-    noisy = poiss + read / (QE*EM) + bias / (QE*EM) + excess / (QE*EM)
-    
+    # Combine — same as PyTorch: read + excess only
+    noisy = read + poiss
+        
     return noisy
+

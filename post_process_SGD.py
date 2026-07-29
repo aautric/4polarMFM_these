@@ -15,7 +15,7 @@ import sys
 sys.path.append(os.path.abspath('/mnt/c/Users/Amaury/'))
 
 #%%
-look_up_folder = '/mnt/c/Users/Amaury/Desktop/DATA/'#'/mnt/z/DATA/4_polar_MFM_these/'
+look_up_folder = '/mnt/d/Amaury/DATA'
 path = filedialog.askdirectory(
     initialdir=look_up_folder)
 storing_folder = path+'/fit.csv'

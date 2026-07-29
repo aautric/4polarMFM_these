@@ -673,15 +673,16 @@ def noise(PSF, QE, EM, b, sigma_b, sigma_r, bias):
     See "A convex 3D deconvolution algorithm for low photon count fluorescence imaging", Ikoma et al. (2018)
     the value is in number of photons
     '''
+    
     if isinstance(PSF, torch.Tensor):
         device = PSF.device
         background = normal(0, sigma_b, PSF.shape)+b
         background[background<0] = 0.
-        read = normal(0, sigma_r, PSF.shape)
+        read = normal(bias, sigma_r, PSF.shape)
         poiss = torch.poisson(PSF+torch.tensor(background, device=device))
-        gamma_dist = torch.distributions.Gamma(concentration=poiss.clamp(min=1e-6)*QE, rate=EM)
-        excess = gamma_dist.sample()
-        noisy =  poiss + torch.tensor(read, device=device)*(1/(QE*EM)) + bias*(1/(QE*EM)) + excess*(1/(QE*EM))
+        gamma_dist = torch.distributions.Gamma(concentration=poiss.clamp(min=1e-6)*QE, rate=1./EM)
+        excess = gamma_dist.sample()/(QE*EM)
+        noisy = torch.tensor(read, device=device) + excess
         return noisy
     else:
         background = normal(b, sigma_b, PSF.shape)

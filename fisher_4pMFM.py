@@ -9,7 +9,7 @@ Created on Mon Jun  8 14:48:18 2026
 from simu_PSF_polarMFM import *
 
 def fisher(M_matrix, RHO, ETA, DELTA, Np, BACKGROUND, device='cuda'):
-    omega = 2*torch.pi*(1-torch.cos(DELTA))
+    omega = 2*torch.pi*(1-torch.cos(DELTA/2))
     gamma = 1 - (3*omega)/(4*torch.pi) + omega**2/(8*torch.pi**2)
     
     dxx_eta = 2*gamma*(torch.cos(RHO)**2)*torch.sin(ETA)*torch.cos(ETA)
@@ -70,7 +70,7 @@ def fisher(M_matrix, RHO, ETA, DELTA, Np, BACKGROUND, device='cuda'):
     return to_return #torch.sqrt(to_return.real**2+to_return.imag**2+1e-12)  
 
 def fisher_ratiometric(M_matrix, RHO, ETA, DELTA, Np, BACKGROUND, device='cuda'):
-    omega = 2*torch.pi*(1-torch.cos(DELTA))
+    omega = 2*torch.pi*(1-torch.cos(DELTA/2))
     gamma = 1 - (3*omega)/(4*torch.pi) + omega**2/(8*torch.pi**2)
     
     dxx_eta = 2*gamma*(torch.cos(RHO)**2)*torch.sin(ETA)*torch.cos(ETA)
