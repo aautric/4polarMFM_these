@@ -5,26 +5,31 @@ Created on Tue Apr 17 2026
 @author: Amaury Autric
 amaury.autric@polytechnique.edu
 """
-
+#%%
 import numpy as np
 import matplotlib.pyplot as plt
 import os
 from tkinter import Tk, filedialog
 from matplotlib.colors import hsv_to_rgb
+from pathlib import Path
 import sys
 sys.path.append(os.path.abspath('/mnt/c/Users/Amaury/'))
 
 #%%
 look_up_folder = '/mnt/d/Amaury/DATA'
-path = filedialog.askdirectory(
-    initialdir=look_up_folder)
-storing_folder = path+'/fit.csv'
-folder = path+'/NPZ/'
+folder = Path(filedialog.askdirectory(
+    initialdir=look_up_folder,
+    title="Select the NPZ folder of the run to post-process"))
+# the fit keeps the date of the run it comes from: NPZ_2026-08-10_14h32 -> fit_2026-08-10_14h32.csv
+date_of_the_run = folder.name.replace('NPZ', '')
+storing_folder = folder.parent / ('fit'+date_of_the_run+'.csv')
+print('Post-processing: '+str(folder))
+print('Storing in: '+str(storing_folder))
 #storing_folder = '/mnt/c/Users/Amaury/Desktop/DATA/2026_02_10_actin_Moein/sm/fit.csv'
 #"\\\\NAS_LOCCO\\Amaury\\DATA\\4_polar_MFM_these\\test_jax.csv"
 frame, x, y, z, N_photons, background_array_found, rho, eta, delta, score, x_start, y_start, z_start, rho_start, delta_start = [], [], [], [], [], [], [], [], [], [], [], [], [], [], []
-for filename in sorted(os.listdir(folder), key=lambda x: int(x.replace('.npz',''))):
-    data = np.load(rf"{folder}/{filename}")
+for filename in sorted(folder.glob('*.npz'), key=lambda p: int(p.stem)):
+    data = np.load(filename)
     frame = np.concatenate((frame, data['frame']))
     x = np.concatenate((x, data['x']))
     y = np.concatenate((y, data['y']))
@@ -94,13 +99,23 @@ data = np.column_stack((
     eta[threshold], delta[threshold], N_photons[threshold], score[threshold],
 ))
 
+# the whole config of the run is copied on top of the csv, as commented lines
+config_path = folder / 'config.txt'
+if config_path.is_file():
+    config_lines = config_path.read_text().splitlines()
+else:
+    config_lines = ['no config.txt found in '+str(folder)]
+    print('Warning: '+str(config_path)+' does not exist, the csv will have no config header')
+header = '\n'.join('# '+line.lstrip('# ') for line in config_lines)
+header += '\n' + "frame;x;y;z;rho;eta;delta;N_photon;score"#"frame;x;y;z;rho;eta;delta;N_photon;score;x_start;y_start;z_start;rho_start;delta_start"
+
 # Save to CSV with many digits and proper header
 # Ensure newline="" to avoid issues when reading in Excel
 np.savetxt(
     storing_folder,
     data,
     delimiter=";",
-    header="frame;x;y;z;rho;eta;delta;N_photon;score",#"frame;x;y;z;rho;eta;delta;N_photon;score;x_start;y_start;z_start;rho_start;delta_start",
+    header=header,
     comments='',
     fmt='%.15f'
 )

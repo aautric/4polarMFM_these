@@ -5,7 +5,7 @@ Created on Wed Apr 22 09:42:21 2026
 @author: Amaury
 amaury.autric@polytechnique.edu
 """
-
+#%%
 import sys
 import os
 import jax
@@ -22,7 +22,9 @@ import copy
 from tqdm import tqdm
 import functools
 from pathlib import Path
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
+import ast
 import re
 # %% PARAMETERS TO BE DEFINED
 
@@ -34,7 +36,9 @@ sensitivity = 15.4
 look_up_folder = '/mnt/d/Amaury/DATA'
 save_folder = Path(filedialog.askdirectory(initialdir=look_up_folder, title="Select the directory containing the tiff files"))
 path=(save_folder / "reconstruction")
-save_folder=(save_folder / "NPZ")
+save_folder=(save_folder / f"NPZ_{datetime.now():%Y-%m-%d_%Hh%M}")
+save_folder.mkdir(parents=True, exist_ok=True)
+print('Saving in: '+str(save_folder))
 # %% functions
 
 def extract_frames(frame_0, N_frame, dimensions):
@@ -129,6 +133,7 @@ def plot_results(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern
     background_arr = np.array(jnp.reshape(background, (h.shape[0],3,2)))
     for nb in range(data.shape[0]):
         if N_photons[nb]>6000:
+            
             fig, ax = plt.subplots(3, 2)
             ax[0,0].imshow(data[nb,0,0], cmap='gray')
             ax[0,0].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
@@ -238,7 +243,7 @@ J1 = np.array([[ 0.77294344        ,             -0.37847298 + 1j*  -0.5097466 ]
       -0.24436265 + 1j*  0.58565116  ,   -0.7503899 + 1j*  0.18626373 ]])
 J2 = np.array([[ 0.22273345               ,      -0.8014731 + 1j*  -0.55417156 ],[
       0.48960716 + 1j*  0.84284395   ,  -0.017539864 + 1j*  0.2226117 ]])
-rotation = 6
+rotation = 0
 J_dichroic = np.array([rot(-rotation)@J1, rot(-rotation)@J2, rot(-rotation)@J1])
 
 
@@ -265,27 +270,144 @@ n_photons_filtering = 100
 # nb of batch of SGD
 batch_nb = 30000
 dimensions = [215,160] # the dimension of the channels can slightly vary depending on the reconstruction file
-raw = np.zeros((Nframe,6,dimensions[0],dimensions[1]))
-buffer = (np.array([]), np.array([]), np.array([]))
-psf_buffer = np.empty((0, 3, 2, 13, 13))  # adjust shape to match your PSF dimensions
-#%%   #################### gradient descent ##################
 
 # microscope parameters
-d_ = jax.device_put(jnp.array([-float(d[1]) for k in range(NPSF)]))
-second_plane = jax.device_put(jnp.array([d[1]-d[0], 0, d[1]-d[2]]))
 polar_projections = jax.device_put(jnp.array([0, 45, 0]))
-
 N=jax.device_put(jnp.array(80))
 l_pixel=jax.device_put(jnp.array(16))
 NA=jax.device_put(jnp.array(1.4))
 mag=jax.device_put(jnp.array(100))
-lambd=jax.device_put(jnp.array(lambda_emission))
 f_tube=jax.device_put(jnp.array(200))
 MAG=jax.device_put(jnp.array(200/150))
 
 SAF = True
 
-if SAF:                                             
+# aberrations, 0 everywhere means a perfect system. zernike_coefs_x/y are used by the
+# first SGD, zern_x/zern_y by the second one, they are fitted in SGD_aberrations.py
+zernike_coefs_x = jnp.zeros((3,15)).astype(jnp.complex64)
+zernike_coefs_y = jnp.zeros((3,15)).astype(jnp.complex64)
+zern_x = jnp.zeros(3*15)
+zern_y = jnp.zeros(3*15)
+
+#%%   #### OPTIONAL - reloading the parameters of a previous run instead of the cells above ####
+# run this cell only if you want to reproduce an old run: it overwrites the parameters
+# defined above with the ones stored in the config.txt of that run
+
+def parse_config(config_path):
+    cfg = {}
+    with open(config_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            key, _, value = line.partition('=')
+            try:
+                value = ast.literal_eval(value.strip())
+            except (ValueError, SyntaxError):
+                value = value.strip() # date and paths are kept as strings
+            cfg[key.strip()] = np.array(value) if isinstance(value, list) else value
+    return cfg
+
+# the keys of config.txt are the variable names themselves, so they can be reinjected directly
+reloaded = ['QE', 'EM', 'sensitivity',
+            'lambda_emission', 'middle_plane', 'interplane', 'd',
+            'rotation', 'J1', 'J2', 'J_dichroic',
+            'polar_projections', 'N', 'l_pixel', 'NA', 'mag', 'f_tube', 'MAG', 'SAF',
+            'zernike_coefs_x', 'zernike_coefs_y', 'zern_x', 'zern_y',
+            'LR1', 'num_epochs_max1', 'Nphotons_speed1', 'background_speed',
+            'LR2', 'num_epochs_max2', 'delta_speed', 'nphotons_speed2', 'xy_speed2', 'z_speed2',
+            'Nframe', 'last_frame_processed', 'NPSF', 'n_photons_filtering', 'batch_nb', 'dimensions']
+
+config_file = filedialog.askopenfilename(initialdir=look_up_folder,
+                                         title="Select the config.txt of the run to reproduce",
+                                         filetypes=[("Config file", "config*.txt"), ("All files", "*.*")])
+old_config = parse_config(config_file)
+print('Reloading the parameters of the run of '+str(old_config.get('date', 'unknown date')))
+for key in reloaded:
+    if key in old_config:
+        globals()[key] = old_config[key]
+        print('  '+key+' = '+str(old_config[key]))
+    else:
+        print('  '+key+' is missing from the file, keeping the value defined above')
+
+#%%   #################### saving the configuration of the run ##################
+
+raw = np.zeros((Nframe,6,dimensions[0],dimensions[1]))
+buffer = (np.array([]), np.array([]), np.array([]))
+psf_buffer = np.empty((0, 3, 2, 13, 13))  # adjust shape to match your PSF dimensions
+
+config = {
+    'date': f'{datetime.now():%Y-%m-%d %H:%M:%S}',
+    'reconstruction_path': str(path),
+    # camera
+    'QE': QE,
+    'EM': EM,
+    'sensitivity': sensitivity,
+    # microscope and planes
+    'lambda_emission': lambda_emission,
+    'middle_plane': middle_plane,
+    'interplane': interplane,
+    'd': d,
+    # polarisation calibration
+    'rotation': rotation,
+    'J1': J1,
+    'J2': J2,
+    'J_dichroic': J_dichroic,
+    # objective and back focal plane
+    'polar_projections': polar_projections,
+    'N': N,
+    'l_pixel': l_pixel,
+    'NA': NA,
+    'mag': mag,
+    'f_tube': f_tube,
+    'MAG': MAG,
+    'SAF': SAF,
+    # aberrations
+    'zernike_coefs_x': zernike_coefs_x,
+    'zernike_coefs_y': zernike_coefs_y,
+    'zern_x': zern_x,
+    'zern_y': zern_y,
+    # SGD 1 - position, photons, background
+    'LR1': LR1,
+    'num_epochs_max1': num_epochs_max1,
+    'Nphotons_speed1': Nphotons_speed1,
+    'background_speed': background_speed,
+    # SGD 2 - orientation
+    'LR2': LR2,
+    'num_epochs_max2': num_epochs_max2,
+    'delta_speed': delta_speed,
+    'nphotons_speed2': nphotons_speed2,
+    'xy_speed2': xy_speed2,
+    'z_speed2': z_speed2,
+    # extraction
+    'Nframe': Nframe,
+    'last_frame_processed': last_frame_processed,
+    'NPSF': NPSF,
+    'n_photons_filtering': n_photons_filtering,
+    'batch_nb': batch_nb,
+    'dimensions': dimensions,
+}
+
+with open(save_folder / 'config.txt', 'w') as f:
+    f.write('# 4polarMFM SGD run configuration, reloadable by the OPTIONAL cell of SGD_jax.py\n')
+    f.write('# lengths in um, angles in degrees, wavelengths in nm\n')
+    for key, value in config.items():
+        if isinstance(value, str):
+            line = value
+        else:
+            line = np.array2string(np.asarray(value), separator=', ', max_line_width=10**6, floatmode='unique')
+            line = line.replace('\n', '') # 2D arrays are printed over several rows, one key per line is needed to reload
+        f.write(f'{key} = {line}\n')
+print('Config saved in: '+str(save_folder / 'config.txt'))
+
+#%%   #################### gradient descent ##################
+
+# quantities derived from the parameters above
+d_ = jax.device_put(jnp.array([-float(d[1]) for k in range(NPSF)]))
+second_plane = jax.device_put(jnp.array([d[1]-d[0], 0, d[1]-d[2]]))
+lambd=jax.device_put(jnp.array(lambda_emission))
+
+if SAF:
     xx, yy, th1, phi, [Ex0, Ex1, Ex2], [Ey0, Ey1, Ey2], r, r_cut, r_cut_saf, k_, f_o, costh2 = vectorial_BFP_perfect_focus_jax(N, NA=NA, mag=mag, lambd_nm=lambd, f_tube_mm=f_tube, J_dichroic=J_dichroic, SAF=SAF)
 else:
     costh2=None
@@ -296,9 +418,7 @@ u, v, Npadding = padding_jax(r, r_cut, k_, f_o,  N=N, l_pixel=l_pixel, NA=NA, ma
 
 phase_mask = jnp.stack([jnp.ones((N,N)), jnp.ones((N,N)), jnp.ones((N,N))])
 zernike_base = generate_zernike_base_jax(r_cut=r_cut, N=N, zernike_order=4)
-zernike_coefs_x = jnp.zeros((3,15)).astype(jnp.complex64)
-zernike_coefs_y = jnp.zeros((3,15)).astype(jnp.complex64)
- 
+
 xx = pad_jax(xx, Npadding).astype(jnp.complex64)
 yy = pad_jax(yy, Npadding).astype(jnp.complex64)
 th1 = pad_jax(th1, Npadding).astype(jnp.complex64)
@@ -485,10 +605,18 @@ for batch in range(batch_nb):
     
     fig, ax = plt.subplots(2,3)
     ax[0,0].plot(loss_)
+    ax[0,0].set(title='loss', xlabel='epoch', ylabel='loss (a.u.)')
     ax[0,1].plot(z__)
+    ax[0,1].set(title='axial position', xlabel='epoch', ylabel='z ($\\mu$m)')
     ax[0,2].plot(N__)
+    ax[0,2].set(title='photon budget', xlabel='epoch', ylabel='N photons')
     ax[1,0].plot(x__)
+    ax[1,0].set(title='lateral position', xlabel='epoch', ylabel='x ($\\mu$m)')
     ax[1,1].plot(bck)
+    ax[1,1].set(title='background', xlabel='epoch', ylabel='background (photons/pixel)')
+    ax[1,2].axis('off')
+    fig.suptitle('SGD 1 - position, photons, background')
+    fig.tight_layout()
     plt.show()
     del(ax, loss_, z__, N__, x__, bck)
 
@@ -502,9 +630,6 @@ for batch in range(batch_nb):
 
 ################################ second SGD on orientation #########################################################################################
     
-    zern_x = jnp.zeros(3*15)
-    zern_y = jnp.zeros(3*15)
-
     params = {
     'rho': rho_start,
     'eta': eta_start,
@@ -536,18 +661,28 @@ for batch in range(batch_nb):
         Np_.append(np.array(params['N_photons'] * nphotons_speed2))
     #jax.debug.print("rho_found: {}", np.array(params['rho']))
     fig, ax = plt.subplots(4,2)
-    ax[0,0].plot(loss_) 
+    ax[0,0].plot(loss_)
+    ax[0,0].set(title='loss', xlabel='epoch', ylabel='loss (a.u.)')
     ax[0,1].plot(eta_)
+    ax[0,1].set(title='out-of-plane angle', xlabel='epoch', ylabel='$\\eta$ (deg)')
     rho_ = np.array(rho_)
     eta_ = np.array(eta_)
     Np_ = np.array(Np_)
     ax[1,0].plot(rho_)
+    ax[1,0].set(title='in-plane angle', xlabel='epoch', ylabel='$\\rho$ (deg)')
     delta_ = np.array(delta_)
     ax[1,1].plot(delta_)
+    ax[1,1].set(title='wobbling cone', xlabel='epoch', ylabel='$\\delta$ (deg)')
     ax[2,0].plot(x_)
+    ax[2,0].set(title='lateral position', xlabel='epoch', ylabel='x ($\\mu$m)')
     ax[2,1].plot(z_)
+    ax[2,1].set(title='axial position', xlabel='epoch', ylabel='z ($\\mu$m)')
     ax[3,0].plot(Np_)
+    ax[3,0].set(title='photon budget', xlabel='epoch', ylabel='N photons')
     ax[3,1].hist((params['rho']%180)[Np_[-1]<10000])
+    ax[3,1].set(title='final $\\rho$ (N < 10000)', xlabel='$\\rho$ mod 180 (deg)', ylabel='count')
+    fig.suptitle('SGD 2 - orientation')
+    fig.tight_layout()
     plt.show()
     mask_red = (rho_[-1, :] % 180 > 100) & (rho_[-1, :] % 180 < 130)
     mask_blue = ~mask_red
@@ -609,3 +744,5 @@ for batch in range(batch_nb):
                         y_start=np.array(y), z_start=np.nan,
                         rho_start=np.nan, delta_start=np.nan, 
                         background_array_found=np.array(background_array_found))
+
+# %%
