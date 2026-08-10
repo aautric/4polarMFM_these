@@ -16,24 +16,29 @@ import sys
 sys.path.append(os.path.abspath('/mnt/c/Users/Amaury/'))
 
 #%%
-look_up_folder = '/mnt/c/Users/Amaury/Desktop/DATA/'#'/mnt/z/DATA/4_polar_MFM_these/'
-file = filedialog.askopenfilename(
-     initialdir=look_up_folder,
-     title="",
-     filetypes=[("fits", "*.npz"), ("Tous", "*.*")]
-     )
-data = np.load(file, allow_pickle=True)
+look_up_folder = '/mnt/d/Amaury/DATA'
+files = filedialog.askopenfilenames(
+    initialdir=look_up_folder,
+    title="",
+    filetypes=[("NumPy archive", "*.npz"), ("All files", "*.*")]
+)
+data_ = []
+for file in files:
+    data_.append(np.load(file, allow_pickle=True))
 #%%
-plt.scatter(range(15), data['zernx_found'][0]*1000/(2*np.pi), c='b')
-plt.scatter(range(15), data['zernx_found'][1]*1000/(2*np.pi), c='r')
-plt.scatter(range(15), data['zernx_found'][2]*1000/(2*np.pi), c='g')
-plt.scatter(range(15), data['zerny_found'][0]*1000/(2*np.pi), c='c')
-plt.scatter(range(15), data['zerny_found'][1]*1000/(2*np.pi), c='y')
-plt.scatter(range(15), data['zerny_found'][2]*1000/(2*np.pi), c='orange')
+s= 5
+for data in data_:
+    plt.scatter(range(15), data['zernx_found'][0]*1000/(2*np.pi), c='b', marker='x', s=s)
+    plt.scatter(range(15), data['zernx_found'][1]*1000/(2*np.pi), c='r', marker='x', s=s)
+    plt.scatter(range(15), data['zernx_found'][2]*1000/(2*np.pi), c='g', marker='x', s=s)
+    plt.scatter(range(15), data['zerny_found'][0]*1000/(2*np.pi), c='c', marker='x', s=s)
+    plt.scatter(range(15), data['zerny_found'][1]*1000/(2*np.pi), c='y', marker='x', s=s)
+    plt.scatter(range(15), data['zerny_found'][2]*1000/(2*np.pi), c='orange', marker='x', s=s)
+    #plt.show()
+    for a in [data['zernx_found'][0], data['zernx_found'][1], data['zernx_found'][2],
+              data['zerny_found'][0],data['zerny_found'][1],data['zerny_found'][2]]:
+        rms_lambda = np.sqrt(np.sum(a[:-1]**2)) / (2*np.pi)
+        rms_mlambda = rms_lambda * 1000
+        print(f"RMS = {rms_mlambda:.1f} mλ")
 
-for a in [data['zernx_found'][0], data['zernx_found'][1], data['zernx_found'][2],
-          data['zerny_found'][0],data['zerny_found'][1],data['zerny_found'][2]]:
-    rms_lambda = np.sqrt(np.sum(a[:-1]**2)) / (2*np.pi)
-    rms_mlambda = rms_lambda * 1000
-    
-    print(f"RMS = {rms_mlambda:.1f} mλ")
+#%%

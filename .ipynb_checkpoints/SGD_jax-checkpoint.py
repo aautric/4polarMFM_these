@@ -12,7 +12,8 @@ import jax
 from tkinter import Tk, filedialog
 import jax.numpy as jnp
 # Add the parent directory to the Python path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.abspath('/mnt/c/Users/Amaury/Documents/Github/4polarMFM_these'))
+#os.chdir('/mnt/c/Users/Amaury/Documents/Github/4polarMFM_these')
 from simu_PSF_polarMFM_JAX import *
 import matplotlib.pyplot as plt
 from extract_experimental_psf import *
@@ -21,32 +22,40 @@ import optax
 import copy
 from tqdm import tqdm
 import functools
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
-import re
 # %% PARAMETERS TO BE DEFINED
 
-total_n_frame = 70000
+total_n_frame = 50000
 QE = 0.92
 EM = 200
 sensitivity = 15.4
 
-look_up_folder = '/mnt/d/Amaury/DATA'
-save_folder = Path(filedialog.askdirectory(initialdir=look_up_folder, title="Select the directory containing the tiff files"))
-path=(save_folder / "reconstruction")
-save_folder=(save_folder / "NPZ")
+look_up_folder = '/mnt/c/Users/Amaury/Desktop/DATA/'#'/mnt/z/DATA/4_polar_MFM_these/'
+path_data_folder = filedialog.askdirectory(
+    initialdir=look_up_folder)
+if total_n_frame>7999:
+    path_data_folder = path_data_folder+'/image_Pos0_reco_concat/'
+else:
+    path_data_folder = path_data_folder+'/image_Pos0_reco/'
+look_up_folder = '/mnt/c/Users/Amaury/Desktop/DATA/'#'/mnt/z/DATA/4_polar_MFM_these/'
+path_info = filedialog.askopenfilename(
+    initialdir=look_up_folder,
+    filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+
 # %% functions
 
-def extract_frames(frame_0, N_frame, dimensions):
+def extract_frames(frame_0, N_frame):
     error_indices = []
     print('extracting frame '+str(frame_0)+' to '+str(frame_0+N_frame-1))
+    nfill = 5 if total_n_frame > 9999 else 4
 
-    def load_single(i, dimensions):
-        path_data = str(path) + '/' +str(frame_0+i) + '.tif'
-        return i, extract_raw2(path_data, dimensions)
+    def load_single(i):
+        number = str(frame_0 + i + 1).zfill(nfill)
+        path_data = path_data_folder + 'image_Pos0_' + number + '.tif'
+        return i, extract_raw(path_data)
 
     with ThreadPoolExecutor(max_workers=Nframe) as executor:
-        results = list(executor.map(lambda i: load_single(i, dimensions), range(N_frame)))
+        results = list(executor.map(lambda i: load_single(i), range(N_frame)))
 
     for i, raw_ in results:
         if raw_ is None:
@@ -58,18 +67,21 @@ def extract_frames(frame_0, N_frame, dimensions):
 
 def extract_positions(frame_0, N_frame, error_indices):
     index_frame = []
-    x, y = [], []
+    x, y, z, rho, delta = [], [], [], [], []
     ind = 0
     for i in range(N_frame):
         if i not in error_indices:
-            x__, y__ = position_from_data2(data, frame_0+i)
+            x__, y__, z__, rho__, delta__ = position_from_data(data, frame_0+i)
             x = np.concatenate((x, x__))
             y = np.concatenate((y, y__))
+            z = np.concatenate((z, z__))
+            rho = np.concatenate((rho, rho__))
+            delta = np.concatenate((delta, delta__))
             for k in range(len(x__)):
                 index_frame.append(ind)
         ind+=1
     index_frame=np.array(index_frame)
-    return x, y, index_frame
+    return x, y, z, rho, delta, index_frame
 
 def limit(x, lim, slope, upper=True):
     if upper:
@@ -90,7 +102,7 @@ def loss_pos(params, Nphotons_speed1, background_speed, rho, eta, delta, data, s
     x_bound = limit(params['xp'], 5*0.12, 100, upper=True) + limit(params['xp'], -5*0.12, 100, upper=False)
     y_bound = limit(params['yp'], 5*0.12, 100, upper=True) + limit(params['yp'], -5*0.12, 100, upper=False)
     z_bound = limit(params['zp'], 50., 100, upper=True) + limit(params['zp'], 0, 100, upper=False)
-    N_bound = limit(params['N_photons'], 0., 10000, upper=False)
+    N_bound = limit(params['N_photons'], 0., 100, upper=False)
     return (loss +x_bound+y_bound+z_bound+N_bound).astype(jnp.float32)
 
 def loss_angle_with_M(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, data, background, sigma, dim_simu, d_):
@@ -212,19 +224,15 @@ def eval_batch(x_found, y_found, z_found, zernx, zerny, rho_found, eta_found, de
                       lambd=lambd, f_tube=f_tube)
     return score_eval(M, rho_found, eta_found, delta_found, N_found2, noisy_psf, background, sigma, dim_simu)
 #%% extracting positions/pre-loc
-csv_files = list(path.glob("*.csv"))
-data = pos_from_csv(csv_files[0])
-match = re.search(r'_(\d+)\.csv$', csv_files[0].name)
-if match:
-    number = int(match.group(1))
-else:
-    raise ValueError("No ending number found")
-interplane = jax.device_put(number/1000)
-print('Interplane: '+str(interplane)+'um')
+
+data = pos_from_csv(path_info)
+
+
 #%% defining useful variables
 
 lambda_emission = jax.device_put(620) # nm
-middle_plane = jax.device_put(1.7)
+middle_plane = jax.device_put(1.)
+interplane = jax.device_put(0.360)
 d = jnp.array([middle_plane-interplane, middle_plane, middle_plane+interplane])
 
 
@@ -234,44 +242,48 @@ def rot(angle):
     angle=angle*np.pi/180
     return np.array([[np.cos(angle), -np.sin(angle)],[np.sin(angle), np.cos(angle)]])
 
-J1 = np.array([[ 0.77294344        ,             -0.37847298 + 1j*  -0.5097466 ],[
-      -0.24436265 + 1j*  0.58565116  ,   -0.7503899 + 1j*  0.18626373 ]])
-J2 = np.array([[ 0.22273345               ,      -0.8014731 + 1j*  -0.55417156 ],[
-      0.48960716 + 1j*  0.84284395   ,  -0.017539864 + 1j*  0.2226117 ]])
-rotation = 6
-J_dichroic = np.array([rot(-rotation)@J1, rot(-rotation)@J2, rot(-rotation)@J1])
+J1 = [[ 0.7997112        ,             -0.15173765 + 1j*  0.3638948 ],[
+      -0.14405449 + 1j*  0.34023893  ,   -0.80568093 + 1j*  -0.032433655 ]]
+J2 = [[ 0.49279398               ,      -0.696921 + 1j*  0.2615071 ],[
+      0.21217652 + 1j*  0.6954243   ,  0.32051226 + 1j*  0.42396948 ]]
+rotation = 14
+J_dichroic = np.array([rot(-rotation)@J1@rot(rotation), rot(-rotation)@J2@rot(rotation), rot(-rotation)@J1@rot(rotation)])
 
 
 # %% SGD PARANETERS TO DEFINE
-Nphotons_speed1 = jax.device_put(5000)
+Nphotons_speed1 = jax.device_put(15000)
 background_speed = jax.device_put(100)
 LR1 = jax.device_put(0.03)
 num_epochs_max1 = 80
 
 num_epochs_max2 = 120
 LR2 = jax.device_put(1.)
-delta_speed = jax.device_put(1.5)
+delta_speed = jax.device_put(1.)
 nphotons_speed2 = jax.device_put(100)
 xy_speed2 = jax.device_put(1/70)
-z_speed2=jax.device_put(1/70)
+z_speed2=jax.device_put(1/20)
+
+look_up_folder = '/mnt/c/Users/Amaury/Desktop/DATA/'#'/mnt/z/DATA/4_polar_MFM_these/'
+save_folder = filedialog.askdirectory(
+    initialdir=look_up_folder)
 
 # extraction parameters
-Nframe= 20 # nb of frame per batch of extraction
-last_frame_processed=2000 #starting point 
+Nframe= 50 # nb of frame per batch of extraction
+last_frame_processed=100 #starting point 
 NPSF = 100 # nb of PSF per batch
 
 n_photons_filtering = 100
 
 # nb of batch of SGD
 batch_nb = 30000
-dimensions = [215,160] # the dimension of the channels can slightly vary depending on the reconstruction file
-raw = np.zeros((Nframe,6,dimensions[0],dimensions[1]))
-buffer = (np.array([]), np.array([]), np.array([]))
+
+raw = np.zeros((Nframe,6,214,129))
+buffer = (np.array([]), np.array([]), np.array([]), np.array([]), np.array([]), np.array([]))
 psf_buffer = np.empty((0, 3, 2, 13, 13))  # adjust shape to match your PSF dimensions
 #%%   #################### gradient descent ##################
 
 # microscope parameters
-d_ = jax.device_put(jnp.array([-float(d[1]) for k in range(NPSF)]))
+d_ = -float(d[1])#-jax.device_put(d[1])
 second_plane = jax.device_put(jnp.array([d[1]-d[0], 0, d[1]-d[2]]))
 polar_projections = jax.device_put(jnp.array([0, 45, 0]))
 
@@ -283,13 +295,13 @@ lambd=jax.device_put(jnp.array(lambda_emission))
 f_tube=jax.device_put(jnp.array(200))
 MAG=jax.device_put(jnp.array(200/150))
 
-SAF = True
+SAF = False
 
 if SAF:                                             
-    xx, yy, th1, phi, [Ex0, Ex1, Ex2], [Ey0, Ey1, Ey2], r, r_cut, r_cut_saf, k_, f_o, costh2 = vectorial_BFP_perfect_focus_jax(N, NA=NA, mag=mag, lambd_nm=lambd, f_tube_mm=f_tube, J_dichroic=J_dichroic, SAF=SAF)
+    xx, yy, th1, phi, [Ex0, Ex1, Ex2], [Ey0, Ey1, Ey2], r, r_cut, r_cut_saf, k_, f_o, costh2 = vectorial_BFP_perfect_focus_jax(N, NA=NA, mag=mag, lambd_nm=lambd, f_tube_mm=f_tube, J_dichroic=J_dichroic)
 else:
     costh2=None
-    xx, yy, th1, phi, [Ex0, Ex1, Ex2], [Ey0, Ey1, Ey2], r, r_cut, k_, f_o = vectorial_BFP_perfect_focus_jax(N, NA=NA, mag=mag, lambd_nm=lambd, f_tube_mm=f_tube, J_dichroic=J_dichroic, SAF=SAF)
+    xx, yy, th1, phi, [Ex0, Ex1, Ex2], [Ey0, Ey1, Ey2], r, r_cut, k_, f_o = vectorial_BFP_perfect_focus_jax(N, NA=NA, mag=mag, lambd_nm=lambd, f_tube_mm=f_tube, J_dichroic=J_dichroic)
 
 u, v, Npadding = padding_jax(r, r_cut, k_, f_o,  N=N, l_pixel=l_pixel, NA=NA, mag=mag, lambd=lambd, 
            f_tube=f_tube, MAG=MAG)
@@ -317,10 +329,10 @@ if SAF:
 # strating parameters (could be a first evaluation with coarse algo)
 x_start = jax.device_put(jnp.array([0. for k in range(NPSF)])).astype(jnp.float32)
 y_start = jax.device_put(jnp.array([0. for k in range(NPSF)])).astype(jnp.float32)
-z_exp =  jax.device_put(jnp.array([float(d[1])*0.7 for k in range(NPSF)])).astype(jnp.float32)
+z_exp =  jax.device_put(jnp.array([float(d[1])*0.8 for k in range(NPSF)])).astype(jnp.float32)
 
 # gradient descent parameters
-rho_start = jnp.array([90. for k in range(NPSF)]).astype(jnp.float32)
+rho_start = jnp.array([45. for k in range(NPSF)]).astype(jnp.float32)
 eta_start = jnp.array([90. for k in range(NPSF)]).astype(jnp.float32)
 delta_start = jnp.array([80. for k in range(NPSF)]).astype(jnp.float32)
 Nstart_test = jnp.array([3000. for k in range(NPSF)]).astype(jnp.float32)
@@ -336,18 +348,18 @@ dim_simu = int(htest.shape[-1]//2)
 
 
 def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result):
-    bufferx, buffery, bufferindex = buffer
-    x, y, index_frame = bufferx, buffery, bufferindex
+    bufferx, buffery, bufferz, bufferrho, bufferdelta, bufferindex = buffer
+    x, y, z, rho, delta, index_frame = bufferx, buffery, bufferz, bufferrho, bufferdelta, bufferindex
     single_psf = psf_buffer    
     sigma = np.std(single_psf.flatten())
     background = np.mean(single_psf.flatten())
     while len(x)<NPSF:
         #t0 = time.time()
-        raw, error_indices = extract_frames(last_frame_processed+1, Nframe, dimensions)
+        raw, error_indices = extract_frames(last_frame_processed+1, Nframe)
         #print(f'extract_frames: {time.time()-t0:.2f}s')
         
         #t0 = time.time()
-        x_, y_, index_frame_ = extract_positions(last_frame_processed+1, Nframe, error_indices)
+        x_, y_, z_, rho_, delta_, index_frame_ = extract_positions(last_frame_processed+1, Nframe, error_indices)
         #print(f'extract_positions: {time.time()-t0:.2f}s')
         # converting to photon count
         raw = raw*sensitivity/(QE*EM)
@@ -360,13 +372,16 @@ def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result):
         L = raw.shape[2]*120
         W = raw.shape[3]*120
         for k in range(nb-1, -1, -1):  # iterate backwards to safely delete
-            if np.isnan(x_[k]) or np.isnan(y_[k]) or \
+            if np.isnan(x_[k]) or np.isnan(y_[k]) or np.isnan(z_[k]) or \
                (y_[k]<6*120) or (x_[k]<6*120) or (x_[k]>L-6*120) or (y_[k]>W-6*120):
                 x_ = np.delete(x_, k, 0)
                 y_ = np.delete(y_, k, 0)
+                z_ = np.delete(z_, k, 0)
+                rho_ = np.delete(rho_, k, 0)
+                delta_ = np.delete(delta_, k, 0)
                 index_frame_ = np.delete(index_frame_, k, 0)
-           
-        index_frame_ = last_frame_processed+index_frame_+1
+                
+        index_frame_ = last_frame_processed+1+index_frame_
         
         # extracting the psf from the files
         #t0 = time.time()
@@ -383,6 +398,9 @@ def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result):
         
         x = np.concatenate((x, x_))
         y = np.concatenate((y, y_))
+        z = np.concatenate((z, z_))
+        rho = np.concatenate((rho, rho_))
+        delta = np.concatenate((delta, delta_))
         index_frame = np.concatenate((index_frame, index_frame_))
         single_psf = np.concatenate((single_psf, single_psf_))
         
@@ -390,22 +408,24 @@ def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result):
         n_pixels = single_psf.shape[2] * single_psf.shape[3] * single_psf.shape[4]
         Nstart_by_plane_full = np.sum(single_psf, axis=(2,3,4)) - background * n_pixels
         nb_full = len(x)
-        '''
         for k in range(nb_full-1, -1, -1):
             if ((Nstart_by_plane_full[k,0] > Nstart_by_plane_full[k,1]) and \
                 (Nstart_by_plane_full[k,2] > Nstart_by_plane_full[k,1])) or \
                (Nstart_by_plane_full[k,0] + Nstart_by_plane_full[k,1] + Nstart_by_plane_full[k,2] < n_photons_filtering):
                 x = np.delete(x, k, 0)
                 y = np.delete(y, k, 0)
+                z = np.delete(z, k, 0)
+                rho = np.delete(rho, k, 0)
+                delta = np.delete(delta, k, 0)
                 index_frame = np.delete(index_frame, k, 0)
                 single_psf = np.delete(single_psf, k, 0)
-        '''
+        
         last_frame_processed+=Nframe
     
-    buffer = x[NPSF:], y[NPSF:], index_frame[NPSF:]
+    buffer = x[NPSF:], y[NPSF:], z[NPSF:], rho[NPSF:], delta[NPSF:], index_frame[NPSF:]
     psf_buffer = single_psf[NPSF:]
     noisy_psf = single_psf[:NPSF]
-    x, y = x[:NPSF], y[:NPSF]
+    x, y, rho = x[:NPSF], y[:NPSF], rho[:NPSF]
     index_frame = index_frame[:NPSF]
 
     Nstart_by_plane = np.sum(noisy_psf, axis=(2,3,4)) - background*len(noisy_psf[0,0].flatten())
@@ -415,6 +435,7 @@ def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result):
     result['noisy_psf'] = jnp.array(noisy_psf)
     result['x'] = jnp.array(x)
     result['y'] = jnp.array(y)
+    result['rho_start'] = jnp.array(rho)
     result['Nstart'] = jnp.array([5000. for i in range(NPSF)]).astype(jnp.float32)#jnp.array(jnp.sum(Nstart_by_plane, axis=1)).astype(jnp.float32)
     result['background_array'] = jnp.array(background*jnp.ones((NPSF,3,2))).astype(jnp.float32)
     result['sigma'] = jnp.array(sigma)
@@ -456,6 +477,7 @@ for batch in range(batch_nb):
     x = current['x']  
     y = current['y']  
     frame = current['frame'] 
+    rho_start = (current['rho_start'] -30.)%180
     params = {
         'xp': x_start,
         'yp': y_start,
@@ -534,7 +556,7 @@ for batch in range(batch_nb):
         x_.append(np.array(params['x'] * xy_speed2))
         z_.append(np.array(params['z'] * z_speed2))
         Np_.append(np.array(params['N_photons'] * nphotons_speed2))
-    #jax.debug.print("rho_found: {}", np.array(params['rho']))
+            
     fig, ax = plt.subplots(4,2)
     ax[0,0].plot(loss_) 
     ax[0,1].plot(eta_)
@@ -590,18 +612,15 @@ for batch in range(batch_nb):
     eta_found = np.array(eta_found)
     x_found = np.array(x_found)
     y_found = np.array(y_found)
-    
     # the following manipulation is needed for consistency of the parametrization 
     # of the angles, because they are let free to be optimized without bound
     mask = (rho_found>180)
     eta_found[mask] = (180-eta_found[mask])%180
     rho_found = rho_found%180
     
-    correction_dft = 0.9952298
-    
-    x_ = (x/120).astype(int)*120 + 1000*x_found/correction_dft
-    y_ = (y/120).astype(int)*120 + 1000*y_found/correction_dft
-    np.savez_compressed(str(save_folder)+'/'+str(int(batch))+'.npz', 
+    x_ = (x/120).astype(int)*120 + 1000*x_found
+    y_ = (y/120).astype(int)*120 + 1000*y_found
+    np.savez_compressed(save_folder+'/'+str(int(batch))+'.npz', 
                         frame = frame, x=np.array(x_), 
                         y=np.array(y_), z=np.array(1000*z_found), N_photons=np.array(N_found2), 
                         rho=np.array(rho_found), eta=np.array(eta_found), 

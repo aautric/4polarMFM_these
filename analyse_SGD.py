@@ -90,8 +90,8 @@ ax[2].set_ylabel('Occurences')
 
 # %% TO BE MODIFIED
 
-loss_thresh = -6*10**6
-mask1 = (score<loss_thresh) & (delta<120) & (delta>50) & (N_photons>300) & (N_photons<10000) & (z<1000) & (z>400) #& (eta>30) & (eta<150)
+loss_thresh = -2*10**5
+mask1 = (score<loss_thresh) & (delta<150) & (delta>50) & (N_photons>300) & (N_photons<10000) & (z<1500) & (z>0) #& (eta>30) & (eta<150)
 #mask1 = (delta<150) & (delta>60)
 
 #%% mask selection
@@ -322,7 +322,7 @@ hh = plt.hist(stddelta, bins=100)
 plt.xlabel('std $\\delta$ (degree)')
 plt.show()
 #%%
-mask1 = (score<loss_thresh) & (delta<150) &  (delta>50) & (N_photons>300) & (N_photons<10000) & (z<1000) & (z>400)
+mask1 = (score<loss_thresh) & (delta<150) &  (delta>50) & (N_photons>300) & (N_photons<4000) & (z<1000) & (z>0)
 #%% select mask
 %matplotlib qt
 plt.rcParams['figure.figsize'] = [5,5]
@@ -357,7 +357,7 @@ ax0.set_facecolor('black')
 #ax1.set_facecolor('black')
 sc = ax0.scatter(x[mask]/1000, y[mask]/1000,
                  c=rho[mask] / 180.0,
-                 cmap='hsv', s=0.01)
+                 cmap='hsv', s=0.001)
 cax = fig.add_axes([0.5, 0.62, 0.15, 0.15], projection='polar')
 theta = np.linspace(0, np.pi, 512)
 r = np.array([0.8, 1.0])
@@ -413,7 +413,7 @@ fig, ax = plt.subplots()
 ax.set_facecolor('black')
 sc = ax.scatter(x[mask]/1000, y[mask]/1000,
                  c=z[mask] / 1000 ,
-                 cmap='coolwarm', s=0.1, vmin=0.4, vmax=1.)
+                 cmap='plasma', s=0.001)#, vmin=0.4, vmax=1.)
 cbar = plt.colorbar(sc)
 cbar.set_label("$z$ ($\\mu$m)")
 plt.axis('equal')
@@ -423,65 +423,38 @@ ax.set_xlabel('x ($\\mu$m)')
 ax.set_ylabel('y ($\\mu$m)')
 plt.show()
 
-#%% plot delta
-%matplotlib qt
-plt.rcParams['figure.figsize'] = [12, 5]
-plt.rcParams.update({'font.size': 15})
-fig = plt.figure()
-ax0 = fig.add_subplot(1, 2, 1)
-ax1 = fig.add_subplot(1, 2, 2, projection='polar')
-ax0.set_facecolor('black')
-sc = ax0.scatter(x[mask]/1000, y[mask]/1000,
-                 c=delta[mask] / 180.0,
-                 cmap='coolwarm', s=0.001, vmin=50/180, vmax=150/180)
-cax = fig.add_axes([0.47, 0.62, 0.15, 0.15], projection='polar')
-theta = np.linspace(0, np.pi, 512)
-r = np.array([0.9, 1.0])
-Theta, R = np.meshgrid(theta, r)
-C = np.tile(np.linspace(0, 180, theta.size), (2, 1))
-# Label in the center of the semicircle
-cax.text(np.pi/2, 0.2, r'$\delta$ (°)', ha='center', va='center', fontsize=14)
-cax.pcolormesh(Theta, R, C, cmap='coolwarm', shading='auto', edgecolors='none', linewidth=0)
-cax.set_theta_zero_location('E')   # start at right
-cax.set_theta_direction(1)         # counterclockwise
-cax.set_thetamin(0)
-cax.set_thetamax(180)
-cax.set_rticks([])
-cax.grid(False)
-ticks_deg = np.arange(0, 181, 45)
-cax.set_thetagrids(ticks_deg, labels=[f"{d}°" for d in ticks_deg])
-cax.spines['polar'].set_visible(False)
-ticks = np.linspace(0, 1, 7)
-cbar.set_ticks(ticks)
-cbar.set_ticklabels((ticks * 180).astype(int))
-cbar.set_label("$\\rho$ (°)")
-ax0.set_aspect('equal')
-ax0.set_xlabel('x ($\\mu$m)')
-ax0.set_ylabel('y ($\\mu$m)')
-
-# half circle polar histogram with hsv colormap
-rho_rad = np.deg2rad(delta[mask])
-rho_mirrored = np.concatenate([rho_rad, rho_rad + np.pi])
-bins = np.linspace(0, 2*np.pi, 73)  # 72 bins = 5° each
-counts, edges = np.histogram(rho_mirrored, bins=bins)
-width = edges[1] - edges[0]
-centers = (edges[:-1] + edges[1:]) / 2
-
-# color each bar by its angle using hsv colormap
-colors = plt.cm.coolwarm((centers % np.pi) / np.pi)
-ax1.bar(centers, counts, width=width, bottom=0, alpha=0.9, color=colors)
-
-# half circle: show only 0 to pi (upper half), counter clockwise, starting right
-ax1.set_thetamin(0)
-ax1.set_thetamax(180)
-ax1.set_theta_zero_location('E')   # 0° on the right
-ax1.set_theta_direction(1)         # counter clockwise
-
-# clean up ticks
-ax1.set_xticks(np.deg2rad([0, 30, 60, 90, 120, 150, 180]))
-ax1.set_xticklabels(['0°', '30°', '60°', '90°', '120°', '150°', '180°'])
-ax1.set_ylabel('Count', labelpad=30)
-
+#%% Plot delta
+plt.rcParams["figure.figsize"] = [12, 5]
+plt.rcParams.update({"font.size": 15})
+fig, ax = plt.subplots(1, 2)
+# ---------------- Scatter plot ----------------
+ax[0].set_facecolor("black")
+sc = ax[0].scatter(
+    x[mask] / 1000,
+    y[mask] / 1000,
+    c=delta[mask],
+    cmap="viridis",
+    s=0.01,
+    vmin=50,
+    vmax=150)
+cbar = plt.colorbar(sc, ax=ax[0], fraction=0.046, pad=0.04)
+cbar.set_label(r"$\delta$ (°)")
+cbar.set_ticks([50, 75, 100, 125, 150])
+ax[0].set_aspect("equal")
+ax[0].set_xlabel(r"x ($\mu$m)")
+ax[0].set_ylabel(r"y ($\mu$m)")
+ax[0].set_title(r"$\delta$ map")
+# ---------------- Histogram ----------------
+ax[1].hist(
+    delta[mask],
+    bins=40,
+    range=(50, 150),
+    color="tab:blue",
+    edgecolor="black")
+ax[1].set_xlim(50, 150)
+ax[1].set_xlabel(r"$\delta$ (°)")
+ax[1].set_ylabel("Count")
+ax[1].set_title(r"$\delta$ distribution")
 plt.tight_layout()
 plt.show()
 #%% plot eta
@@ -494,15 +467,15 @@ sc = ax[0].scatter(x[mask]/1000, y[mask]/1000,
                  c=eta[mask] / 180.0,
                  cmap='spring', s=0.01, vmin=30/180, vmax=150/180)
 # radial colorbar inset
-cax = fig.add_axes([0.35, 0.63, 0.16, 0.16], projection='polar')
+cax2 = fig.add_axes([0.35, 0.63, 0.16, 0.16], projection='polar')
 
 theta = np.linspace(np.deg2rad(30), np.deg2rad(150), 512)
 r = np.array([0.8, 1.0])
 
 Theta, R = np.meshgrid(theta, r)
 C = np.tile(np.linspace(30, 150, theta.size), (2, 1))
-cax.set_facecolor('black')
-cax.pcolormesh(
+cax2.set_facecolor('black')
+cax2.pcolormesh(
     Theta,
     R,
     C,
@@ -514,24 +487,24 @@ cax.pcolormesh(
 )
 
 # orientation
-cax.set_theta_zero_location('N')   # 0° at top
-cax.set_theta_direction(-1)        # clockwise
-cax.set_facecolor('white')
-cax.spines['polar'].set_color('black')
-cax.tick_params(axis='x', colors='black')
-cax.tick_params(axis='y', colors='black')
-cax.yaxis.label.set_color('black')
+cax2.set_theta_zero_location('N')   # 0° at top
+cax2.set_theta_direction(-1)        # clockwise
+cax2.set_facecolor('white')
+cax2.spines['polar'].set_color('black')
+cax2.tick_params(axis='x', colors='black')
+cax2.tick_params(axis='y', colors='black')
+cax2.yaxis.label.set_color('black')
 # ticks
 ticks = np.arange(30, 151, 30)
-cax.set_thetagrids(ticks, labels=[f'{t}°' for t in ticks])
+cax2.set_thetagrids(ticks, labels=[f'{t}°' for t in ticks])
 
 # cosmetics
-cax.set_rticks([])
-cax.grid(False)
-cax.spines['polar'].set_visible(False)
+cax2.set_rticks([])
+cax2.grid(False)
+cax2.spines['polar'].set_visible(False)
 
 # label
-cax.text(
+cax2.text(
     np.deg2rad(90),
     0.4,
     r'$\eta$ (°)',
@@ -617,7 +590,7 @@ plt.rcParams.update({'font.size': 15})
 fig, ax = plt.subplots()
 ax.set_facecolor('black')
 sc = ax.scatter(y[mask]/1000, z[mask]/1000,
-                 c=N_photons[mask] / 180.0,
+                 c=eta[mask] / 180.0,
                  cmap='gnuplot2', s=3, vmin=0/180, vmax=180/180)
 plt.axis('equal')
 # radial colorbar inset

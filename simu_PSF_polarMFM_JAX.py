@@ -160,7 +160,7 @@ psi_f_jit = jax.jit(psi_f_jax)
 psi_z_jit = jax.jit(psi_z_jax)
 psi_lat_jit = jax.jit(psi_lat_jax)
 
-def generate_zernike_base_jax(r_cut, N, zernike_order=4, skip_indices = {0, 1, 2, 3}):
+def generate_zernike_base_jax(r_cut, N, zernike_order=4, skip_indices = {0, 1, 2, 3,11,12,13,14}):
     print("Compiling generate_zernike_base_jax")
     cart = RZern(zernike_order)       
     ddx = np.linspace(-r_cut, r_cut, N)

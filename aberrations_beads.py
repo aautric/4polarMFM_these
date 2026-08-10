@@ -160,7 +160,7 @@ def find_island_centers(img, vmin, connectivity=8, min_size=4, max_size=20, weig
 
  
 #%%
-def extract_reconstructed(path_raw, first_frame=None, last_frame=None):
+def extract_reconstructed(path_raw, first_frame=None, last_frame=None, data_shape=[215,160]):
     if not os.path.exists(path_raw):
         raise FileNotFoundError(f"File not found: {path_raw}")
     try:
@@ -168,7 +168,7 @@ def extract_reconstructed(path_raw, first_frame=None, last_frame=None):
             if first_frame is None:
                 first_frame=0
                 last_frame = len(tif.pages)
-            raw = np.zeros((last_frame-first_frame, 216, 160))
+            raw = np.zeros((last_frame-first_frame, data_shape[0], data_shape[1]))
             for i in range(last_frame-first_frame):
                 raw[i] = tif.pages[first_frame+i].asarray()
         return raw
@@ -176,7 +176,7 @@ def extract_reconstructed(path_raw, first_frame=None, last_frame=None):
         print(f"Error reading {path_raw}: {e}")
         return None
 #%% 
-def detection_beads():
+def detection_beads(data_shape=[215,160]):
     start_folder = Path(r"/mnt/d/Amaury/DATA")
 
     filename = filedialog.askopenfilename(
@@ -185,13 +185,14 @@ def detection_beads():
         filetypes=[("Images", "*.tif"), ("All files", "*.*")]
     )
     parent = Path(filename).parent
-    reference = extract_reconstructed(filename)
+    reference = extract_reconstructed(filename, data_shape=data_shape)
+    print(reference)
     reference = reference[2]+reference[3]
     return reference, parent
 
 #%%
-def predetection_zstack_beads():
-    ref, parent = detection_beads()
+def predetection_zstack_beads(data_shape=[215,160]):
+    ref, parent = detection_beads(data_shape=data_shape)
     
     vmin = pick_threshold(ref) 
     centers, labeled = find_island_centers(ref, vmin)
