@@ -28,7 +28,7 @@ import ast
 import re
 # %% PARAMETERS TO BE DEFINED
 
-total_n_frame = 70000
+total_n_frame = 100000
 QE = 0.92
 EM = 200
 sensitivity = 15.4
@@ -229,7 +229,7 @@ print('Interplane: '+str(interplane)+'um')
 #%% defining useful variables
 
 lambda_emission = jax.device_put(620) # nm
-middle_plane = jax.device_put(1.7)
+middle_plane = jax.device_put(1.4)
 d = jnp.array([middle_plane-interplane, middle_plane, middle_plane+interplane])
 
 
@@ -238,13 +238,24 @@ d = jnp.array([middle_plane-interplane, middle_plane, middle_plane+interplane])
 def rot(angle):
     angle=angle*np.pi/180
     return np.array([[np.cos(angle), -np.sin(angle)],[np.sin(angle), np.cos(angle)]])
-
+'''
 J1 = np.array([[ 0.77294344        ,             -0.37847298 + 1j*  -0.5097466 ],[
       -0.24436265 + 1j*  0.58565116  ,   -0.7503899 + 1j*  0.18626373 ]])
 J2 = np.array([[ 0.22273345               ,      -0.8014731 + 1j*  -0.55417156 ],[
       0.48960716 + 1j*  0.84284395   ,  -0.017539864 + 1j*  0.2226117 ]])
-rotation = 0
-J_dichroic = np.array([rot(-rotation)@J1, rot(-rotation)@J2, rot(-rotation)@J1])
+    
+J1 = np.array([[ 0.86687591+0.j        , -0.57183764-0.13293168j],
+       [ 0.47786187+0.14203586j,  0.74024064+0.32768077j]])
+J2 = np.array([[ 0.31561277+0.j        , -0.95752769-0.05599034j],
+       [-0.65325986-0.68821518j, -0.19602931-0.2039076j ]])
+'''
+J1 = np.array([[ 0.89097912+0.j        , -0.25009759-0.43946158j],
+       [ 0.43033225-0.14481147j,  0.6335862 +0.58557087j]])
+J2 = np.array([[ 0.31676515+0.j        , -0.93297585-0.07330244j],
+       [-0.58381747+0.74754063j, -0.26412184+0.23328625j]])
+rotation = 4
+rotation2 = 0
+J_dichroic = np.array([J1@rot(rotation), J2@rot(-rotation2), J1@rot(rotation)])
 
 
 # %% SGD PARANETERS TO DEFINE
@@ -254,9 +265,9 @@ LR1 = jax.device_put(0.03)
 num_epochs_max1 = 80
 
 num_epochs_max2 = 120
-LR2 = jax.device_put(1.)
+LR2 = jax.device_put(1.5)
 delta_speed = jax.device_put(1.5)
-nphotons_speed2 = jax.device_put(100)
+nphotons_speed2 = jax.device_put(50)
 xy_speed2 = jax.device_put(1/70)
 z_speed2=jax.device_put(1/70)
 
@@ -269,7 +280,7 @@ n_photons_filtering = 100
 
 # nb of batch of SGD
 batch_nb = 30000
-dimensions = [215,160] # the dimension of the channels can slightly vary depending on the reconstruction file
+dimensions = [216,160] # the dimension of the channels can slightly vary depending on the reconstruction file
 
 # microscope parameters
 polar_projections = jax.device_put(jnp.array([0, 45, 0]))
@@ -481,7 +492,7 @@ def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result):
         W = raw.shape[3]*120
         for k in range(nb-1, -1, -1):  # iterate backwards to safely delete
             if np.isnan(x_[k]) or np.isnan(y_[k]) or \
-               (y_[k]<6*120) or (x_[k]<6*120) or (x_[k]>L-6*120) or (y_[k]>W-6*120):
+               (y_[k]<7*120) or (x_[k]<7*120) or (x_[k]>L-7*120) or (y_[k]>W-7*120):
                 x_ = np.delete(x_, k, 0)
                 y_ = np.delete(y_, k, 0)
                 index_frame_ = np.delete(index_frame_, k, 0)
@@ -616,7 +627,7 @@ for batch in range(batch_nb):
     ax[1,1].set(title='background', xlabel='epoch', ylabel='background (photons/pixel)')
     ax[1,2].axis('off')
     fig.suptitle('SGD 1 - position, photons, background')
-    fig.tight_layout()
+    #fig.tight_layout()
     plt.show()
     del(ax, loss_, z__, N__, x__, bck)
 
@@ -660,7 +671,7 @@ for batch in range(batch_nb):
         z_.append(np.array(params['z'] * z_speed2))
         Np_.append(np.array(params['N_photons'] * nphotons_speed2))
     #jax.debug.print("rho_found: {}", np.array(params['rho']))
-    fig, ax = plt.subplots(4,2)
+    fig, ax = plt.subplots(4,2, figsize=(12,14))
     ax[0,0].plot(loss_)
     ax[0,0].set(title='loss', xlabel='epoch', ylabel='loss (a.u.)')
     ax[0,1].plot(eta_)
@@ -682,7 +693,7 @@ for batch in range(batch_nb):
     ax[3,1].hist((params['rho']%180)[Np_[-1]<10000])
     ax[3,1].set(title='final $\\rho$ (N < 10000)', xlabel='$\\rho$ mod 180 (deg)', ylabel='count')
     fig.suptitle('SGD 2 - orientation')
-    fig.tight_layout()
+    #fig.tight_layout()
     plt.show()
     mask_red = (rho_[-1, :] % 180 > 100) & (rho_[-1, :] % 180 < 130)
     mask_blue = ~mask_red
@@ -708,7 +719,7 @@ for batch in range(batch_nb):
     del(fig, ax, eta_, rho_, delta_, x_, z_)
 
     rho_found=params['rho']%360
-    eta_found=params['eta']%180
+    eta_found=params['eta']%180                                              
     
     delta_found=params['delta']*delta_speed
     N_found2 = params['N_photons']*nphotons_speed2
@@ -745,4 +756,5 @@ for batch in range(batch_nb):
                         rho_start=np.nan, delta_start=np.nan, 
                         background_array_found=np.array(background_array_found))
 
-# %%
+    # %%
+ 

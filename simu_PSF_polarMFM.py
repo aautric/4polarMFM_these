@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+ # -*- coding: utf-8 -*-
 """
 Simple microscope model
 see PSF_demo.ipynb for explanations
@@ -460,6 +460,13 @@ def compute_M(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, r, r_
                         E10 = torch.fft.fftshift(torch.fft.fft2(phase_masky[:,None,:,:]*zernike_mask_y[:,None,:,:]*phase*Ey0[:,None,:,:]), dim=(-2, -1))
                         E11 = torch.fft.fftshift(torch.fft.fft2(phase_masky[:,None,:,:]*zernike_mask_y[:,None,:,:]*phase*Ey1[:,None,:,:]), dim=(-2, -1))
                         E12 = torch.fft.fftshift(torch.fft.fft2(phase_masky[:,None,:,:]*zernike_mask_y[:,None,:,:]*phase*Ey2[:,None,:,:]), dim=(-2, -1))
+                        '''
+                        E00 = phase_maskx[:,None,:,:]*zernike_mask_x[:,None,:,:]*phase*Ex0[:,None,:,:]
+                        E01 = phase_maskx[:,None,:,:]*zernike_mask_x[:,None,:,:]*phase*Ex1[:,None,:,:]
+                        E02 = phase_maskx[:,None,:,:]*zernike_mask_x[:,None,:,:]*phase*Ex2[:,None,:,:]
+                        E10 = phase_masky[:,None,:,:]*zernike_mask_y[:,None,:,:]*phase*Ey0[:,None,:,:]
+                        E11 = phase_masky[:,None,:,:]*zernike_mask_y[:,None,:,:]*phase*Ey1[:,None,:,:]
+                        E12 = phase_masky[:,None,:,:]*zernike_mask_y[:,None,:,:]*phase*Ey2[:,None,:,:]'''
                 ''' M is the matrix of the basis functions 
                 shape polar, 3, 3, Kplanes, NPSF, u, v'''
                 M = torch.permute(torch.stack([
@@ -682,7 +689,7 @@ def noise(PSF, QE, EM, b, sigma_b, sigma_r, bias):
         poiss = torch.poisson(PSF+torch.tensor(background, device=device))
         gamma_dist = torch.distributions.Gamma(concentration=poiss.clamp(min=1e-6)*QE, rate=1./EM)
         excess = gamma_dist.sample()/(QE*EM)
-        noisy = torch.tensor(read, device=device) + excess
+        noisy = torch.tensor(read, device=device) + excess #torch.tensor(poiss, device=device)+torch.tensor(read, device=device)#
         return noisy
     else:
         background = normal(b, sigma_b, PSF.shape)

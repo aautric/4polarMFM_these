@@ -3,7 +3,7 @@
 Created on Tue Apr 15 2026
 
 @author: Amaury Autric
-amaury.autric@polytechnique.edu
+amaury.autric@polytechnique.org
 data analysis
 """
 
@@ -31,8 +31,11 @@ from scipy.ndimage import gaussian_filter1d
 import bisect
 from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
+from scipy.stats import gaussian_kde
+import matplotlib.colors as mcolors
+import seaborn as sns
 sys.path.append(os.path.abspath('/mnt/c/Users/Amaury/'))
-# %%
+# %% select file
 
 #data = pd.read_csv("\\\\NAS_LOCCO\\Amaury\\DATA\\4_polar_MFM_these\\test_jax.csv", delimiter=';')
 #data = pd.read_csv("/mnt/z/DATA/4_polar_MFM_these/test_jax.csv", delimiter=';')
@@ -43,7 +46,7 @@ path = filedialog.askopenfilename(
 )
 
 # Open file dialog
-data = pd.read_csv(path, delimiter=';')
+data = pd.read_csv(path, sep=';', comment='#')
 if "eta" in data.columns: # case to process SGD data
     frame = data['frame'].to_numpy().astype(int)
     x = data['x'].to_numpy()
@@ -89,14 +92,11 @@ ax[2].set_xlabel('z')
 ax[2].set_ylabel('Occurences')
 
 # %% TO BE MODIFIED
-
-loss_thresh = -2*10**5
+loss_thresh = -1*10**4
 mask1 = (score<loss_thresh) & (delta<150) & (delta>50) & (N_photons>300) & (N_photons<10000) & (z<1500) & (z>0) #& (eta>30) & (eta<150)
 #mask1 = (delta<150) & (delta>60)
-
 #%% mask selection
-
-%matplotlib qt
+%matplotlib widget
 plt.rcParams['figure.figsize'] = [5,5]
 fig = plt.figure()
 ax = fig.add_subplot()
@@ -144,21 +144,26 @@ for i in range(len(mean_x)):
         mean_x[i] = (mean_x[i-1]+mean_x[i+1])/2
         mean_y[i] = (mean_y[i-1]+mean_y[i+1])/2
         
-%matplotlib inline
-plt.rcParams['figure.figsize'] = [3,3]
+
+plt.rcParams['figure.figsize'] = [8,4]
+fig, ax = plt.subplots()
 xcorr = gaussian_filter1d(mean_x, 7)
 
 xcorr = xcorr-xcorr[0]
-plt.plot(xcorr)
+ax.plot(xcorr)
+ax.set_xlabel('bin of 100 frames')
+ax.set_ylabel('drift x (nm)')
 plt.show()
+fig, ax = plt.subplots()
 ycorr = gaussian_filter1d(mean_y, 11)
 ycorr = ycorr-ycorr[0]
-plt.plot(ycorr)
+ax.plot(ycorr)
+ax.set_xlabel('bin of 100 frames')
+ax.set_ylabel('drift y (nm)')
 plt.show()
 correct_z = False
 #%% Drift correction with fiducial
 
-%matplotlib qt
 plt.rcParams['figure.figsize'] = [5,5]
 fig = plt.figure()
 ax = fig.add_subplot()
@@ -301,36 +306,37 @@ def link_localizations(x, y, z, rho, eta, delta, N_photons, score, frame):
             np.array(meanx), np.array(meany), np.array(meanz), np.array(meanrho), np.array(meaneta), np.array(meandelta), np.array(meanN), np.array(meanscore))#%% select zone to analyse
 
 x, y, z, rho, eta, delta, N_photons, score, frame, stdx, stdy, stdz, stdrho, stdeta, stddelta, meanx, meany, meanz, meanrho, meaneta, meandelta, meanN, meanscore = link_localizations(x, y, z, rho, eta, delta, N_photons, score, frame)
-#%%
-hh = plt.hist(stdx, bins=100)
-plt.xlabel('std x (nm)')
-#%%
+#%% std x
+fig, ax = plt.subplots()
+hh = ax.hist(stdx, bins=100)
+ax.set_xlabel('std x (nm)')
+#%% std z
 plt.show()
 hh = plt.hist(stdz, bins=100)
 plt.xlabel('std z (nm)')
-#%%
+#%%std rho
 plt.show()
 hh = plt.hist(stdrho, bins=100)
 plt.xlabel('std $\\rho$ (degree)')
 plt.show()
-#%%
+#%% std eta
 hh = plt.hist(stdeta, bins=100)
 plt.xlabel('std $\\eta$ (degree)')
 plt.show()
-#%%
+#%% std delta
 hh = plt.hist(stddelta, bins=100)
 plt.xlabel('std $\\delta$ (degree)')
 plt.show()
-#%%
-mask1 = (score<loss_thresh) & (delta<150) &  (delta>50) & (N_photons>300) & (N_photons<4000) & (z<1000) & (z>0)
+#%% select new filter
+mask1 = (score<loss_thresh) & (z<1400) & (z>0) & (delta<150) &  (delta>50) & (N_photons>300) & (N_photons<10000)
 #%% select mask
 %matplotlib qt
-plt.rcParams['figure.figsize'] = [5,5]
+plt.rcParams['figure.figsize'] = [10,10]
 fig = plt.figure()
 ax = fig.add_subplot()
-vals = frame[mask1]
+vals = z[mask1]
 
-sc = ax.scatter(x[mask1] , y[mask1] , c=vals , cmap='coolwarm', s=1)
+sc = ax.scatter(x[mask1] , y[mask1] , c=vals , cmap='plasma', s=0.1)
 ax.set_title("select a point cloud")
 ax.axis('equal')
 cb = plt.colorbar(sc)
@@ -346,8 +352,9 @@ def onselect(verts):
 
 lasso = LassoSelector(ax, onselect)
 plt.show()
+#%% SIZE OF THE SCATTER POINTS
+s = 1.
 #%% plot rho
-%matplotlib qt
 plt.rcParams['figure.figsize'] = [12, 5]
 plt.rcParams.update({'font.size': 15})
 fig = plt.figure()
@@ -357,7 +364,7 @@ ax0.set_facecolor('black')
 #ax1.set_facecolor('black')
 sc = ax0.scatter(x[mask]/1000, y[mask]/1000,
                  c=rho[mask] / 180.0,
-                 cmap='hsv', s=0.001)
+                 cmap='hsv', s=s, rasterized=True)
 cax = fig.add_axes([0.5, 0.62, 0.15, 0.15], projection='polar')
 theta = np.linspace(0, np.pi, 512)
 r = np.array([0.8, 1.0])
@@ -413,7 +420,7 @@ fig, ax = plt.subplots()
 ax.set_facecolor('black')
 sc = ax.scatter(x[mask]/1000, y[mask]/1000,
                  c=z[mask] / 1000 ,
-                 cmap='plasma', s=0.001)#, vmin=0.4, vmax=1.)
+                 cmap='plasma', s=s, rasterized=True)#, vmin=0.4, vmax=1.)
 cbar = plt.colorbar(sc)
 cbar.set_label("$z$ ($\\mu$m)")
 plt.axis('equal')
@@ -434,9 +441,9 @@ sc = ax[0].scatter(
     y[mask] / 1000,
     c=delta[mask],
     cmap="viridis",
-    s=0.01,
+    s=s,
     vmin=50,
-    vmax=150)
+    vmax=150, rasterized=True)
 cbar = plt.colorbar(sc, ax=ax[0], fraction=0.046, pad=0.04)
 cbar.set_label(r"$\delta$ (°)")
 cbar.set_ticks([50, 75, 100, 125, 150])
@@ -457,15 +464,17 @@ ax[1].set_ylabel("Count")
 ax[1].set_title(r"$\delta$ distribution")
 plt.tight_layout()
 plt.show()
+#%%colormap
+hls_colors = sns.color_palette("hls", 256)
+cmap = mcolors.ListedColormap(hls_colors)
 #%% plot eta
-%matplotlib qt
-plt.rcParams['figure.figsize'] = [12, 5]
+plt.rcParams['figure.figsize'] = [15, 5]
 plt.rcParams.update({'font.size': 15})
 fig, ax = plt.subplots(1,2)
 ax[0].set_facecolor('black')
 sc = ax[0].scatter(x[mask]/1000, y[mask]/1000,
                  c=eta[mask] / 180.0,
-                 cmap='spring', s=0.01, vmin=30/180, vmax=150/180)
+                 cmap=cmap, s=s, vmin=30/180, vmax=150/180, rasterized=True)
 # radial colorbar inset
 cax2 = fig.add_axes([0.35, 0.63, 0.16, 0.16], projection='polar')
 
@@ -479,7 +488,7 @@ cax2.pcolormesh(
     Theta,
     R,
     C,
-    cmap='spring',
+    cmap=cmap,
     vmin=30,
     vmax=150,
     shading='auto',
@@ -536,8 +545,8 @@ width = edges[1] - edges[0]
 centers_folded = centers % np.pi
 
 # consistent color mapping (same as scatter)
+colors = cmap(norm(np.rad2deg(centers_folded)))
 norm = plt.Normalize(30, 150)
-colors = plt.cm.spring(norm(np.rad2deg(centers_folded)))
 
 # rebuild polar axis
 ax[1].remove()
@@ -582,90 +591,388 @@ ax1.set_thetagrids(
 ax1.set_ylabel("Count", labelpad=25)
 plt.show()
 
-#%%
-%matplotlib qt
-
+#%% plot eta 2
+# create hls colormap from seaborn
 plt.rcParams['figure.figsize'] = [5, 3]
 plt.rcParams.update({'font.size': 15})
 fig, ax = plt.subplots()
 ax.set_facecolor('black')
-sc = ax.scatter(y[mask]/1000, z[mask]/1000,
-                 c=eta[mask] / 180.0,
-                 cmap='gnuplot2', s=3, vmin=0/180, vmax=180/180)
+sc = ax.scatter(
+    y[mask] / 1000,
+    z[mask] / 1000,
+    c=eta[mask],
+    cmap=cmap,
+    s=s,
+    vmin=0,
+    vmax=180
+)
 plt.axis('equal')
-# radial colorbar inset
-cax = fig.add_axes([0.7, 0.6, 0.16, 0.16], projection='polar')
+plt.xlim(-17, -14)
+cax = fig.add_axes(
+    [0.25, 0.60, 0.16, 0.16],
+    projection='polar'
+)
 
-theta = np.linspace(np.deg2rad(0), np.deg2rad(180), 512)
+theta = np.linspace(0, 2*np.pi, 1024)
 r = np.array([0.8, 1.0])
-
 Theta, R = np.meshgrid(theta, r)
-C = np.tile(np.linspace(0, 180, theta.size), (2, 1))
-
+theta_deg = np.rad2deg(theta)
+C = np.tile(theta_deg % 180, (2, 1))
 cax.pcolormesh(
-    Theta,
-    R,
-    C,
-    cmap='gnuplot2',
+    Theta, R, C,
+    cmap=cmap,
     vmin=0,
     vmax=180,
     shading='auto',
     edgecolors='none'
 )
-
-# orientation
-cax.set_theta_zero_location('N')   # 0° at top
-cax.set_theta_direction(-1)        # clockwise
-
-# ticks
-ticks = np.arange(0, 181, 60)
-cax.set_thetagrids(ticks, labels=[f'{t}°' for t in ticks])
-
+cax.set_theta_zero_location('N')
+cax.set_theta_direction(-1)
+ticks = np.arange(0, 360, 60)
+cax.set_thetagrids(ticks, labels=[f'{t%180}°' for t in ticks])
 cax.set_facecolor('black')
-cax.tick_params(axis='x', colors='white')
-# cosmetics
+cax.tick_params(axis='x', colors='white', pad=5)
 cax.set_rticks([])
 cax.grid(False)
 cax.spines['polar'].set_visible(False)
+cax.text(0, 0, r'$\eta$', ha='center', va='center', fontsize=14, color='white')
 
-# label
-cax.text(
-    np.deg2rad(90),
-    0.2,
-    r'$\eta$',
-    ha='center',
-    va='center',
-    fontsize=14, color='white'
+ax.set_xlabel('y ($\\mu$m)')
+ax.set_ylabel('z ($\\mu$m)')
+plt.tight_layout()
+plt.show()
+#%% plot eta-z
+new_zoom=mask
+plt.rcParams['figure.figsize'] = [8,5]
+plt.rcParams.update({'font.size': 13})
+fig, ax = plt.subplots()
+color_data = 16.2+y[new_zoom]/1000
+scatter = ax.scatter(eta[new_zoom], z[new_zoom], c = color_data, cmap='spring', s=s, rasterized=True)
+cb = plt.colorbar(scatter)
+etaa=np.linspace(0, 180, 500)
+ax.plot(etaa, 600*(1+np.abs(np.cos(etaa*np.pi/180))))
+cb.set_label('y ($\\mu$m)')
+#cb.set_ticks([0.0, 1.0])
+#cb.set_ticklabels(['0', '90'])
+ax.set_ylabel('z (nm)')
+ax.set_xlabel('$\\eta$ $(^{\\circ})$')
+#plt.ylim((400,1800))
+plt.grid()
+plt.show()
+#%% bead fit
+import torch
+new_zoom = mask
+def loss__(x,y,radius,centerx, centery):
+    return torch.sum(((x-centerx)**2 + (y-centery)**2-radius**2)**2)
+def find_params(xxxx, yyyy):
+    params = torch.tensor([1000.,8800.,-15400.], requires_grad=True)
+    optimizer = torch.optim.Adam([params], lr=100)
+    loss0 = []
+    for i in tqdm(range(500)):
+        optimizer.zero_grad()  # Reset gradients
+        loss = loss__(torch.tensor(xxxx), torch.tensor(yyyy), params[0], params[1], params[2])
+        loss0.append(loss.detach().numpy())
+        loss.backward()  # Backpropagation
+        optimizer.step()  # Update parameters
+    fig, ax = plt.subplots()
+    ax.plot(loss0)
+    plt.show()
+    return params.detach().numpy()
+    
+params = find_params(x[new_zoom], y[new_zoom])
+rho_th = np.arctan2(y[new_zoom]-params[2], x[new_zoom]-params[1])*(180/np.pi)%180
+th = np.linspace(0,2*np.pi,100)
+line = np.arctan2(params[1]+(200+params[0])*np.sin(th)-params[1], params[2]+(200+params[0])*np.cos(th)-params[2])*(180/np.pi)%180.
+huesL = line / 180
+hsv_colorsL = np.stack((huesL, np.ones_like(huesL), np.ones_like(huesL)), axis=1)
+rgb_colorsL = hsv_to_rgb(hsv_colorsL)
+#%% plot of the bead fit
+plt.rcParams['figure.figsize'] = [6, 6]
+fig, ax = plt.subplots()
+hues = rho[new_zoom] / 180
+hsv_colors = np.stack((hues, np.ones_like(hues), np.ones_like(hues)), axis=1)
+rgb_colors = hsv_to_rgb(hsv_colors)
+ax.scatter(x[new_zoom], y[new_zoom], c=rgb_colors, s=10)
+plt.axis('equal')
+ax.scatter(params[1], params[2], marker='x', s=50, rasterized=True)
+ax.scatter(params[1]+(200+params[0])*np.cos(th), params[2]+(200+params[0])*np.sin(th), c=rgb_colorsL)
+plt.show()
+plt.rcParams['figure.figsize'] = [6, 6]
+fig, ax = plt.subplots()
+hues = rho_th / 180
+hsv_colors = np.stack((hues, np.ones_like(hues), np.ones_like(hues)), axis=1)
+rgb_colors = hsv_to_rgb(hsv_colors)
+ax.scatter(x[new_zoom], y[new_zoom], c=rgb_colors, s=10)
+plt.axis('equal')
+ax.scatter(params[1], params[2], marker='x', s=50, rasterized=True)
+ax.scatter(params[1]+(200+params[0])*np.cos(th), params[2]+(200+params[0])*np.sin(th), c=rgb_colorsL)
+plt.show()
+
+#%% rho bias 
+plt.rcParams['figure.figsize'] = [8, 5]
+plt.rcParams.update({'font.size': 13})
+fig, ax = plt.subplots(
+    2, 1,
+    sharex=True,
+    gridspec_kw={'height_ratios': [2, 1]},
+    constrained_layout=True
 )
-#%%
-%matplotlib qt
-plt.rcParams['figure.figsize'] = [5,5]
+delta_rho = (rho[new_zoom] - rho_th + 90) % 180 - 90 -4
+# TOP: scatter
+ax[0].scatter(
+    rho_th,
+    delta_rho,
+    s=4,
+    alpha=1,
+    c=rgb_colors,
+    rasterized=True
+)
+ax[0].set_ylabel(r'$\Delta\rho$ ($^\circ$)')
+ax[0].set_ylim(-100, 100)
+ax[0].set_xlim(0, 180)
+ax[0].grid()
+# BOTTOM: IQR boxes
+rr = np.linspace(0, 180, 37)  # bins every 5°
+centers = rr[:-1] + 2.5
+data_boxes = []
+centers_valid = []
+for i in range(36):
+    values = delta_rho[
+        (rho_th > rr[i]) & (rho_th < rr[i+1])
+    ]
+    values = values[np.abs(values)<40]  # outliers
+    if len(values) > 0:
+        data_boxes.append(values)
+        centers_valid.append(centers[i])
+ax[1].boxplot(
+    data_boxes,
+    positions=centers_valid,
+    widths=4,
+    showfliers=False,
+    patch_artist=True,
+    # IQR box
+    boxprops=dict(
+        facecolor='white',
+        edgecolor='black',
+        alpha=0.5,
+        linewidth=1.2
+    ),
+    # Median
+    medianprops=dict(
+        color='black',
+        linewidth=2
+    ),
+    # No whiskers/caps
+    whiskerprops=dict(color='none'),
+    capprops=dict(color='none')
+)
+ax[1].axhline(0., c='r')
+ax[1].set_xlabel(r'$\rho_{\mathrm{theory}}$ ($^\circ$)')
+ax[1].set_ylabel(r'$\Delta\rho$ ($^\circ$)')
+ax[1].set_ylim(-10, 10)
+ax[1].set_xlim(0, 180)
+ax[1].set_xticks(np.linspace(0, 180, 7), ['0', '30', '60', '90', '120', '150', '180'])
+ax[1].grid()
+plt.show()
+
+ #%% delta bias
+plt.rcParams['figure.figsize'] = [8, 5]
+plt.rcParams.update({'font.size': 13})
+fig, ax = plt.subplots(
+    2, 1,
+    sharex=True,
+    gridspec_kw={'height_ratios': [2, 1]},
+    constrained_layout=True
+)
+# Data
+delta_vals = delta[new_zoom]
+# KDE density
+xy = np.vstack([rho_th, delta_vals])
+kde = gaussian_kde(xy)
+density = kde(xy)
+density_norm = (
+    (density - density.min())
+    / (density.max() - density.min())
+)
+rgb_colors_array = np.array(rgb_colors)
+rgba_colors = np.column_stack([
+    rgb_colors_array,
+    density_norm
+])
+# TOP: scatter
+ax[0].scatter(
+    rho_th,
+    delta_vals,
+    s=10,
+    c=rgb_colors,
+    linewidths=0,
+    rasterized=True,
+    alpha=1
+)
+# Reference lines
+ax[0].axhline(
+    50,
+    color='gray',
+    linestyle='--'
+)
+ax[0].axhline(
+    150,
+    color='gray',
+    linestyle='--'
+)
+ax[0].set_ylim(30, 160)
+ax[0].set_xlim(0, 180)
+ax[0].set_ylabel(r'$\delta$ ($^\circ$)')
+ax[0].grid()
+# BOTTOM: IQR boxes
+rr = np.linspace(0, 180, 37)  # bins every 5°
+centers = rr[:-1] + 2.5
+data_boxes = []
+centers_valid = []
+for i in range(36):
+    values = delta_vals[
+        (rho_th > rr[i]) &
+        (rho_th < rr[i + 1])
+    ]
+
+    if len(values) > 0:
+        data_boxes.append(values)
+        centers_valid.append(centers[i])
+ax[1].boxplot(
+    data_boxes,
+    positions=centers_valid,
+    widths=4,
+    showfliers=False,
+    patch_artist=True,
+    # IQR box
+    boxprops=dict(
+        facecolor='white',
+        edgecolor='black',
+        alpha=0.7,
+        linewidth=1.2
+    ),
+    # Median
+    medianprops=dict(
+        color='black',
+        linewidth=2
+    ),
+    # Remove whiskers and caps
+    whiskerprops=dict(color='none'),
+    capprops=dict(color='none')
+)
+ax[1].set_ylim(50, 150)
+#ax[1].set_xlim(0, 180)
+ax[1].set_xlabel(r'$\rho_{\mathrm{theory}}$ ($^\circ$)')
+ax[1].set_ylabel(r'$\delta$ ($^\circ$)')
+ax[1].set_xticks(np.linspace(0, 180, 7), ['0', '30', '60', '90', '120', '150', '180'])
+ax[1].grid()
+plt.show()
+# %%function for the pca
+def pca_xy(x, y, z):
+    """
+    PCA on the xy plane of a 3D point cloud.
+    Returns coordinates in the PCA frame.
+    """
+    # stack xy coordinates
+    points_xy = np.column_stack([x, y])  # shape (N, 2)
+    
+    # center the data
+    mean_xy = np.mean(points_xy, axis=0)
+    points_centered = points_xy - mean_xy
+    
+    # compute covariance matrix and PCA
+    cov = np.cov(points_centered.T)
+    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+    
+    # sort by decreasing eigenvalue
+    idx = np.argsort(eigenvalues)[::-1]
+    eigenvalues = eigenvalues[idx]
+    eigenvectors = eigenvectors[:, idx]
+    
+    # project onto PCA axes
+    w = points_centered @ eigenvectors  # shape (N, 2): w[:,0] is PC1, w[:,1] is PC2
+    
+    return w, eigenvectors, eigenvalues, mean_xy
+
+# usage
+w, eigenvectors, eigenvalues, mean_xy = pca_xy(x[mask], y[mask], z[mask])
+
+# w[:,0] — coordinate along first principal axis (most variance)
+# w[:,1] — coordinate along second principal axis
+print(f"Principal axis direction: {eigenvectors[:,0]}")
+print(f"Explained variance: {eigenvalues/eigenvalues.sum()*100}")
+
+# %% orientation of filaments
+from scipy import stats
+
+plt.rcParams['figure.figsize'] = [5, 7]
+plt.rcParams.update({'font.size': 13})
+
 fig = plt.figure()
-ax = fig.add_subplot(projection='3d')
-sc = ax.scatter(x[mask1] , y[mask1], z[mask1], c=eta[mask1] / 180.0 , cmap='hsv', s=0.005)
-ax.axis('equal')
-cbar = plt.colorbar(sc)
-ticks = np.linspace(0, 1, 7)  # 0 → 1
-cbar.set_ticks(ticks)
-cbar.set_ticklabels((ticks * 180).astype(int))
-cbar.set_label("$\\rho$")
+ax0 = fig.add_subplot(2, 1, 1)
+ax1 = fig.add_subplot(2, 1, 2, projection='polar')
 
-#%%
+# --- linear regression ---
+slope, intercept, r_value, p_value, std_err = stats.linregress(w[:,0]/1000, z[mask]/1000)
+slope_deg = np.rad2deg(np.arctan(slope))
+print(f"Slope: {slope_deg:.2f}°")
 
-path_filtered = path[:-4]+'_filtered.csv'
+x_fit = np.linspace(w[:,0].min()/1000, w[:,0].max()/1000, 500)
+y_fit = slope * x_fit + intercept
 
-data = np.column_stack((
-    frame[mask], x[mask], y[mask], z[mask], rho[mask],
-    eta[mask], delta[mask], N_photons[mask], score[mask],
-))
+# --- scatter plot ---
+ax0.scatter(w[:,0]/1000, z[mask]/1000, s=0.1, color='steelblue', alpha=0.5, rasterized=True)
+ax0.plot(x_fit, y_fit, color='red', linewidth=2, label=f'slope = {slope_deg:.2f}°')
+#ax0.set_ylim((0.95,1.45))
+#ax0.set_aspect('equal')
+ax0.set_xlabel('PCA axis ($\\mu$m)')
+ax0.set_ylabel('z ($\\mu$m)')
+ax0.legend()
+ax0.grid(True, alpha=0.4)
 
-# Save to CSV with many digits and proper header
-# Ensure newline="" to avoid issues when reading in Excel
-np.savetxt(
-    path_filtered,
-    data,
-    delimiter=";",
-    header="frame;x;y;z;rho;eta;delta;N_photon;score",#"frame;x;y;z;rho;eta;delta;N_photon;score;x_start;y_start;z_start;rho_start;delta_start",
-    comments='',
-    fmt='%.15f'
+# --- polar histogram ---
+eta_vals = eta[mask]
+eta_rad = np.deg2rad(eta_vals)
+eta_mirrored = np.concatenate([eta_rad, eta_rad + np.pi])
+
+bins = np.linspace(0, 2*np.pi, 201)
+counts, edges = np.histogram(eta_mirrored, bins=bins)
+centers = (edges[:-1] + edges[1:]) / 2
+width = edges[1] - edges[0]
+
+norm = plt.Normalize(30, 150)
+centers_folded = centers % np.pi
+colors = cmap(norm(np.rad2deg(centers_folded)))
+ax1.bar(centers, counts, width=width, bottom=0, color=colors, edgecolor='none', alpha=0.95)
+
+# --- line corresponding to slope ---
+slope = np.median(eta[mask])
+slope_rad = np.deg2rad(slope)  # convert to polar angle (0=North)
+ax1.axvline(slope_rad, color='red', linewidth=2, label=f'{90-slope:.2f}°')
+ax1.axvline(slope_rad + np.pi, color='red', linewidth=2)  # opposite direction
+
+ax1.set_theta_zero_location('N')
+ax1.set_theta_direction(-1)
+ax1.set_facecolor('white')
+ax1.spines['polar'].set_color('black')
+ax1.tick_params(axis='x', colors='black')
+ax1.tick_params(axis='y', colors='black')
+ax1.yaxis.label.set_color('black')
+
+for label in ax1.get_xticklabels():
+    label.set_color('black')
+for label in ax1.get_yticklabels():
+    label.set_color('black')
+
+ax1.set_thetagrids(
+    np.arange(0, 360, 60),
+    labels=[f"{d}°" for d in np.arange(0, 360, 60)]
 )
+ax1.set_ylabel("Count", labelpad=25)
+ax1.legend(loc='upper right')
+
+plt.tight_layout()
+plt.show()
+print(90-np.mean(eta[mask]))
+print(90-np.median(eta[mask]))
+# %%

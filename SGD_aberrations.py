@@ -5,7 +5,7 @@ Created on Wed Apr 22 09:42:21 2026
 @author: Amaury
 amaury.autric@polytechnique.edu
 """
-
+#%%
 import sys
 import os
 import jax
@@ -33,7 +33,7 @@ from scipy import ndimage
 from tkinter import filedialog
 from aberrations_beads import *
 from matplotlib.widgets import LassoSelector
-from matplotlib.colors import LogNorm
+from matplotlib.colors import LogNorm, Normalize
 
 n2 = 1.47 # beads embedded in glycerol
 
@@ -68,43 +68,35 @@ def loss_pos(params, Nphotons_speed1, z_speed, rad_speed, d_speed, background_sp
     dim_simu = int(dim_simu)
     h = PSF_jax(rho=rho, eta=eta, delta=delta, M=Mj, N_photons=params['N_photons']*jnp.array([1 for i in range(nstack)])*Nphotons_speed1)[:,:,:,dim_simu-dim_data:dim_simu+dim_data+1,dim_simu-dim_data:dim_simu+dim_data+1]
     R = params['bead_radius'] * rad_speed / 120  # R in xy-pixel units
-    Z = h.shape[0]
     H, W = h.shape[-2], h.shape[-1]
     
-    zg = np.arange(Z) - Z // 2
     yg = np.arange(H) - H // 2
     xg = np.arange(W) - W // 2
-    zzz, yyy, xxx = np.meshgrid(zg, yg, xg, indexing='ij')  # shape (Z, H, W)
+    yyy, xxx = np.meshgrid(yg, xg, indexing='ij')  # shape (H, W)
     
-    # z voxels are 30nm, xy voxels are 120nm -> scale z into xy-pixel-equivalent units
-    rr2 = jnp.asarray(xxx**2 + yyy**2 + (zzz * z_scale)**2)  # shape (Z, H, W)
-    
+    # 2D disk kernel in xy only
+    rr2 = jnp.asarray(xxx**2 + yyy**2)
     r = jnp.sqrt(rr2 + 1e-4)
     
     edge_width = 0.5
-    soft_mask = jax.nn.sigmoid((R - r) / edge_width)
+    sphere2d = jax.nn.sigmoid((R - r) / edge_width)  # shape (H, W)
     
-    diff = R**2 - rr2
-    safe_diff = jnp.where(diff > 0, diff, 1.0)
-    amplitude = jnp.where(diff > 0, jnp.sqrt(safe_diff), 0.0)
+    denom = jnp.clip(sphere2d.sum(), 1e-8, None)
+    sphere2d = sphere2d / denom
     
-    sphere3d = soft_mask * amplitude  # shape (Z, H, W)
-    denom = jnp.clip(sphere3d.sum(), 1e-8, None)
-    sphere3d = sphere3d / denom
-    
-    # Broadcast into h's shape (Z, dim1, dim2, H, W): insert singleton axes at 1,2
-    kern = sphere3d[:, None, None, :, :]
+    # broadcast to h shape (Z, dim1, dim2, H, W)
+    kern = sphere2d[None, None, None, :, :]
     kern = jnp.broadcast_to(kern, h.shape)
     
-    kern = jnp.fft.ifftshift(kern, axes=(0, 3, 4))
+    kern = jnp.fft.ifftshift(kern, axes=(3, 4))
     
     psf_conv = jnp.real(jnp.fft.ifftn(
-        jnp.fft.fftn(h, axes=(0, 3, 4)) * jnp.fft.fftn(kern, axes=(0, 3, 4)),
-        axes=(0, 3, 4)
+        jnp.fft.fftn(h, axes=(3, 4)) * jnp.fft.fftn(kern, axes=(3, 4)),
+        axes=(3, 4)
     ))
-    #psf_conv = h
+    #jax.debug.print("sigma: {}", sigma)
     res = psf_conv+jnp.reshape(params['background']*background_speed, (psf_conv.shape[0],3,2))[:, :, :, None, None]
-    loss = jnp.sum(jnp.pow(jnp.sum(jnp.add(res, -data), axis=(2,)), 2))#/(jnp.sum(psf_conv, axis=(2,))+sigma**2) + jnp.log(jnp.sum(psf_conv, axis=(2,))+sigma**2)) 
+    loss = jnp.sum(jnp.pow(jnp.sum(jnp.add(res, -data), axis=(2,)), 2) ) #  /(jnp.sum(res, axis=(2,))+sigma**2)  + jnp.log(jnp.sum(res, axis=(2,))+sigma**2)
     
     renorm = jnp.sum(jnp.array([(jnp.max(jnp.sum(res[:,ii], axis=-3), axis=(1,2))-jnp.max(jnp.sum(data[:,ii], axis=-3), axis=(1,2)))**2 for ii in range(2)]))
     #jax.debug.print("dim: {}", jnp.sum(res[:,0], axis=-3).shape)
@@ -114,7 +106,11 @@ def loss_pos(params, Nphotons_speed1, z_speed, rad_speed, d_speed, background_sp
     N_bound = limit(params['N_photons'], 0., 100, upper=False)
     #jax.debug.print("loss: {}", loss)
     #jax.debug.print("renorm: {}", renorm)
-    return (loss +renorm/1000+x_bound+y_bound+z_bound+N_bound).astype(jnp.float32)
+    return (loss +renorm/100+x_bound+y_bound+z_bound+N_bound).astype(jnp.float32)
+N=jax.device_put(jnp.array(80))
+phase_mask = jnp.stack([jnp.ones((N,N)), jnp.ones((N,N)), jnp.ones((N,N))])
+# phase_maskx=jnp.exp(1j*params['phase_maskx']), phase_masky=jnp.exp(1j*params['phase_masky'])
+# phase_maskx=phase_mask, phase_masky=phase_mask,
 
 def loss_angle_with_M(params, rho, eta, delta, nphotons_speed2, rad_speed2, d_speed2, xy_speed2, z_speed2, data, background, sigma, dim_simu):
     # remove plot argument entirely
@@ -126,50 +122,42 @@ def loss_angle_with_M(params, rho, eta, delta, nphotons_speed2, rad_speed2, d_sp
                    second_plane=second_plane, polar_projections=polar_projections, lambd=lambd, f_tube=f_tube, SAF=SAF, cos_th2=cos_th2)
 
     h = PSF_jax(rho=rho, eta=eta, delta=delta, M=Mj, N_photons=params['N_photons']*jnp.array([1 for i in range(nstack)])*nphotons_speed2)[:,:,:,dim_simu-dim_data:dim_simu+dim_data+1,dim_simu-dim_data:dim_simu+dim_data+1]
-    R = params['bead_radius'] * rad_speed / 120  # R in xy-pixel units
-    Z = h.shape[0]
+    R = params['bead_radius'] * rad_speed2 / 120  # R in xy-pixel units
     H, W = h.shape[-2], h.shape[-1]
     
-    zg = np.arange(Z) - Z // 2
     yg = np.arange(H) - H // 2
     xg = np.arange(W) - W // 2
-    zzz, yyy, xxx = np.meshgrid(zg, yg, xg, indexing='ij')  # shape (Z, H, W)
+    yyy, xxx = np.meshgrid(yg, xg, indexing='ij')  # shape (H, W)
     
-    # z voxels are 30nm, xy voxels are 120nm -> scale z into xy-pixel-equivalent units
-    rr2 = jnp.asarray(xxx**2 + yyy**2 + (zzz * z_scale)**2)  # shape (Z, H, W)
-    
+    # 2D disk kernel in xy only
+    rr2 = jnp.asarray(xxx**2 + yyy**2)
     r = jnp.sqrt(rr2 + 1e-4)
     
     edge_width = 0.5
-    soft_mask = jax.nn.sigmoid((R - r) / edge_width)
+    sphere2d = jax.nn.sigmoid((R - r) / edge_width)  # shape (H, W)
     
-    diff = R**2 - rr2
-    safe_diff = jnp.where(diff > 0, diff, 1.0)
-    amplitude = jnp.where(diff > 0, jnp.sqrt(safe_diff), 0.0)
+    denom = jnp.clip(sphere2d.sum(), 1e-8, None)
+    sphere2d = sphere2d / denom
     
-    sphere3d = soft_mask * amplitude  # shape (Z, H, W)
-    denom = jnp.clip(sphere3d.sum(), 1e-8, None)
-    sphere3d = sphere3d / denom
-    
-    # Broadcast into h's shape (Z, dim1, dim2, H, W): insert singleton axes at 1,2
-    kern = sphere3d[:, None, None, :, :]
+    # broadcast to h shape (Z, dim1, dim2, H, W)
+    kern = sphere2d[None, None, None, :, :]
     kern = jnp.broadcast_to(kern, h.shape)
     
-    kern = jnp.fft.ifftshift(kern, axes=(0, 3, 4))
+    kern = jnp.fft.ifftshift(kern, axes=(3, 4))
     
     psf_conv = jnp.real(jnp.fft.ifftn(
-        jnp.fft.fftn(h, axes=(0, 3, 4)) * jnp.fft.fftn(kern, axes=(0, 3, 4)),
-        axes=(0, 3, 4)
+        jnp.fft.fftn(h, axes=(3, 4)) * jnp.fft.fftn(kern, axes=(3, 4)),
+        axes=(3, 4)
     ))
     res = psf_conv+jnp.reshape(background, (psf_conv.shape[0],3,2))[:, :, :, None, None]
-    
+    #jax.debug.print("sigma: {}", sigma)
     renorm = jnp.sum(jnp.array([(jnp.max(jnp.sum(res[:,ii], axis=-3), axis=(1,2))-jnp.max(jnp.sum(data[:,ii], axis=-3), axis=(1,2)))**2 for ii in range(2)]))
     #loss = jnp.sum(jnp.pow(jnp.sum(jnp.add(psf_conv+jnp.reshape(background, (psf_conv.shape[0],3,2))[:, :, :, None, None], -data), axis=(2,)), 2))
     #loss = jnp.sum(jnp.pow(jnp.add(res, -data), 2))
     loss = jnp.sum(jnp.add(h, -(data+sigma**2)*jnp.log(h+jnp.reshape(background, (h.shape[0],3,2))[:, :, :, None, None]+sigma**2)))
     #loss = jnp.sum(jnp.pow(jnp.add(h+jnp.reshape(background, (h.shape[0],3,2))[:, :, :, None, None], -data), 2))
     #rho_bound = limit(params['rho'], 0, 50, upper=False)
-    return (loss+renorm*0).astype(jnp.float32) 
+    return (loss+renorm/1000).astype(jnp.float32) 
 
 
 #%% extracting positions/pre-loc
@@ -178,7 +166,7 @@ centers, parent = predetection_zstack_beads(data_shape=data_shape)
 
 x, y = centers[:,0], centers[:,1]
 x, y = y*120, -x*120
-#%%
+#%% extracting data
 data = []
 mean=[]
 maxi=[]
@@ -202,7 +190,7 @@ if data.shape[0] == 1010:
     data = data.reshape(10, 101, 3, 2, data_shape[0],data_shape[1])
     # Average over the 10 repeats
     data = data.mean(axis=0)
-#%%
+#%% reformating
 psf3D = np.array([data[:,:,:, int(c[0])-10:int(c[0])+11,int(c[1])-10:int(c[1])+11] for c in centers])
 psf3D = psf3D[:,::,::-1,:,::-1,:]*sensitivity/(QE*EM) #converting to zstack towrds up
 psf3D = psf3D[:,:]
@@ -211,7 +199,7 @@ psf3D = psf3D[:,:]
 
 lambda_emission = jax.device_put(620) # nm
 middle_plane = jax.device_put(0.12)
-interplane = jax.device_put(0.367)
+interplane = jax.device_put(0.33)
 d = jnp.array([middle_plane-interplane, middle_plane, middle_plane+interplane])
 
 
@@ -221,37 +209,31 @@ def rot(angle):
     angle=angle*np.pi/180
     return np.array([[np.cos(angle), -np.sin(angle)],[np.sin(angle), np.cos(angle)]])
 
-J1 = np.array([[ 0.77294344        ,             -0.37847298 + 1j*  -0.5097466 ],[
-      -0.24436265 + 1j*  0.58565116  ,   -0.7503899 + 1j*  0.18626373 ]])
-J2 = np.array([[ 0.22273345               ,      -0.8014731 + 1j*  -0.55417156 ],[
-      0.48960716 + 1j*  0.84284395   ,  -0.017539864 + 1j*  0.2226117 ]])
-
-rotation = 0
-J_dichroic = np.array([rot(-rotation)@J1@rot(rotation), rot(-rotation)@J2@rot(rotation), rot(-rotation)@J1@rot(rotation)])
+J_dichroic = np.array([np.eye(2), np.eye(2), np.eye(2)])
 
 
 # %% SGD PARANETERS TO DEFINE
 Nphotons_speed1 = jax.device_put(200000)
 background_speed = jax.device_put(300)
-d_speed = jax.device_put(10)
+d_speed = jax.device_put(3)
 z_speed=jax.device_put(1)
-rad_speed = jax.device_put(5.)
-LR1 = jax.device_put(0.003)
-num_epochs_max1 = 6000
+rad_speed = jax.device_put(200)
+LR1 = jax.device_put(0.006)
+num_epochs_max1 = 600
 
-num_epochs_max2 = 6000
-LR2 = jax.device_put(0.0004)
-nphotons_speed2 = jax.device_put(300000)
-rad_speed2 = jax.device_put(0.1)
-xy_speed2 = jax.device_put(0.05)
-z_speed2=jax.device_put(0.0001)
-d_speed2 = jax.device_put(0.0001)
+num_epochs_max2 = 1000
+LR2 = jax.device_put(1e-1)
+nphotons_speed2 = jax.device_put(10e4)
+rad_speed2 = jax.device_put(10e-6)
+xy_speed2 = jax.device_put(10e-6)
+z_speed2=jax.device_put(10e-6)
+d_speed2 = jax.device_put(10e-6)
 
 # extraction parameters
 NPSF = nstack # nb of PSF per batch
 sigma = np.std(psf3D.flatten())
 
-                                              #%%   #################### gradient descent ##################
+#%%   #################### gradient descent ##################
 
 # microscope parameters
 d_ = -float(d[1])#-jax.device_put(d[1])
@@ -267,16 +249,16 @@ f_tube=jax.device_put(jnp.array(200))
 MAG=jax.device_put(jnp.array(200/150))
 
 if SAF:                                             
-    xx, yy, th1, phi, [Ex0, Ex1, Ex2], [Ey0, Ey1, Ey2], r, r_cut, r_cut_saf, k_, f_o, cos_th2 = vectorial_BFP_perfect_focus_jax(N, NA=NA, mag=mag, lambd_nm=lambd, f_tube_mm=f_tube, J_dichroic=J_dichroic, SAF=SAF)
+    xx, yy, th1, phi, [Ex0, Ex1, Ex2], [Ey0, Ey1, Ey2], r, r_cut, r_cut_saf, k_, f_o, cos_th2 = vectorial_BFP_perfect_focus_jax_unpolarized(N, NA=NA, mag=mag, lambd_nm=lambd, f_tube_mm=f_tube, J_dichroic=J_dichroic, SAF=SAF)
 else:
     costh2=None
-    xx, yy, th1, phi, [Ex0, Ex1, Ex2], [Ey0, Ey1, Ey2], r, r_cut, k_, f_o = vectorial_BFP_perfect_focus_jax(N, NA=NA, mag=mag, lambd_nm=lambd, f_tube_mm=f_tube, J_dichroic=J_dichroic)
+    xx, yy, th1, phi, [Ex0, Ex1, Ex2], [Ey0, Ey1, Ey2], r, r_cut, k_, f_o = vectorial_BFP_perfect_focus_jax_unpolarized(N, NA=NA, mag=mag, lambd_nm=lambd, f_tube_mm=f_tube, J_dichroic=J_dichroic)
 
 u, v, Npadding = padding_jax(r, r_cut, k_, f_o,  N=N, l_pixel=l_pixel, NA=NA, mag=mag, lambd=lambd, 
            f_tube=f_tube, MAG=MAG)
 
 phase_mask = jnp.stack([jnp.ones((N,N)), jnp.ones((N,N)), jnp.ones((N,N))])
-zernike_base = generate_zernike_base_jax(r_cut=r_cut, N=N, zernike_order=4)
+zernike_base = generate_zernike_base_jax(r_cut=r_cut, N=N, zernike_order=4, skip_indices = {0, 1, 2, 8,9,10,11,12,13,14}) #
 zernike_coefs_x = jnp.zeros((3,15)).astype(jnp.complex64)
 zernike_coefs_y = jnp.zeros((3,15)).astype(jnp.complex64)
  
@@ -290,7 +272,7 @@ Ex2 = pad_jax(Ex2, Npadding).astype(jnp.complex64)
 Ey0 = pad_jax(Ey0, Npadding).astype(jnp.complex64)
 Ey1 = pad_jax(Ey1, Npadding).astype(jnp.complex64)
 Ey2 = pad_jax(Ey2, Npadding).astype(jnp.complex64)
-phase_mask = pad_jax(phase_mask, Npadding).astype(jnp.complex64)
+phase_mask = pad_jax(phase_mask, Npadding).astype(jnp.float32)
 zernike_base = pad_jax(zernike_base, Npadding).astype(jnp.complex64)
 if SAF:
     cos_th2 = pad_jax(cos_th2, Npadding).astype(jnp.complex64)
@@ -403,7 +385,9 @@ for bead in range(psf3D.shape[0]):
     'y': y_found0/xy_speed2,
     'z': z_found0/z_speed2,
     'd': d_found0/d_speed2,
-    'bead_radius': bead_radius_found0/rad_speed2
+    'bead_radius': bead_radius_found0/rad_speed2,
+    'phase_maskx':phase_mask,
+    'phase_masky':phase_mask
     }
     optimizer = optax.adam(learning_rate=LR2)
     opt_state = optimizer.init(params)
@@ -446,6 +430,8 @@ for bead in range(psf3D.shape[0]):
     zernx_found = jnp.reshape(params['zern_x'], (3,15))
     zerny_found = jnp.reshape(params['zern_y'], (3,15))
     bead_radius_found = params['bead_radius']*rad_speed2
+    phase_maskx_found = params['phase_maskx']
+    phase_masky_found = params['phase_masky']
     del(params, loss)
     
     
@@ -462,115 +448,102 @@ for bead in range(psf3D.shape[0]):
                       , polar_projections=polar_projections, lambd=lambd, f_tube=f_tube, SAF=SAF, cos_th2=cos_th2)
         htest1 = PSF_jax(rho=rho_start, eta=eta_start, delta=delta_start, M=Mtest1, N_photons=N_found0*jnp.array([1 for i in range(nstack)])).astype(jnp.float32)
         R = bead_radius_found0 / 120
-        Z = htest1.shape[0]
         H, W = htest1.shape[-2], htest1.shape[-1]
         
-        zg = np.arange(Z) - Z // 2
         yg = np.arange(H) - H // 2
         xg = np.arange(W) - W // 2
-        zzz, yyy, xxx = np.meshgrid(zg, yg, xg, indexing='ij')  # shape (Z, H, W)
+        yyy, xxx = np.meshgrid(yg, xg, indexing='ij')  # shape (H, W)
         
-        # z voxels are 30nm, xy voxels are 120nm -> scale z into xy-pixel-equivalent units
-        rr2 = jnp.asarray(xxx**2 + yyy**2 + (zzz * z_scale)**2)  # shape (Z, H, W)
-        
+        # 2D disk kernel in xy only
+        rr2 = jnp.asarray(xxx**2 + yyy**2)
         r = jnp.sqrt(rr2 + 1e-4)
         
         edge_width = 0.5
-        soft_mask = jax.nn.sigmoid((R - r) / edge_width)
+        sphere2d = jax.nn.sigmoid((R - r) / edge_width)  # shape (H, W)
         
-        diff = R**2 - rr2
-        safe_diff = jnp.where(diff > 0, diff, 1.0)
-        amplitude = jnp.where(diff > 0, jnp.sqrt(safe_diff), 0.0)
+        denom = jnp.clip(sphere2d.sum(), 1e-8, None)
+        sphere2d = sphere2d / denom
         
-        sphere3d = soft_mask * amplitude  # shape (Z, H, W)
-        denom = jnp.clip(sphere3d.sum(), 1e-8, None)
-        sphere3d = sphere3d / denom
-        
-        # Broadcast into h's shape (Z, dim1, dim2, H, W): insert singleton axes at 1,2
-        kern = sphere3d[:, None, None, :, :]
+        # broadcast to h shape (Z, dim1, dim2, H, W)
+        kern = sphere2d[None, None, None, :, :]
         kern = jnp.broadcast_to(kern, htest1.shape)
         
-        kern = jnp.fft.ifftshift(kern, axes=(0, 3, 4))
+        kern = jnp.fft.ifftshift(kern, axes=(3, 4))
         
         psf_conv1 = jnp.real(jnp.fft.ifftn(
-            jnp.fft.fftn(htest1, axes=(0, 3, 4)) * jnp.fft.fftn(kern, axes=(0, 3, 4)),
-            axes=(0, 3, 4)
+            jnp.fft.fftn(htest1, axes=(3, 4)) * jnp.fft.fftn(kern, axes=(3, 4)),
+            axes=(3, 4)
         ))
-        R = bead_radius_found / 120  # R in xy-pixel units
-        Z = htest1.shape[0]
-        H, W = htest1.shape[-2], htest1.shape[-1]
-        
-        zg = np.arange(Z) - Z // 2
-        yg = np.arange(H) - H // 2
-        xg = np.arange(W) - W // 2
-        zzz, yyy, xxx = np.meshgrid(zg, yg, xg, indexing='ij')  # shape (Z, H, W)
-        
-        # z voxels are 30nm, xy voxels are 120nm -> scale z into xy-pixel-equivalent units
-        rr2 = jnp.asarray(xxx**2 + yyy**2 + (zzz * z_scale)**2)  # shape (Z, H, W)
-        
-        r = jnp.sqrt(rr2 + 1e-4)
-        
-        edge_width = 0.5
-        soft_mask = jax.nn.sigmoid((R - r) / edge_width)
-        
-        diff = R**2 - rr2
-        safe_diff = jnp.where(diff > 0, diff, 1.0)
-        amplitude = jnp.where(diff > 0, jnp.sqrt(safe_diff), 0.0)
-        
-        sphere3d = soft_mask * amplitude  # shape (Z, H, W)
-        denom = jnp.clip(sphere3d.sum(), 1e-8, None)
-        sphere3d = sphere3d / denom
-        
-        # Broadcast into h's shape (Z, dim1, dim2, H, W): insert singleton axes at 1,2
-        kern = sphere3d[:, None, None, :, :]
-        kern = jnp.broadcast_to(kern, htest1.shape)
-        
-        kern = jnp.fft.ifftshift(kern, axes=(0, 3, 4))
+        #######################
         Mtest = compute_M_jax(xp=x_found*jnp.array([1 for i in range(nstack)]), yp=y_found*jnp.array([1 for i in range(nstack)]), zp=z_found*jnp.array([1 for i in range(nstack)])*0+0.1, d=d_found+signe_stack*jnp.linspace(-0.03*(nstack//2),0.03*(nstack//2),nstack), x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2
                         , Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, zernike_base=zernike_base
-                        , zernike_coefs_x=zernx_found, zernike_coefs_y=zerny_found
+                        , zernike_coefs_x=zernx_found, zernike_coefs_y=zerny_found, phase_maskx=jnp.exp(1j*phase_maskx_found), phase_masky=jnp.exp(1j*phase_masky_found)
                         ,  second_plane=second_plane
                       , polar_projections=polar_projections, lambd=lambd, f_tube=f_tube, SAF=SAF, cos_th2=cos_th2)
         htest = PSF_jax(rho=rho_start, eta=eta_start, delta=delta_start, M=Mtest, N_photons=N_found2*jnp.array([1 for i in range(nstack)])).astype(jnp.float32)
+        R = bead_radius_found / 120
+        H, W = htest.shape[-2], htest.shape[-1]
+        
+        yg = np.arange(H) - H // 2
+        xg = np.arange(W) - W // 2
+        yyy, xxx = np.meshgrid(yg, xg, indexing='ij')  # shape (H, W)
+        
+        # 2D disk kernel in xy only
+        rr2 = jnp.asarray(xxx**2 + yyy**2)
+        r = jnp.sqrt(rr2 + 1e-4)
+        
+        edge_width = 0.5
+        sphere2d = jax.nn.sigmoid((R - r) / edge_width)  # shape (H, W)
+        
+        denom = jnp.clip(sphere2d.sum(), 1e-8, None)
+        sphere2d = sphere2d / denom
+        
+        # broadcast to h shape (Z, dim1, dim2, H, W)
+        kern = sphere2d[None, None, None, :, :]
+        kern = jnp.broadcast_to(kern, htest.shape)
+        
+        kern = jnp.fft.ifftshift(kern, axes=(3, 4))
+        
         psf_conv2 = jnp.real(jnp.fft.ifftn(
-            jnp.fft.fftn(htest, axes=(0, 3, 4)) * jnp.fft.fftn(kern, axes=(0, 3, 4)),
-            axes=(0, 3, 4)
+            jnp.fft.fftn(htest, axes=(3, 4)) * jnp.fft.fftn(kern, axes=(3, 4)),
+            axes=(3, 4)
         ))
         key = jax.random.PRNGKey(0)
         #psf_conv2 = noise_jax(key, psf_conv2, QE=QE, EM=EM, b=200., sigma_b=10., sigma_r=150., bias=10.)
         PLAN=35
         for PLAN in [35,55]:
             sigma=0.5
-            vmin=np.min(psf3D[bead,PLAN])
-            vmax=np.max(psf3D[bead,PLAN])
-            norm=LogNorm(vmin=vmin, vmax=vmax)
+            vmin=max(np.min(psf3D[bead,PLAN]),np.min(psf_conv1[PLAN]),np.min(psf_conv2[PLAN]))*1.1
+            vmax=max(np.max(psf3D[bead,PLAN]),np.max(psf_conv1[PLAN]),np.max(psf_conv2[PLAN]))*1.1
+            #norm=LogNorm(vmin=vmin, vmax=vmax)
+            norm = Normalize(vmin=vmin, vmax=vmax)
             middle = psf_conv2.shape[-1]//2
             fig, ax = plt.subplots(3,2)
-            ax[0,0].imshow(psf3D[bead,PLAN,0,0])#, norm=norm)
-            ax[1,0].imshow(psf3D[bead,PLAN,1,0])#, norm=norm)
-            ax[2,0].imshow(psf3D[bead,PLAN,2,0])#, norm=norm)
-            ax[0,1].imshow(psf3D[bead,PLAN,0,1])#,norm=norm)
-            ax[1,1].imshow(psf3D[bead,PLAN,1,1])#, norm=norm)
-            ax[2,1].imshow(psf3D[bead,PLAN,2,1])#, norm=norm)
+            ax[0,0].imshow(psf3D[bead,PLAN,0,0], norm=norm)
+            ax[1,0].imshow(psf3D[bead,PLAN,1,0], norm=norm)
+            ax[2,0].imshow(psf3D[bead,PLAN,2,0], norm=norm)
+            ax[0,1].imshow(psf3D[bead,PLAN,0,1],norm=norm)
+            ax[1,1].imshow(psf3D[bead,PLAN,1,1], norm=norm)
+            ax[2,1].imshow(psf3D[bead,PLAN,2,1], norm=norm)
             plt.show()      
             fig, ax = plt.subplots(3,2)
             middle = htest1.shape[-1]//2
 
-            ax[0,0].imshow(np.random.poisson(psf_conv1[PLAN,0,0,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape))#, norm=norm)
-            ax[1,0].imshow(np.random.poisson(psf_conv1[PLAN,1,0,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape))#, norm=norm)
-            ax[2,0].imshow(np.random.poisson(psf_conv1[PLAN,2,0,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape))#, norm=norm)
-            ax[0,1].imshow(np.random.poisson(psf_conv1[PLAN,0,1,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape))#, norm=norm)
-            ax[1,1].imshow(np.random.poisson(psf_conv1[PLAN,1,1,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape))#, norm=norm)
-            ax[2,1].imshow(np.random.poisson(psf_conv1[PLAN,2,1,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape))#, norm=norm)
+            ax[0,0].imshow(np.random.poisson(psf_conv1[PLAN,0,0,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape), norm=norm)
+            ax[1,0].imshow(np.random.poisson(psf_conv1[PLAN,1,0,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape), norm=norm)
+            ax[2,0].imshow(np.random.poisson(psf_conv1[PLAN,2,0,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape), norm=norm)
+            ax[0,1].imshow(np.random.poisson(psf_conv1[PLAN,0,1,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape), norm=norm)
+            ax[1,1].imshow(np.random.poisson(psf_conv1[PLAN,1,1,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape), norm=norm)
+            ax[2,1].imshow(np.random.poisson(psf_conv1[PLAN,2,1,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape), norm=norm)
             plt.show()
             fig, ax = plt.subplots(3,2)
 
-            ax[0,0].imshow(np.random.poisson(psf_conv2[PLAN,0,0,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape))#, norm=norm)
-            ax[1,0].imshow(np.random.poisson(psf_conv2[PLAN,1,0,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape))#, norm=norm)
-            ax[2,0].imshow(np.random.poisson(psf_conv2[PLAN,2,0,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape))#, norm=norm)
-            ax[0,1].imshow(np.random.poisson(psf_conv2[PLAN,0,1,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape))#, norm=norm)
-            ax[1,1].imshow(np.random.poisson(psf_conv2[PLAN,1,1,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape))#, norm=norm)
-            ax[2,1].imshow(np.random.poisson(psf_conv2[PLAN,2,1,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape))#, norm=norm)
+            ax[0,0].imshow(np.random.poisson(psf_conv2[PLAN,0,0,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape), norm=norm)
+            ax[1,0].imshow(np.random.poisson(psf_conv2[PLAN,1,0,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape), norm=norm)
+            ax[2,0].imshow(np.random.poisson(psf_conv2[PLAN,2,0,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape), norm=norm)
+            ax[0,1].imshow(np.random.poisson(psf_conv2[PLAN,0,1,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape), norm=norm)
+            ax[1,1].imshow(np.random.poisson(psf_conv2[PLAN,1,1,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape), norm=norm)
+            ax[2,1].imshow(np.random.poisson(psf_conv2[PLAN,2,1,middle-10:middle+11,middle-10:middle+11])+np.random.normal(np.mean(background_array_found), sigma, psf3D[bead,PLAN,0,0].shape), norm=norm)
             plt.show()
         plt.plot(np.max(np.sum(psf3D[bead,:,0], axis=-3), axis=(1,2)), c='r')
         plt.plot(np.max(np.sum(psf3D[bead,:,1], axis=-3), axis=(1,2)), c='r')
@@ -582,8 +555,15 @@ for bead in range(psf3D.shape[0]):
         plt.plot(np.max(np.sum(psf_conv2[:,1], axis=-3), axis=(1,2)), c='g')
         plt.plot(np.max(np.sum(psf_conv2[:,2], axis=-3), axis=(1,2)), c='g')
         plt.show()
-    
-    
+        
+    fig, ax = plt.subplots(3,2)
+    ax[0,0].imshow(np.real(phase_maskx_found[0]))
+    ax[1,0].imshow(np.real(phase_maskx_found[1]))
+    ax[2,0].imshow(np.real(phase_maskx_found[2]))
+    ax[0,1].imshow(np.real(phase_masky_found[0]))
+    ax[1,1].imshow(np.real(phase_masky_found[1]))
+    ax[2,1].imshow(np.real(phase_masky_found[2]))
+    plt.show()
     np.savez_compressed(parent / f"fit_{int(bead)}.npz", 
                         x_field = np.array(x),
                         y_field = np.array(y),

@@ -122,6 +122,108 @@ def vectorial_BFP_perfect_focus_jax(
     else:
         return x, y, th1, phi, (Ex0_, Ex1_, Ex2_), (Ey0_, Ey1_, Ey2_), r, r_cut, k, f_o
 
+def vectorial_BFP_perfect_focus_jax_unpolarized(
+    N: int,
+    NA: float = 1.4,
+    mag: float = 100.0,
+    lambd_nm: float = 617.0,
+    f_tube_mm: float = 200.0,
+    J_dichroic=jnp.array([[[1,0],[0,1]],[[1,0],[0,1]],[[1,0],[0,1]]]),
+    SAF=False,
+    dtype=jnp.float32,
+):
+    """
+    JAX version of vectorial_BFP_perfect_focus.
+    Not jitted, this function defines all the sizes of folowing objects and is thus very important
+    - N : grid size (static, int)
+    - NA, mag, lambd_nm (nm), f_tube_mm (mm), refractive indices n1,n2
+    - returns: x, y, th1, phi, (Ex0,Ex1,Ex2), (Ey0,Ey1,Ey2), r, r_cut, k, f_o
+    """
+    print("Compiling vectorial_BFP_perfect_focus_jax")
+    # convert units
+    lambd = jnp.array(1e-3 * lambd_nm, dtype=dtype)      # nm -> um
+    f_tube = jnp.array(1000.0 * f_tube_mm, dtype=dtype)  # mm -> um
+    f_o = f_tube / mag
+    k = 2.0 * n1 * jnp.pi / lambd
+
+    # spatial cutoff
+    if SAF:
+        r_cut_SAF = n2/n1
+        r_cut = NA/n1
+    else:
+        r_cut = jnp.minimum(NA / n1, n2 / n1)
+
+    # meshgrid
+    coords = jnp.linspace(-r_cut, r_cut, N, dtype=dtype)
+    x, y = jnp.meshgrid(coords, coords, indexing="xy")
+    r = jnp.sqrt(x**2 + y**2)
+    phi = jnp.arctan2(y, x)
+
+    # angles
+    th1 = jnp.where(r < r_cut, jnp.arcsin(r), 0.0)
+    if SAF:
+        th2 = jnp.where(r < r_cut_SAF, jnp.arcsin((n1 / n2) * r), 0.0)
+    else:
+        th2 = jnp.where(r < r_cut, jnp.arcsin((n1 / n2) * r), 0.0)
+
+    # transmission coefficients
+    cos_th1 = jnp.cos(th1)
+    cos_th2 = jnp.cos(th2)
+    
+    if SAF:
+        mask_saf = (r < r_cut) & (r > r_cut_SAF)
+        new_vals = 1j * jnp.sqrt((jnp.sin(th1) * (n1 / n2))**2 - 1)
+        cos_th2 = jnp.where(mask_saf, new_vals, cos_th2)    
+    Ts = jnp.where(r < r_cut, (2.0 * n2 * cos_th2) / (n2 * cos_th2 + n1 * cos_th1), 0.0)
+    Tp = jnp.where(r < r_cut, (2.0 * n2 * cos_th2) / (n2 * cos_th1 + n1 * cos_th2), 0.0)
+
+    sqrt_cos_th1 = jnp.sqrt(jnp.clip(cos_th1, min=1e-12))  # stable sqrt
+
+    # components
+    sin_phi = jnp.sin(phi)
+    cos_phi = jnp.cos(phi)
+    sin2phi = jnp.sin(2.0 * phi)
+
+    # Ex
+    Ex0 = (1/ sqrt_cos_th1)
+    Ex1 = (1/ sqrt_cos_th1)
+    Ex2 = (1/ sqrt_cos_th1)
+
+    # Ey
+    Ey0 = (1 / sqrt_cos_th1)
+    Ey1 = (1/ sqrt_cos_th1)
+    Ey2 = (1/ sqrt_cos_th1)
+
+    # mask outside r_cut
+    mask = (r < r_cut).astype(dtype)
+    Ex0 *= mask
+    Ex1 *= mask
+    Ex2 *= mask
+    Ey0 *= mask
+    Ey1 *= mask
+    Ey2 *= mask
+    
+    # J_dichroic: (planes, 2, 2), E: (H, W)
+    # Stack E fields into (2, H, W) then apply Jones matrix
+    E0 = jnp.stack([Ex0, Ey0])  # (2, H, W)
+    E1 = jnp.stack([Ex1, Ey1])
+    E2 = jnp.stack([Ex2, Ey2])
+    
+    # einsum: for each plane, apply 2x2 Jones matrix to 2xHxW field
+    E0_ = jnp.einsum('pij,jhw->pihw', J_dichroic, E0)  # (planes, 2, H, W)
+    E1_ = jnp.einsum('pij,jhw->pihw', J_dichroic, E1)
+    E2_ = jnp.einsum('pij,jhw->pihw', J_dichroic, E2)
+    
+    # unpack
+    Ex0_, Ey0_ = E0_[:,0], E0_[:,1]
+    Ex1_, Ey1_ = E1_[:,0], E1_[:,1]
+    Ex2_, Ey2_ = E2_[:,0], E2_[:,1]
+    
+    if SAF:
+        return x, y, th1, phi, (Ex0_, Ex1_, Ex2_), (Ey0_, Ey1_, Ey2_), r, r_cut, r_cut_SAF, k, f_o, cos_th2
+    else:
+        return x, y, th1, phi, (Ex0_, Ex1_, Ex2_), (Ey0_, Ey1_, Ey2_), r, r_cut, k, f_o
+
 def psi_lat_jax(x, y, theta, phi, lambd=0.617):
     """
     JAX version of psi_lat.

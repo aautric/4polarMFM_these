@@ -34,7 +34,7 @@ for data in data_:
     plt.scatter(range(15), data['zerny_found'][0]*1000/(2*np.pi), c='c', marker='x', s=s)
     plt.scatter(range(15), data['zerny_found'][1]*1000/(2*np.pi), c='y', marker='x', s=s)
     plt.scatter(range(15), data['zerny_found'][2]*1000/(2*np.pi), c='orange', marker='x', s=s)
-    #plt.show()
+    plt.show()
     for a in [data['zernx_found'][0], data['zernx_found'][1], data['zernx_found'][2],
               data['zerny_found'][0],data['zerny_found'][1],data['zerny_found'][2]]:
         rms_lambda = np.sqrt(np.sum(a[:-1]**2)) / (2*np.pi)
