@@ -97,13 +97,15 @@ def loss_pos(params, Nphotons_speed1, background_speed, rho, eta, delta, data, s
     N_bound = limit(params['N_photons'], 0., 10000, upper=False)
     return (loss +x_bound+y_bound+z_bound+N_bound).astype(jnp.float32)
 
-def loss_angle_with_M(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, data, background, sigma, dim_simu, d_):
+def loss_angle_with_M(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, zern_speed2_x, zern_speed2_y, data, background, sigma, dim_simu, d_):
     # remove plot argument entirely
     dim_data = 6
     dim_simu = int(dim_simu)
+    # zernx/zerny are the starting aberrations, params['zern_x'/'zern_y'] the fitted offset shared by the whole batch
+    # (an offset rather than a ratio so that a speed of 0 freezes a coefficient at its starting value)
     Mj = compute_M_jax(xp=params['x']*xy_speed2, yp=params['y']*xy_speed2, zp=params['z']*z_speed2, d=d_, x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2,
-                   Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, phase_maskx=phase_mask, phase_masky=phase_mask, zernike_base=zernike_base, 
-                   zernike_coefs_x=jnp.reshape(zernx, (3,15)), zernike_coefs_y=jnp.reshape(zerny, (3,15)),
+                   Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, phase_maskx=phase_mask, phase_masky=phase_mask, zernike_base=zernike_base,
+                   zernike_coefs_x=jnp.reshape(zernx + params['zern_x']*zern_speed2_x, (3,15)), zernike_coefs_y=jnp.reshape(zerny + params['zern_y']*zern_speed2_y, (3,15)),
                    second_plane=second_plane, polar_projections=polar_projections, lambd=lambd, f_tube=f_tube)
 
     h = PSF_jax(rho=params['rho'], eta=params['eta'], delta=params['delta']*delta_speed, M=Mj, N_photons=params['N_photons']*nphotons_speed2)[:,:,:,dim_simu-dim_data:dim_simu+dim_data+1,dim_simu-dim_data:dim_simu+dim_data+1]
@@ -238,27 +240,28 @@ d = jnp.array([middle_plane-interplane, middle_plane, middle_plane+interplane])
 def rot(angle):
     angle=angle*np.pi/180
     return np.array([[np.cos(angle), -np.sin(angle)],[np.sin(angle), np.cos(angle)]])
-'''
+
 J1 = np.array([[ 0.77294344        ,             -0.37847298 + 1j*  -0.5097466 ],[
       -0.24436265 + 1j*  0.58565116  ,   -0.7503899 + 1j*  0.18626373 ]])
 J2 = np.array([[ 0.22273345               ,      -0.8014731 + 1j*  -0.55417156 ],[
       0.48960716 + 1j*  0.84284395   ,  -0.017539864 + 1j*  0.2226117 ]])
-'''
+
 '''
 J1 = np.array([[ 0.86687591+0.j        , -0.57183764-0.13293168j],
        [ 0.47786187+0.14203586j,  0.74024064+0.32768077j]])
 J2 = np.array([[ 0.31561277+0.j        , -0.95752769-0.05599034j],
        [-0.65325986-0.68821518j, -0.19602931-0.2039076j ]])
 '''
+'''
 J1 = np.array([[ 0.89097912+0.j        , -0.25009759-0.43946158j],
        [ 0.43033225-0.14481147j,  0.6335862 +0.58557087j]])
 J2 = np.array([[ 0.31676515+0.j        , -0.93297585-0.07330244j],
        [-0.58381747+0.74754063j, -0.26412184+0.23328625j]])
-
-rotation = 7
-rotation2 =  2
+'''
+rotation = 0#7
+rotation2 =  0#2
 J_dichroic = np.array([J1@rot(rotation), J2@rot(-rotation2), J1@rot(rotation)])
-rho_offset = -4
+rho_offset = 0#-4
 
 # %% SGD PARANETERS TO DEFINE
 Nphotons_speed1 = jax.device_put(2000)
@@ -272,6 +275,11 @@ delta_speed = jax.device_put(1.8)
 nphotons_speed2 = jax.device_put(50)
 xy_speed2 = jax.device_put(1/70)
 z_speed2=jax.device_put(1/70)
+# relative learning rates of the aberrations fitted in SGD2, one per coefficient: 3 planes x 15 Noll modes,
+# index = 15*plane + mode, for each polarisation channel. Coefficients in radians, fitted as an offset
+# shared by all the PSF of the batch around zern_x/zern_y. 0 freezes a coefficient (all 0 = no aberration fit)
+zern_speed2_x = jax.device_put(jnp.full(3*15, 0.01))
+zern_speed2_y = jax.device_put(jnp.full(3*15, 0.01))
 
 # extraction parameters
 Nframe= 20 # nb of frame per batch of extraction
@@ -329,6 +337,7 @@ reloaded = ['QE', 'EM', 'sensitivity',
             'zernike_coefs_x', 'zernike_coefs_y', 'zern_x', 'zern_y',
             'LR1', 'num_epochs_max1', 'Nphotons_speed1', 'background_speed',
             'LR2', 'num_epochs_max2', 'delta_speed', 'nphotons_speed2', 'xy_speed2', 'z_speed2',
+            'zern_speed2_x', 'zern_speed2_y',
             'Nframe', 'last_frame_processed', 'NPSF', 'n_photons_filtering', 'batch_nb', 'dimensions']
 
 config_file = filedialog.askopenfilename(initialdir=look_up_folder,
@@ -394,6 +403,8 @@ config = {
     'nphotons_speed2': nphotons_speed2,
     'xy_speed2': xy_speed2,
     'z_speed2': z_speed2,
+    'zern_speed2_x': zern_speed2_x,
+    'zern_speed2_y': zern_speed2_y,
     # extraction
     'Nframe': Nframe,
     'last_frame_processed': last_frame_processed,
@@ -432,7 +443,8 @@ u, v, Npadding = padding_jax(r, r_cut, k_, f_o,  N=N, l_pixel=l_pixel, NA=NA, ma
            f_tube=f_tube, MAG=MAG)
 
 phase_mask = jnp.stack([jnp.ones((N,N)), jnp.ones((N,N)), jnp.ones((N,N))])
-zernike_base = generate_zernike_base_jax(r_cut=r_cut, N=N, zernike_order=4)
+zernike_base = generate_zernike_base_jax(r_cut=r_cut, N=N, zernike_order=4, skip_indices={0, 1, 2, 3}) # piston, tip, tilt and defocus are degenerate with x, y, z
+active_modes = np.where(np.any(np.array(zernike_base)!=0, axis=(1,2)))[0] # fitted modes, used for the plot of SGD2
 
 xx = pad_jax(xx, Npadding).astype(jnp.complex64)
 yy = pad_jax(yy, Npadding).astype(jnp.complex64)
@@ -561,8 +573,8 @@ def step1(params, opt_state, Nphotons_speed1, background_speed, rho, eta, delta,
     return params, opt_state, loss
 
 @functools.partial(jax.jit, static_argnames=['dim_simu'])#, donate_argnums=(0, 1))
-def step2(params, opt_state, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, data, background, sigma, dim_simu, d_):
-    loss, grads = jax.value_and_grad(loss_angle_with_M)(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, data, background, sigma, dim_simu, d_)
+def step2(params, opt_state, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, zern_speed2_x, zern_speed2_y, data, background, sigma, dim_simu, d_):
+    loss, grads = jax.value_and_grad(loss_angle_with_M)(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, zern_speed2_x, zern_speed2_y, data, background, sigma, dim_simu, d_)
     updates, opt_state = optimizer2.update(grads, opt_state, params)
     params = optax.apply_updates(params, updates)
     return params, opt_state, loss
@@ -649,7 +661,9 @@ for batch in range(batch_nb):
     'N_photons': N_found/nphotons_speed2,
     'x': x_found/xy_speed2,
     'y': y_found/xy_speed2,
-    'z': z_found/z_speed2
+    'z': z_found/z_speed2,
+    'zern_x': jnp.zeros(3*15),
+    'zern_y': jnp.zeros(3*15)
     }
     optimizer = optax.adam(learning_rate=LR2)
     opt_state = optimizer.init(params)
@@ -661,9 +675,11 @@ for batch in range(batch_nb):
     x_ = []
     z_ = []
     Np_ = []
+    zx_ = []
+    zy_ = []
     
     for i in tqdm(range(num_epochs_max2)):
-        params, opt_state, loss = step2(params, opt_state, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern_x, zern_y, noisy_psf, background_array_found, sigma, dim_simu, d_)
+        params, opt_state, loss = step2(params, opt_state, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern_x, zern_y, zern_speed2_x, zern_speed2_y, noisy_psf, background_array_found, sigma, dim_simu, d_)
         loss_.append(float(loss))
         rho_.append(np.array(params['rho']))
         eta_.append(np.array(params['eta']))
@@ -671,6 +687,8 @@ for batch in range(batch_nb):
         x_.append(np.array(params['x'] * xy_speed2))
         z_.append(np.array(params['z'] * z_speed2))
         Np_.append(np.array(params['N_photons'] * nphotons_speed2))
+        zx_.append(np.array(zern_x + params['zern_x'] * zern_speed2_x) * 1000/(2*np.pi)) # rad to milli-waves
+        zy_.append(np.array(zern_y + params['zern_y'] * zern_speed2_y) * 1000/(2*np.pi))
     #jax.debug.print("rho_found: {}", np.array(params['rho']))
     if batch<30:
         fig, ax = plt.subplots(4,2, figsize=(12,14))
@@ -699,6 +717,22 @@ for batch in range(batch_nb):
         #fig.tight_layout()
         del(fig, ax)
         plt.show()
+
+        # aberrations, only the modes that exist in zernike_base (the skipped ones are 0 everywhere)
+        zx_ = np.reshape(np.array(zx_), (-1,3,15))
+        zy_ = np.reshape(np.array(zy_), (-1,3,15))
+        fig, ax = plt.subplots(3,2, figsize=(12,10), sharex=True)
+        for p in range(3):
+            for c, (z_pol, pol) in enumerate([(zx_, 'x'), (zy_, 'y')]):
+                for m in active_modes:
+                    ax[p,c].plot(z_pol[:,p,m], label='Z'+str(m+1))
+                ax[p,c].set(title='plane '+str(p)+' - '+pol+' polarisation', ylabel='coefficient (m$\\lambda$)')
+        ax[2,0].set(xlabel='epoch')
+        ax[2,1].set(xlabel='epoch')
+        ax[0,1].legend(title='Noll index', fontsize=8, loc='upper left', bbox_to_anchor=(1.01,1))
+        fig.suptitle('SGD 2 - aberrations')
+        del(fig, ax)
+        plt.show()
     
     '''
     mask_red = (rho_[-1, :] % 180 > 100) & (rho_[-1, :] % 180 < 130)
@@ -719,9 +753,9 @@ for batch in range(batch_nb):
     #plt.show()
     '''
     if first_loop_of_the_launch:
-        plot_results(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern_x, zern_y, noisy_psf, background_array_found, sigma, dim_simu, d_)
+        plot_results(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern_x + params['zern_x']*zern_speed2_x, zern_y + params['zern_y']*zern_speed2_y, noisy_psf, background_array_found, sigma, dim_simu, d_)
         first_loop_of_the_launch = False
-    del(eta_, rho_, delta_, x_, z_)
+    del(eta_, rho_, delta_, x_, z_, zx_, zy_)
 
     rho_found=params['rho']%360
     eta_found=params['eta']%180                                              
@@ -731,8 +765,8 @@ for batch in range(batch_nb):
     x_found = params['x']*xy_speed2
     y_found = params['y']*xy_speed2
     z_found = params['z']*z_speed2
-    zernx = jnp.reshape(zern_x, (3,15))
-    zerny = jnp.reshape(zern_y, (3,15))
+    zernx = jnp.reshape(zern_x + params['zern_x']*zern_speed2_x, (3,15))
+    zerny = jnp.reshape(zern_y + params['zern_y']*zern_speed2_y, (3,15))
     del(params, loss)
     
     score = eval_batch(x_found, y_found, z_found, zernx, zerny, rho_found, eta_found, delta_found, N_found2, noisy_psf, background_array_found, sigma, dim_simu)
@@ -759,7 +793,8 @@ for batch in range(batch_nb):
                         delta=np.array(delta_found), score=np.array(score), x_start=np.array(x), 
                         y_start=np.array(y), z_start=np.nan,
                         rho_start=np.nan, delta_start=np.nan, 
-                        background_array_found=np.array(background_array_found))
+                        background_array_found=np.array(background_array_found),
+                        zernx_found=np.array(zernx), zerny_found=np.array(zerny))
 
 # %%
  
