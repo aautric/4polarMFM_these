@@ -229,7 +229,7 @@ print('Interplane: '+str(interplane)+'um')
 #%% defining useful variables
 
 lambda_emission = jax.device_put(620) # nm
-middle_plane = jax.device_put(1.4)
+middle_plane = jax.device_put(1.)
 d = jnp.array([middle_plane-interplane, middle_plane, middle_plane+interplane])
 
 
@@ -243,7 +243,8 @@ J1 = np.array([[ 0.77294344        ,             -0.37847298 + 1j*  -0.5097466 ]
       -0.24436265 + 1j*  0.58565116  ,   -0.7503899 + 1j*  0.18626373 ]])
 J2 = np.array([[ 0.22273345               ,      -0.8014731 + 1j*  -0.55417156 ],[
       0.48960716 + 1j*  0.84284395   ,  -0.017539864 + 1j*  0.2226117 ]])
-    
+'''
+'''
 J1 = np.array([[ 0.86687591+0.j        , -0.57183764-0.13293168j],
        [ 0.47786187+0.14203586j,  0.74024064+0.32768077j]])
 J2 = np.array([[ 0.31561277+0.j        , -0.95752769-0.05599034j],
@@ -253,20 +254,21 @@ J1 = np.array([[ 0.89097912+0.j        , -0.25009759-0.43946158j],
        [ 0.43033225-0.14481147j,  0.6335862 +0.58557087j]])
 J2 = np.array([[ 0.31676515+0.j        , -0.93297585-0.07330244j],
        [-0.58381747+0.74754063j, -0.26412184+0.23328625j]])
-rotation = 4
-rotation2 = 0
-J_dichroic = np.array([J1@rot(rotation), J2@rot(-rotation2), J1@rot(rotation)])
 
+rotation = 7
+rotation2 =  2
+J_dichroic = np.array([J1@rot(rotation), J2@rot(-rotation2), J1@rot(rotation)])
+rho_offset = -4
 
 # %% SGD PARANETERS TO DEFINE
-Nphotons_speed1 = jax.device_put(5000)
+Nphotons_speed1 = jax.device_put(2000)
 background_speed = jax.device_put(100)
-LR1 = jax.device_put(0.03)
+LR1 = jax.device_put(0.05)
 num_epochs_max1 = 80
 
 num_epochs_max2 = 120
-LR2 = jax.device_put(1.5)
-delta_speed = jax.device_put(1.5)
+LR2 = jax.device_put(1.2)
+delta_speed = jax.device_put(1.8)
 nphotons_speed2 = jax.device_put(50)
 xy_speed2 = jax.device_put(1/70)
 z_speed2=jax.device_put(1/70)
@@ -280,7 +282,7 @@ n_photons_filtering = 100
 
 # nb of batch of SGD
 batch_nb = 30000
-dimensions = [216,160] # the dimension of the channels can slightly vary depending on the reconstruction file
+dimensions = [215,160] # the dimension of the channels can slightly vary depending on the reconstruction file
 
 # microscope parameters
 polar_projections = jax.device_put(jnp.array([0, 45, 0]))
@@ -361,6 +363,8 @@ config = {
     'd': d,
     # polarisation calibration
     'rotation': rotation,
+    'rotation2': rotation2,
+    'rho_offset': rho_offset,
     'J1': J1,
     'J2': J2,
     'J_dichroic': J_dichroic,
@@ -462,7 +466,6 @@ Mtest = compute_M_jax(xp=x_start, yp=y_start, zp=z_exp, d=d_, x=xx, y=yy, th1=th
                 ,  second_plane=second_plane
               , polar_projections=polar_projections, lambd=lambd, f_tube=f_tube)
 htest = PSF_jax(rho=rho_start, eta=eta_start, delta=delta_start, M=Mtest, N_photons=Nstart_test).astype(jnp.float32)
-
 dim_simu = int(htest.shape[-1]//2)
 
 
@@ -476,8 +479,6 @@ def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result):
         #t0 = time.time()
         raw, error_indices = extract_frames(last_frame_processed+1, Nframe, dimensions)
         #print(f'extract_frames: {time.time()-t0:.2f}s')
-        
-        #t0 = time.time()
         x_, y_, index_frame_ = extract_positions(last_frame_processed+1, Nframe, error_indices)
         #print(f'extract_positions: {time.time()-t0:.2f}s')
         # converting to photon count
@@ -488,6 +489,7 @@ def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result):
         W = raw.shape[3]*120
         # removing all the PSF where a parameter is evaluated to nan in Louise pipeline
         nb = len(x_)
+        
         L = raw.shape[2]*120
         W = raw.shape[3]*120
         for k in range(nb-1, -1, -1):  # iterate backwards to safely delete
@@ -497,12 +499,10 @@ def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result):
                 y_ = np.delete(y_, k, 0)
                 index_frame_ = np.delete(index_frame_, k, 0)
            
-        index_frame_ = last_frame_processed+index_frame_+1
+        index_frame_ = (last_frame_processed+index_frame_+1).astype(int)
         
         # extracting the psf from the files
-        #t0 = time.time()
         single_psf_ = extract_raw_xy(raw[0], x_[index_frame_==last_frame_processed+1], y_[index_frame_==last_frame_processed+1])
-        #print(f'extract_raw_xy: {time.time()-t0:.2f}s')
 
         for i in range(1, Nframe):
             frame_id = last_frame_processed + 1 + i
@@ -546,7 +546,7 @@ def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result):
     result['noisy_psf'] = jnp.array(noisy_psf)
     result['x'] = jnp.array(x)
     result['y'] = jnp.array(y)
-    result['Nstart'] = jnp.array([5000. for i in range(NPSF)]).astype(jnp.float32)#jnp.array(jnp.sum(Nstart_by_plane, axis=1)).astype(jnp.float32)
+    result['Nstart'] = jnp.array([3000. for i in range(NPSF)]).astype(jnp.float32)#jnp.array(jnp.sum(Nstart_by_plane, axis=1)).astype(jnp.float32)
     result['background_array'] = jnp.array(background*jnp.ones((NPSF,3,2))).astype(jnp.float32)
     result['sigma'] = jnp.array(sigma)
     result['frame'] = index_frame
@@ -613,23 +613,24 @@ for batch in range(batch_nb):
         N__.append(np.array(params['N_photons'] * Nphotons_speed1))
         x__.append(np.array(params['xp']))
         bck.append(np.array(params['background'] * background_speed))
-    
-    fig, ax = plt.subplots(2,3)
-    ax[0,0].plot(loss_)
-    ax[0,0].set(title='loss', xlabel='epoch', ylabel='loss (a.u.)')
-    ax[0,1].plot(z__)
-    ax[0,1].set(title='axial position', xlabel='epoch', ylabel='z ($\\mu$m)')
-    ax[0,2].plot(N__)
-    ax[0,2].set(title='photon budget', xlabel='epoch', ylabel='N photons')
-    ax[1,0].plot(x__)
-    ax[1,0].set(title='lateral position', xlabel='epoch', ylabel='x ($\\mu$m)')
-    ax[1,1].plot(bck)
-    ax[1,1].set(title='background', xlabel='epoch', ylabel='background (photons/pixel)')
-    ax[1,2].axis('off')
-    fig.suptitle('SGD 1 - position, photons, background')
-    #fig.tight_layout()
-    plt.show()
-    del(ax, loss_, z__, N__, x__, bck)
+    if batch<30:
+        fig, ax = plt.subplots(2,3)
+        ax[0,0].plot(loss_)
+        ax[0,0].set(title='loss', xlabel='epoch', ylabel='loss (a.u.)')
+        ax[0,1].plot(z__)
+        ax[0,1].set(title='axial position', xlabel='epoch', ylabel='z ($\\mu$m)')
+        ax[0,2].plot(N__)
+        ax[0,2].set(title='photon budget', xlabel='epoch', ylabel='N photons')
+        ax[1,0].plot(x__)
+        ax[1,0].set(title='lateral position', xlabel='epoch', ylabel='x ($\\mu$m)')
+        ax[1,1].plot(bck)
+        ax[1,1].set(title='background', xlabel='epoch', ylabel='background (photons/pixel)')
+        ax[1,2].axis('off')
+        fig.suptitle('SGD 1 - position, photons, background')
+        #fig.tight_layout()
+        plt.show()
+        del(ax, loss_)
+    del(z__, N__, x__, bck)
 
     x_found = params['xp']
     y_found = params['yp']
@@ -671,33 +672,37 @@ for batch in range(batch_nb):
         z_.append(np.array(params['z'] * z_speed2))
         Np_.append(np.array(params['N_photons'] * nphotons_speed2))
     #jax.debug.print("rho_found: {}", np.array(params['rho']))
-    fig, ax = plt.subplots(4,2, figsize=(12,14))
-    ax[0,0].plot(loss_)
-    ax[0,0].set(title='loss', xlabel='epoch', ylabel='loss (a.u.)')
-    ax[0,1].plot(eta_)
-    ax[0,1].set(title='out-of-plane angle', xlabel='epoch', ylabel='$\\eta$ (deg)')
-    rho_ = np.array(rho_)
-    eta_ = np.array(eta_)
-    Np_ = np.array(Np_)
-    ax[1,0].plot(rho_)
-    ax[1,0].set(title='in-plane angle', xlabel='epoch', ylabel='$\\rho$ (deg)')
-    delta_ = np.array(delta_)
-    ax[1,1].plot(delta_)
-    ax[1,1].set(title='wobbling cone', xlabel='epoch', ylabel='$\\delta$ (deg)')
-    ax[2,0].plot(x_)
-    ax[2,0].set(title='lateral position', xlabel='epoch', ylabel='x ($\\mu$m)')
-    ax[2,1].plot(z_)
-    ax[2,1].set(title='axial position', xlabel='epoch', ylabel='z ($\\mu$m)')
-    ax[3,0].plot(Np_)
-    ax[3,0].set(title='photon budget', xlabel='epoch', ylabel='N photons')
-    ax[3,1].hist((params['rho']%180)[Np_[-1]<10000])
-    ax[3,1].set(title='final $\\rho$ (N < 10000)', xlabel='$\\rho$ mod 180 (deg)', ylabel='count')
-    fig.suptitle('SGD 2 - orientation')
-    #fig.tight_layout()
-    plt.show()
+    if batch<30:
+        fig, ax = plt.subplots(4,2, figsize=(12,14))
+        ax[0,0].plot(loss_)
+        ax[0,0].set(title='loss', xlabel='epoch', ylabel='loss (a.u.)')
+        ax[0,1].plot(eta_)
+        ax[0,1].set(title='out-of-plane angle', xlabel='epoch', ylabel='$\\eta$ (deg)')
+        rho_ = np.array(rho_)
+        eta_ = np.array(eta_)
+        Np_ = np.array(Np_)
+        ax[1,0].plot(rho_)
+        ax[1,0].set(title='in-plane angle', xlabel='epoch', ylabel='$\\rho$ (deg)')
+        delta_ = np.array(delta_)
+        ax[1,1].plot(delta_)
+        ax[1,1].set(title='wobbling cone', xlabel='epoch', ylabel='$\\delta$ (deg)')
+        ax[2,0].plot(x_)
+        ax[2,0].set(title='lateral position', xlabel='epoch', ylabel='x ($\\mu$m)')
+        ax[2,1].plot(z_)
+        ax[2,1].set(title='axial position', xlabel='epoch', ylabel='z ($\\mu$m)')
+        ax[3,0].plot(Np_)
+        ax[3,0].set(title='photon budget', xlabel='epoch', ylabel='N photons')
+        ax[3,1].hist((params['rho']%180)[Np_[-1]<10000])
+        ax[3,1].hist((params['eta']%180)[Np_[-1]<10000], alpha=0.5)
+        ax[3,1].set(title='final $\\rho$ and $\\eta$ (N < 10000)', xlabel='$\\rho$ mod 180 (deg)', ylabel='count')
+        fig.suptitle('SGD 2 - orientation')
+        #fig.tight_layout()
+        del(fig, ax)
+        plt.show()
+    
+    '''
     mask_red = (rho_[-1, :] % 180 > 100) & (rho_[-1, :] % 180 < 130)
     mask_blue = ~mask_red
-    '''
     plt.plot(rho_[:, mask_blue], color='b', alpha=0.7)
     plt.plot(rho_[:, mask_red], color='r')
     plt.show()
@@ -716,7 +721,7 @@ for batch in range(batch_nb):
     if first_loop_of_the_launch:
         plot_results(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern_x, zern_y, noisy_psf, background_array_found, sigma, dim_simu, d_)
         first_loop_of_the_launch = False
-    del(fig, ax, eta_, rho_, delta_, x_, z_)
+    del(eta_, rho_, delta_, x_, z_)
 
     rho_found=params['rho']%360
     eta_found=params['eta']%180                                              
@@ -732,7 +737,7 @@ for batch in range(batch_nb):
     
     score = eval_batch(x_found, y_found, z_found, zernx, zerny, rho_found, eta_found, delta_found, N_found2, noisy_psf, background_array_found, sigma, dim_simu)
     
-    rho_found = np.array(rho_found)
+    rho_found = np.array(rho_found)+rho_offset
     eta_found = np.array(eta_found)
     x_found = np.array(x_found)
     y_found = np.array(y_found)
@@ -756,5 +761,5 @@ for batch in range(batch_nb):
                         rho_start=np.nan, delta_start=np.nan, 
                         background_array_found=np.array(background_array_found))
 
-    # %%
+# %%
  

@@ -74,7 +74,6 @@ else: # case ratiometric only
     score = data['sigmax [nm]'].to_numpy()
     
 # %% basic plots to see the thresholding
-
 %matplotlib inline
 plt.rcParams['figure.figsize'] = [12,3]
 fig, ax = plt.subplots(1,3)
@@ -92,8 +91,8 @@ ax[2].set_xlabel('z')
 ax[2].set_ylabel('Occurences')
 
 # %% TO BE MODIFIED
-loss_thresh = -1*10**4
-mask1 = (score<loss_thresh) & (delta<150) & (delta>50) & (N_photons>300) & (N_photons<10000) & (z<1500) & (z>0) #& (eta>30) & (eta<150)
+loss_thresh = -1*10**6
+mask1 = (score<loss_thresh) & (delta<150) & (delta>50) & (N_photons>300) & (N_photons<10000) & (z<1800) & (z>0) #& (eta>30) & (eta<150)
 #mask1 = (delta<150) & (delta>60)
 #%% mask selection
 %matplotlib widget
@@ -328,7 +327,7 @@ hh = plt.hist(stddelta, bins=100)
 plt.xlabel('std $\\delta$ (degree)')
 plt.show()
 #%% select new filter
-mask1 = (score<loss_thresh) & (z<1400) & (z>0) & (delta<150) &  (delta>50) & (N_photons>300) & (N_photons<10000)
+mask1 = (score<loss_thresh) & (z<1300) & (z>0) & (delta<150) &  (delta>50) & (N_photons>300) & (N_photons<10000)
 #%% select mask
 %matplotlib qt
 plt.rcParams['figure.figsize'] = [10,10]
@@ -353,9 +352,9 @@ def onselect(verts):
 lasso = LassoSelector(ax, onselect)
 plt.show()
 #%% SIZE OF THE SCATTER POINTS
-s = 1.
+s = 0.005
 #%% plot rho
-plt.rcParams['figure.figsize'] = [12, 5]
+plt.rcParams['figure.figsize'] = [8, 5]
 plt.rcParams.update({'font.size': 15})
 fig = plt.figure()
 ax0 = fig.add_subplot(1, 2, 1)
@@ -412,6 +411,8 @@ ax1.set_ylabel('Count', labelpad=30)
 
 plt.tight_layout()
 plt.show()
+
+
 #%% plot z
 %matplotlib qt
 plt.rcParams['figure.figsize'] = [7, 5]
@@ -431,7 +432,7 @@ ax.set_ylabel('y ($\\mu$m)')
 plt.show()
 
 #%% Plot delta
-plt.rcParams["figure.figsize"] = [12, 5]
+plt.rcParams["figure.figsize"] = [8,4]
 plt.rcParams.update({"font.size": 15})
 fig, ax = plt.subplots(1, 2)
 # ---------------- Scatter plot ----------------
@@ -468,7 +469,7 @@ plt.show()
 hls_colors = sns.color_palette("hls", 256)
 cmap = mcolors.ListedColormap(hls_colors)
 #%% plot eta
-plt.rcParams['figure.figsize'] = [15, 5]
+plt.rcParams['figure.figsize'] = [8, 4]
 plt.rcParams.update({'font.size': 15})
 fig, ax = plt.subplots(1,2)
 ax[0].set_facecolor('black')
@@ -545,7 +546,8 @@ width = edges[1] - edges[0]
 centers_folded = centers % np.pi
 
 # consistent color mapping (same as scatter)
-colors = cmap(norm(np.rad2deg(centers_folded)))
+#colors = cmap(norm(np.rad2deg(centers_folded)))
+
 norm = plt.Normalize(30, 150)
 
 # rebuild polar axis
@@ -555,7 +557,7 @@ ax1 = fig.add_subplot(1, 2, 2, projection='polar')
 # White angular tick labels
 for label in ax1.get_xticklabels():
     label.set_color('black')
-
+hls_colors_bar = [cmap(c / np.pi) for c in centers_folded]
 # White radial tick labels
 for label in ax1.get_yticklabels():
     label.set_color('black')
@@ -564,7 +566,7 @@ ax1.bar(
     counts,
     width=width,
     bottom=0,
-    color=colors,
+    color=hls_colors_bar,
     edgecolor='none',
     alpha=0.95
 )
@@ -665,8 +667,8 @@ new_zoom = mask
 def loss__(x,y,radius,centerx, centery):
     return torch.sum(((x-centerx)**2 + (y-centery)**2-radius**2)**2)
 def find_params(xxxx, yyyy):
-    params = torch.tensor([1000.,8800.,-15400.], requires_grad=True)
-    optimizer = torch.optim.Adam([params], lr=100)
+    params = torch.tensor([1000.,8800.,-15400.], requires_grad=True)#  ,16000, 7800
+    optimizer = torch.optim.Adam([params], lr=50)
     loss0 = []
     for i in tqdm(range(500)):
         optimizer.zero_grad()  # Reset gradients
@@ -696,7 +698,10 @@ ax.scatter(x[new_zoom], y[new_zoom], c=rgb_colors, s=10)
 plt.axis('equal')
 ax.scatter(params[1], params[2], marker='x', s=50, rasterized=True)
 ax.scatter(params[1]+(200+params[0])*np.cos(th), params[2]+(200+params[0])*np.sin(th), c=rgb_colorsL)
+ax.axhline(params[2])
+ax.axvline(params[1])
 plt.show()
+
 plt.rcParams['figure.figsize'] = [6, 6]
 fig, ax = plt.subplots()
 hues = rho_th / 180
@@ -706,6 +711,8 @@ ax.scatter(x[new_zoom], y[new_zoom], c=rgb_colors, s=10)
 plt.axis('equal')
 ax.scatter(params[1], params[2], marker='x', s=50, rasterized=True)
 ax.scatter(params[1]+(200+params[0])*np.cos(th), params[2]+(200+params[0])*np.sin(th), c=rgb_colorsL)
+ax.axhline(params[2])
+ax.axvline(params[1])
 plt.show()
 
 #%% rho bias 
@@ -717,7 +724,7 @@ fig, ax = plt.subplots(
     gridspec_kw={'height_ratios': [2, 1]},
     constrained_layout=True
 )
-delta_rho = (rho[new_zoom] - rho_th + 90) % 180 - 90 -4
+delta_rho = (rho[new_zoom] - rho_th + 90) % 180 - 90 
 # TOP: scatter
 ax[0].scatter(
     rho_th,
@@ -728,7 +735,7 @@ ax[0].scatter(
     rasterized=True
 )
 ax[0].set_ylabel(r'$\Delta\rho$ ($^\circ$)')
-ax[0].set_ylim(-100, 100)
+ax[0].set_ylim(-60, 60)
 ax[0].set_xlim(0, 180)
 ax[0].grid()
 # BOTTOM: IQR boxes
@@ -747,6 +754,7 @@ for i in range(36):
 ax[1].boxplot(
     data_boxes,
     positions=centers_valid,
+
     widths=4,
     showfliers=False,
     patch_artist=True,
@@ -905,12 +913,13 @@ print(f"Explained variance: {eigenvalues/eigenvalues.sum()*100}")
 # %% orientation of filaments
 from scipy import stats
 
-plt.rcParams['figure.figsize'] = [5, 7]
+plt.rcParams['figure.figsize'] = [5, 9]
 plt.rcParams.update({'font.size': 13})
 
 fig = plt.figure()
-ax0 = fig.add_subplot(2, 1, 1)
-ax1 = fig.add_subplot(2, 1, 2, projection='polar')
+ax0 = fig.add_subplot(3, 1, 1)
+ax_xy = fig.add_subplot(3, 1, 2)
+ax1 = fig.add_subplot(3, 1, 3, projection='polar')
 
 # --- linear regression ---
 slope, intercept, r_value, p_value, std_err = stats.linregress(w[:,0]/1000, z[mask]/1000)
@@ -920,15 +929,32 @@ print(f"Slope: {slope_deg:.2f}°")
 x_fit = np.linspace(w[:,0].min()/1000, w[:,0].max()/1000, 500)
 y_fit = slope * x_fit + intercept
 
-# --- scatter plot ---
+# --- scatter plot w vs z ---
 ax0.scatter(w[:,0]/1000, z[mask]/1000, s=0.1, color='steelblue', alpha=0.5, rasterized=True)
 ax0.plot(x_fit, y_fit, color='red', linewidth=2, label=f'slope = {slope_deg:.2f}°')
-#ax0.set_ylim((0.95,1.45))
-#ax0.set_aspect('equal')
 ax0.set_xlabel('PCA axis ($\\mu$m)')
 ax0.set_ylabel('z ($\\mu$m)')
 ax0.legend()
 ax0.grid(True, alpha=0.4)
+
+# --- xy scatter with PCA axis direction ---
+ax_xy.scatter(x[mask]/1000, y[mask]/1000, s=0.1, color='steelblue', alpha=0.3, rasterized=True)
+
+# PCA axis direction (eigenvectors[:,0] is the first PC)
+cx = np.mean(x[mask]/1000)
+cy = np.mean(y[mask]/1000)
+scale_arrow = (x[mask].max() - x[mask].min()) / 2000 * 0.4  # 40% of the data range
+
+# first PC direction
+pc1 = eigenvectors[:, 0]  # from your PCA
+ax_xy.annotate('', xy=(cx + pc1[0]*scale_arrow, cy + pc1[1]*scale_arrow),
+                xytext=(cx - pc1[0]*scale_arrow, cy - pc1[1]*scale_arrow),
+                arrowprops=dict(arrowstyle='->', color='red', lw=2))
+ax_xy.set_aspect('equal')
+ax_xy.set_xlabel('x ($\\mu$m)')
+ax_xy.set_ylabel('y ($\\mu$m)')
+ax_xy.grid(True, alpha=0.4)
+ax_xy.set_title('PCA axis in xy plane')
 
 # --- polar histogram ---
 eta_vals = eta[mask]
@@ -945,11 +971,10 @@ centers_folded = centers % np.pi
 colors = cmap(norm(np.rad2deg(centers_folded)))
 ax1.bar(centers, counts, width=width, bottom=0, color=colors, edgecolor='none', alpha=0.95)
 
-# --- line corresponding to slope ---
-slope = np.median(eta[mask])
-slope_rad = np.deg2rad(slope)  # convert to polar angle (0=North)
-ax1.axvline(slope_rad, color='red', linewidth=2, label=f'{90-slope:.2f}°')
-ax1.axvline(slope_rad + np.pi, color='red', linewidth=2)  # opposite direction
+slope_med = np.median(eta[mask])
+slope_rad = np.deg2rad(slope_med)
+ax1.axvline(slope_rad, color='red', linewidth=2, label=f'{90-slope_med:.2f}°')
+ax1.axvline(slope_rad + np.pi, color='red', linewidth=2)
 
 ax1.set_theta_zero_location('N')
 ax1.set_theta_direction(-1)
@@ -964,10 +989,7 @@ for label in ax1.get_xticklabels():
 for label in ax1.get_yticklabels():
     label.set_color('black')
 
-ax1.set_thetagrids(
-    np.arange(0, 360, 60),
-    labels=[f"{d}°" for d in np.arange(0, 360, 60)]
-)
+ax1.set_thetagrids(np.arange(0, 360, 60), labels=[f"{d}°" for d in np.arange(0, 360, 60)])
 ax1.set_ylabel("Count", labelpad=25)
 ax1.legend(loc='upper right')
 

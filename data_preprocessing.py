@@ -39,7 +39,7 @@ if not directory.is_dir():
 for frame_number in np.linspace(0, 49999, 10).astype(int):
     verify_preloc(directory, frame_number, cwd)
 #%% check pre-localization 
-matplotlib.use("module://matplotlib_inline.backend_inline")
+#matplotlib.use("module://matplotlib_inline.backend_inline")
 directory = (
     Path(filedialog.askdirectory(initialdir=cwd, title="Select the directory containing the tiff files"))
     / "reconstruction"
@@ -54,3 +54,4 @@ df = pd.read_csv(csv_files[0])
 plt.scatter(df['row'], df['col'], s=0.001, marker='.')
 plt.show()
 print(df.shape[0])
+# %%

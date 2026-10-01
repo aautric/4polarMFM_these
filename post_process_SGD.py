@@ -73,7 +73,7 @@ plt.rcParams['figure.figsize'] = [5, 5]
 plt.rcParams.update({'font.size': 15})
 sc = plt.scatter(x[threshold]/1000, y[threshold]/1000,
                  c=rho[threshold] / 180.0,
-                 cmap='hsv', s=.1)
+                 cmap='hsv', s=.001)
 cbar = plt.colorbar(sc)
 ticks = np.linspace(0, 1, 7)  # 0 → 1
 cbar.set_ticks(ticks)
@@ -119,5 +119,6 @@ np.savetxt(
     comments='',
     fmt='%.15f'
 )
+
 
 # %%
