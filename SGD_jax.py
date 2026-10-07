@@ -170,8 +170,12 @@ def loss_angle_with_M(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2,
         variance = jnp.maximum(gain*(data + shift), 1.)
         loss = jnp.sum(jnp.pow(model - data, 2) / variance)
     delta_bound = limit(params['delta'], 180, 100, upper=True) + limit(params['delta'], 1, 100, upper=False)
+    # N_photons >= 0 (as in SGD1): without it the fit can make the PSF negative to lower the model when the
+    # background, fixed after SGD1, is too high. Slope 10 on the scaled parameter (N/nphotons_speed2): the penalty
+    # is negligible above ~0.5*nphotons_speed2 photons and stays finite in float32 for an overshoot of a few steps
+    N_bound = limit(params['N_photons'], 0., 10, upper=False)
     #rho_bound = limit(params['rho'], 0, 50, upper=False)
-    return (loss + 1000.*(delta_bound)).astype(jnp.float32)
+    return (loss + 1000.*(delta_bound + N_bound)).astype(jnp.float32)
 
 def plot_results(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, data, background, noise, dim_simu, d_):
     dim_data = 6
@@ -193,7 +197,7 @@ def plot_results(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern
     background_arr = np.array(jnp.reshape(background, (h.shape[0],3,2)))
     for nb in range(data.shape[0]):
         # one figure per PSF: rows are the planes, columns data x, data y, fit x, fit y
-        if N_photons[nb]>6000: # fiducial, each image with its own scale, the fit without background
+        if N_photons[nb]>6000*sensitivity/15.4: # fiducial (6000 photons with sensitivity 15.4), each image with its own scale, the fit without background
             fit = h[nb]
             scale = {}
             name = 'fiducial'
@@ -331,15 +335,20 @@ J_dichroic = np.array([J1@rot(rotation), J2@rot(-rotation2), J1@rot(rotation)])
 rho_offset = -4
 
 # %% SGD PARANETERS TO DEFINE
-Nphotons_speed1 = jax.device_put(2000)
-background_speed = jax.device_put(100)
+# the settings in photons below were tuned with sensitivity = 15.4. They are scaled by photon_scale so that the
+# descents behave the same whatever the sensitivity: with the data ~4 times smaller (3.9) and the same numbers,
+# SGD1 started with ~2 times too many photons and pushed the PSF out of focus to remove them from the patch,
+# z ended ~1.3 um too high (SLB 2026_02_02: 1.91 um instead of 0.40 um, 0.40 um again with the scaling)
+photon_scale = sensitivity/15.4
+Nphotons_speed1 = jax.device_put(2000*photon_scale)
+background_speed = jax.device_put(100*photon_scale)
 LR1 = jax.device_put(0.05)
 num_epochs_max1 = 80
 
 num_epochs_max2 = 120
 LR2 = jax.device_put(1.2)
 delta_speed = jax.device_put(1.8)
-nphotons_speed2 = jax.device_put(50)
+nphotons_speed2 = jax.device_put(50*photon_scale)
 xy_speed2 = jax.device_put(1/70)
 z_speed2=jax.device_put(1/70)
 # relative learning rates of the aberrations fitted in SGD2, one per coefficient: 3 planes x 15 Noll modes,
@@ -353,10 +362,14 @@ zern_speed2_y = jax.device_put(0.007*zern_fitted)
 # False: no aberration in SGD2, all the Zernike coefficients stay at 0 whatever zern_x/zern_y and the speeds
 fit_zernike = False
 zern_start_epoch2 = 50 # the aberrations stay at zern_x/zern_y during the first epochs of SGD2, then are fitted
-# loss of SGD2: 'lms' = least squares normalised by the variance of each pixel estimated from the data,
-# 'poisson' = Poisson likelihood. Both use the noise model of noise_model. The saved score is this loss
-# for each PSF. The cells defining step2 and eval_batch must be run again after a change (jit)
-loss2 = 'lms'
+# loss of SGD2: 'poisson' = Poisson likelihood (default), 'lms' = least squares normalised by the variance of
+# each pixel estimated from the data. Both use the noise model of noise_model. The saved score (eval_batch) is
+# this loss for each PSF. The cells defining step2 and eval_batch must be run again after a change (jit).
+# 'lms' is biased at low photon numbers: a pixel that fluctuates low gets a small variance, so a large weight,
+# and pulls the model down (about -1 photon per pixel for a background of a few photons, N_photons went to
+# -3000 on the SLB data of 2026_02_02 with a background of ~3 photons above the baseline). Fine for backgrounds
+# of tens of photons (cells). The Poisson likelihood has no such bias
+loss2 = 'poisson'
 
 # extraction parameters
 Nframe= 20 # nb of frame per batch of extraction
@@ -667,7 +680,7 @@ def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result, n_skip=0)
     result['noisy_psf'] = jnp.array(noisy_psf)
     result['x'] = jnp.array(x)
     result['y'] = jnp.array(y)
-    result['Nstart'] = jnp.array([3000. for i in range(NPSF)]).astype(jnp.float32)#jnp.array(jnp.sum(Nstart_by_plane, axis=1)).astype(jnp.float32)
+    result['Nstart'] = jnp.array([3000.*sensitivity/15.4 for i in range(NPSF)]).astype(jnp.float32) # 3000 photons with sensitivity 15.4. Other start: #jnp.array(jnp.sum(Nstart_by_plane, axis=1)).astype(jnp.float32)
     result['background_array'] = jnp.array(psf_noise[:, 2]).astype(jnp.float32) # starting background of each channel
     result['noise'] = jnp.array(psf_noise[:, :2]).astype(jnp.float32) # (NPSF, gain/shift, 3, 2)
     result['frame'] = index_frame
