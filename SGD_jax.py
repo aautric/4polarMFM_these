@@ -197,7 +197,7 @@ def plot_results(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern
     background_arr = np.array(jnp.reshape(background, (h.shape[0],3,2)))
     for nb in range(data.shape[0]):
         # one figure per PSF: rows are the planes, columns data x, data y, fit x, fit y
-        if N_photons[nb]>6000*sensitivity/15.4: # fiducial (6000 photons with sensitivity 15.4), each image with its own scale, the fit without background
+        if N_photons[nb]>1520: # fiducial (6000 with sensitivity 15.4), each image with its own scale, the fit without background
             fit = h[nb]
             scale = {}
             name = 'fiducial'
@@ -335,20 +335,20 @@ J_dichroic = np.array([J1@rot(rotation), J2@rot(-rotation2), J1@rot(rotation)])
 rho_offset = -4
 
 # %% SGD PARANETERS TO DEFINE
-# the settings in photons below were tuned with sensitivity = 15.4. They are scaled by photon_scale so that the
-# descents behave the same whatever the sensitivity: with the data ~4 times smaller (3.9) and the same numbers,
-# SGD1 started with ~2 times too many photons and pushed the PSF out of focus to remove them from the patch,
-# z ended ~1.3 um too high (SLB 2026_02_02: 1.91 um instead of 0.40 um, 0.40 um again with the scaling)
-photon_scale = sensitivity/15.4
-Nphotons_speed1 = jax.device_put(2000*photon_scale)
-background_speed = jax.device_put(100*photon_scale)
+# the settings in photons (speeds of SGD1 and SGD2, starting N in load_batch, fiducial threshold in plot_results)
+# were tuned with sensitivity = 15.4 (2000, 100, 50, 3000, 6000) and are multiplied by 3.9/15.4 for sensitivity = 3.9.
+# With the data ~4 times smaller and the same numbers, SGD1 started with ~2 times too many photons and pushed the
+# PSF out of focus to remove them from the patch: z ended ~1.3 um too high (SLB 2026_02_02: 1.91 um instead of
+# 0.40 um, 0.40 um again with the scaled values). To change together with sensitivity
+Nphotons_speed1 = jax.device_put(506.)
+background_speed = jax.device_put(25.3)
 LR1 = jax.device_put(0.05)
 num_epochs_max1 = 80
 
 num_epochs_max2 = 120
 LR2 = jax.device_put(1.2)
 delta_speed = jax.device_put(1.8)
-nphotons_speed2 = jax.device_put(50*photon_scale)
+nphotons_speed2 = jax.device_put(12.7)
 xy_speed2 = jax.device_put(1/70)
 z_speed2=jax.device_put(1/70)
 # relative learning rates of the aberrations fitted in SGD2, one per coefficient: 3 planes x 15 Noll modes,
@@ -680,7 +680,7 @@ def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result, n_skip=0)
     result['noisy_psf'] = jnp.array(noisy_psf)
     result['x'] = jnp.array(x)
     result['y'] = jnp.array(y)
-    result['Nstart'] = jnp.array([3000.*sensitivity/15.4 for i in range(NPSF)]).astype(jnp.float32) # 3000 photons with sensitivity 15.4. Other start: #jnp.array(jnp.sum(Nstart_by_plane, axis=1)).astype(jnp.float32)
+    result['Nstart'] = jnp.array([760. for i in range(NPSF)]).astype(jnp.float32) # 3000 with sensitivity 15.4. Other start: #jnp.array(jnp.sum(Nstart_by_plane, axis=1)).astype(jnp.float32)
     result['background_array'] = jnp.array(psf_noise[:, 2]).astype(jnp.float32) # starting background of each channel
     result['noise'] = jnp.array(psf_noise[:, :2]).astype(jnp.float32) # (NPSF, gain/shift, 3, 2)
     result['frame'] = index_frame
