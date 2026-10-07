@@ -25,13 +25,19 @@ from pathlib import Path
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import ast
+import tifffile
 import re
 # %% PARAMETERS TO BE DEFINED
 
 total_n_frame = 100000
 QE = 0.92
 EM = 200
-sensitivity = 15.4
+# electrons per ADU before the EM register. 15.4 was the value used until October 2026, but the variance vs level
+# of the raw frames (photon transfer curve) gives 3.7 to 4.2 e-/ADU on three independent data sets (white lamp at
+# EM gain 3, cell background at EM gain 200, actin + fiducial bead at EM gain 250): about 4 times less, so the
+# photon numbers were about 4 times too high. The fitted orientations and positions do not depend on this value.
+#sensitivity = 15.4
+sensitivity = 3.9
 
 look_up_folder = '/mnt/d/Amaury/DATA'
 save_folder = Path(filedialog.askdirectory(initialdir=look_up_folder, title="Select the directory containing the tiff files"))
@@ -75,13 +81,53 @@ def extract_positions(frame_0, N_frame, error_indices):
     index_frame=np.array(index_frame)
     return x, y, index_frame
 
+def measure_baseline(raw_folder, n_frames=100):
+    # camera baseline in ADU (value of a pixel without light), measured on the rows of the raw frames outside the
+    # 6 channels: the rows whose level is close to the one of the darkest row, over n_frames frames taken in the
+    # middle of the first raw file. Checked on the variance vs level curve of a fiducial bead (zero variance at
+    # 178 ADU for a baseline measured at 177 ADU)
+    raw_file = sorted(Path(raw_folder).glob('*.ome.tif'))[0]
+    with tifffile.TiffFile(raw_file) as tif:
+        n = len(tif.pages)
+        start = max(0, n//2 - n_frames//2)
+        frames = np.stack([tif.pages[i].asarray() for i in range(start, min(n, start+n_frames))]).astype(float)
+    rows = np.median(np.median(frames, axis=0), axis=1) # level of each row of the sensor
+    dark = rows < rows.min() + 0.2*(np.median(rows) - rows.min())
+    print('Camera baseline: '+str(np.median(frames[:, dark]))+' ADU, measured on '+str(np.sum(dark))+' dark rows of '+raw_file.name)
+    return np.median(frames[:, dark])
+
+def noise_model(raw, shift_value, n_bins=10):
+    # noise of each of the 6 channels of a chunk of frames (frames, channels, H, W), in the units of the data:
+    # var(v) = gain*(v + shift). shift = -baseline in these units (value of v without light, given by
+    # measure_baseline), the same for the 6 channels. gain is fitted on the photon transfer curve of the chunk:
+    # the pixels are sorted by their median over time in n_bins groups, the variance of each group is measured
+    # on the differences between consecutive frames (removes the static structure, /2 because a difference has
+    # twice the variance) with a MAD (robust to the emitters that blink in a pixel), and gain is the slope of the
+    # variance vs (level + shift) through 0. gain includes everything that scales the noise: EM excess noise,
+    # real EM gain, normalisation and interpolation of the reconstruction. level is the median background.
+    gain, shift, level = np.zeros(raw.shape[1]), np.full(raw.shape[1], shift_value), np.zeros(raw.shape[1])
+    for c in range(raw.shape[1]):
+        med = np.median(raw[:, c], axis=0)
+        dif = np.diff(raw[:, c], axis=0)
+        level[c] = np.median(med)
+        keep = (med > np.percentile(med, 5)) & (med < np.percentile(med, 90)) # no border, no bright structure
+        edges = np.percentile(med[keep], np.linspace(0, 100, n_bins+1))
+        levels, variances = [], []
+        for k in range(n_bins):
+            d = dif[:, keep & (med >= edges[k]) & (med < edges[k+1])]
+            levels.append(np.median(med[keep & (med >= edges[k]) & (med < edges[k+1])]))
+            variances.append((1.4826*np.median(np.abs(d - np.median(d))))**2 / 2)
+        signal = np.array(levels) + shift_value # value above the baseline
+        gain[c] = np.sum(signal*np.array(variances)) / np.sum(signal**2) # least squares slope through 0
+    return gain, shift, level
+
 def limit(x, lim, slope, upper=True):
     if upper:
         return jnp.sum(jnp.exp((x-lim)*slope))
     else:
         return jnp.sum(jnp.exp(-1*(x-lim)*slope))
     
-def loss_pos(params, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, sigma, dim_simu, d_):
+def loss_pos(params, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, noise, dim_simu, d_):
     Mj = compute_M_jax(xp=params['xp'], yp=params['yp'], zp=params['zp'], d=d_, x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2
                     , Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, phase_maskx=phase_mask, phase_masky=phase_mask, zernike_base=zernike_base, zernike_coefs_x=zernike_coefs_x, zernike_coefs_y=zernike_coefs_y
                     , second_plane=second_plane, polar_projections=polar_projections, lambd=lambd, f_tube=f_tube)
@@ -97,7 +143,7 @@ def loss_pos(params, Nphotons_speed1, background_speed, rho, eta, delta, data, s
     N_bound = limit(params['N_photons'], 0., 10000, upper=False)
     return (loss +x_bound+y_bound+z_bound+N_bound).astype(jnp.float32)
 
-def loss_angle_with_M(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, zern_speed2_x, zern_speed2_y, data, background, sigma, dim_simu, d_):
+def loss_angle_with_M(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, zern_speed2_x, zern_speed2_y, data, background, noise, dim_simu, d_):
     # remove plot argument entirely
     dim_data = 6
     dim_simu = int(dim_simu)
@@ -109,13 +155,25 @@ def loss_angle_with_M(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2,
                    second_plane=second_plane, polar_projections=polar_projections, lambd=lambd, f_tube=f_tube)
 
     h = PSF_jax(rho=params['rho'], eta=params['eta'], delta=params['delta']*delta_speed, M=Mj, N_photons=params['N_photons']*nphotons_speed2)[:,:,:,dim_simu-dim_data:dim_simu+dim_data+1,dim_simu-dim_data:dim_simu+dim_data+1]
-    loss = jnp.sum(jnp.add(h, -(data+sigma**2)*jnp.log(h+jnp.reshape(background, (h.shape[0],3,2))[:, :, :, None, None]+sigma**2)))
-    #loss = jnp.sum(jnp.pow(jnp.add(h+jnp.reshape(background, (h.shape[0],3,2))[:, :, :, None, None], -data), 2))
+    model = h + jnp.reshape(background, (h.shape[0],3,2))[:, :, :, None, None] # expected value per pixel
+    # noise model of each channel, var(v) = gain*(v + shift), see noise_model
+    gain = noise[:, 0, :, :, None, None]
+    shift = noise[:, 1, :, :, None, None]
+    if loss2 == 'poisson':
+        # (v + shift)/gain follows a Poisson law: its likelihood, sum over the pixels of
+        # (mu - (d+shift) log(mu+shift)) / gain. Clipped to keep the log defined
+        loss = jnp.sum((model - (data+shift)*jnp.log(jnp.maximum(model+shift, 1e-3))) / gain)
+    else:
+        # least squares normalised by the variance of each pixel: sum over the pixels of (mu - d)^2 / var.
+        # var = gain*(d + shift) is estimated from the data, so it does not depend on the fitted parameters:
+        # the weights are fixed during the descent. Clipped at 1 to avoid dividing by ~0
+        variance = jnp.maximum(gain*(data + shift), 1.)
+        loss = jnp.sum(jnp.pow(model - data, 2) / variance)
     delta_bound = limit(params['delta'], 180, 100, upper=True) + limit(params['delta'], 1, 100, upper=False)
     #rho_bound = limit(params['rho'], 0, 50, upper=False)
     return (loss + 1000.*(delta_bound)).astype(jnp.float32)
 
-def plot_results(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, data, background, sigma, dim_simu, d_):
+def plot_results(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, data, background, noise, dim_simu, d_):
     dim_data = 6
     dim_simu = int(dim_simu)
     x_fine = np.array(params['x'] * xy_speed2)
@@ -134,186 +192,59 @@ def plot_results(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern
     z = np.array(params['z'] * z_speed2)
     background_arr = np.array(jnp.reshape(background, (h.shape[0],3,2)))
     for nb in range(data.shape[0]):
-        if N_photons[nb]>6000:
-            
-            fig, ax = plt.subplots(3, 2)
-            ax[0,0].imshow(data[nb,0,0], cmap='gray')
-            ax[0,0].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[1,0].imshow(data[nb,1,0], cmap='gray')
-            ax[1,0].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[2,0].imshow(data[nb,2,0], cmap='gray')
-            ax[2,0].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[0,1].imshow(data[nb,0,1], cmap='gray')
-            ax[0,1].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[1,1].imshow(data[nb,1,1], cmap='gray')
-            ax[1,1].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[2,1].imshow(data[nb,2,1], cmap='gray')
-            ax[2,1].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            plt.suptitle(f'Data - PSF {nb} | rho={float(rho[nb]):.3f} eta={float(eta[nb]):.3f} delta={float(delta[nb]):.2f} N={float(N_photons[nb]):.0f} z={float(z[nb]):.2f} bg={float(background_arr[nb].mean()):.2f}')
-            plt.show()
-        
-            fig, ax = plt.subplots(3, 2)
-            ax[0,0].imshow(h[nb,0,0], cmap='gray')
-            ax[0,0].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[1,0].imshow(h[nb,1,0], cmap='gray')
-            ax[1,0].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[2,0].imshow(h[nb,2,0], cmap='gray')
-            ax[2,0].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[0,1].imshow(h[nb,0,1], cmap='gray')
-            ax[0,1].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[1,1].imshow(h[nb,1,1], cmap='gray')
-            ax[1,1].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[2,1].imshow(h[nb,2,1], cmap='gray')
-            ax[2,1].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            plt.suptitle(f'Fit fiducial - PSF {nb} | rho={float(rho[nb]):.3f} eta={float(eta[nb]):.3f} delta={float(delta[nb]):.2f} N={float(N_photons[nb]):.0f} z={float(z[nb]):.2f} bg={float(background_arr[nb].mean()):.2f}')
-            plt.show()
-            
-        else:
-            maxi = max(np.max(data[nb].flatten()), np.max(h[nb].flatten()))
-            mini = min(np.min(data[nb].flatten()), np.min(h[nb].flatten()))
-            fig, ax = plt.subplots(3, 2)
-            ax[0,0].imshow(data[nb,0,0], vmin=mini, vmax=maxi, cmap='gray')
-            ax[0,0].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[1,0].imshow(data[nb,1,0], vmin=mini, vmax=maxi, cmap='gray')
-            ax[1,0].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[2,0].imshow(data[nb,2,0], vmin=mini, vmax=maxi, cmap='gray')
-            ax[2,0].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[0,1].imshow(data[nb,0,1], vmin=mini, vmax=maxi, cmap='gray')
-            ax[0,1].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[1,1].imshow(data[nb,1,1], vmin=mini, vmax=maxi, cmap='gray')
-            ax[1,1].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[2,1].imshow(data[nb,2,1], vmin=mini, vmax=maxi, cmap='gray')
-            ax[2,1].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            plt.suptitle(f'Data - PSF {nb} | rho={float(rho[nb]):.3f} eta={float(eta[nb]):.3f} delta={float(delta[nb]):.2f} N={float(N_photons[nb]):.0f} z={float(z[nb]):.2f} bg={float(background_arr[nb].mean()):.2f}')
-            plt.show()
-            fig, ax = plt.subplots(3, 2)
-            ax[0,0].imshow(background_arr[nb].mean()+h[nb,0,0], vmin=mini, vmax=maxi, cmap='gray')
-            ax[0,0].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[1,0].imshow(background_arr[nb].mean()+h[nb,1,0], vmin=mini, vmax=maxi, cmap='gray')
-            ax[1,0].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[2,0].imshow(background_arr[nb].mean()+h[nb,2,0], vmin=mini, vmax=maxi, cmap='gray')
-            ax[2,0].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[0,1].imshow(background_arr[nb].mean()+h[nb,0,1], vmin=mini, vmax=maxi, cmap='gray')
-            ax[0,1].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[1,1].imshow(background_arr[nb].mean()+h[nb,1,1], vmin=mini, vmax=maxi, cmap='gray')
-            ax[1,1].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            ax[2,1].imshow(background_arr[nb].mean()+h[nb,2,1], vmin=mini, vmax=maxi, cmap='gray')
-            ax[2,1].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
-            plt.suptitle(f'Fit - PSF {nb} | rho={float(rho[nb]):.3f} eta={float(eta[nb]):.3f} delta={float(delta[nb]):.2f} N={float(N_photons[nb]):.0f} z={float(z[nb]):.2f} bg={float(background_arr[nb].mean()):.2f}')
-            plt.show()
-        
+        # one figure per PSF: rows are the planes, columns data x, data y, fit x, fit y
+        if N_photons[nb]>6000: # fiducial, each image with its own scale, the fit without background
+            fit = h[nb]
+            scale = {}
+            name = 'fiducial'
+        else: # same scale for data and fit, the fit with the background
+            fit = background_arr[nb].mean()+h[nb]
+            scale = {'vmin': min(np.min(data[nb]), np.min(fit)), 'vmax': max(np.max(data[nb]), np.max(fit))}
+            name = 'PSF'
+        fig, ax = plt.subplots(3, 4, figsize=(10, 7))
+        for p in range(3):
+            for c, (image, title) in enumerate([(data[nb,p,0], 'data x'), (data[nb,p,1], 'data y'),
+                                                (fit[p,0], 'fit x'), (fit[p,1], 'fit y')]):
+                ax[p,c].imshow(image, cmap='gray', **scale)
+                ax[p,c].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
+                ax[p,c].set_xticks([])
+                ax[p,c].set_yticks([])
+                if p == 0:
+                    ax[p,c].set_title(title)
+            ax[p,0].set_ylabel('plane '+str(p))
+        plt.suptitle(f'{name} {nb} | rho={float(rho[nb]):.3f} eta={float(eta[nb]):.3f} delta={float(delta[nb]):.2f} N={float(N_photons[nb]):.0f} z={float(z[nb]):.2f} bg={float(background_arr[nb].mean()):.2f}')
+        plt.show()
 
 @functools.partial(jax.jit, static_argnames=['dim_simu'])
-def score_eval(M_, rho, eta, delta, N_photons, data, background, sigma, dim_simu):
+def score_eval(M_, rho, eta, delta, N_photons, data, background, noise, dim_simu):
     dim_data = 6
     h = PSF_jax(rho=rho, eta=eta, delta=delta, M=M_, N_photons=N_photons)[:,:,:,dim_simu-dim_data:dim_simu+dim_data+1,dim_simu-dim_data:dim_simu+dim_data+1]
-    score = jnp.sum(jnp.add(h, -(data+sigma**2)*jnp.log(h+jnp.reshape(background, (h.shape[0],3,2))[:, :, :, None, None]+sigma**2)), axis=(1,2,3,4))
-    return score
+    # loss of SGD2 for each PSF, with the loss chosen by loss2 and the noise model of its channels
+    # (same formulas as loss_angle_with_M, summed over the pixels of each PSF only)
+    model = h + jnp.reshape(background, (h.shape[0],3,2))[:, :, :, None, None]
+    gain = noise[:, 0, :, :, None, None]
+    shift = noise[:, 1, :, :, None, None]
+    if loss2 == 'poisson':
+        score = jnp.sum((model - (data+shift)*jnp.log(jnp.maximum(model+shift, 1e-3))) / gain, axis=(1,2,3,4))
+    else:
+        score = jnp.sum(jnp.pow(model - data, 2) / jnp.maximum(gain*(data + shift), 1.), axis=(1,2,3,4))
+    # Poisson deviance with the same noise model, per pixel: 2 sum[(mu+shift) - (d+shift) + (d+shift) log((d+shift)/(mu+shift))]/gain
+    # divided by the number of pixels. Close to 1 when the model describes the data whatever the photon number and
+    # the background (unlike the score), larger where the model does not fit. A pixel with d+shift <= 0 has no log term
+    data_shift = data + shift
+    model_shift = jnp.maximum(model + shift, 1e-3)
+    log_term = jnp.where(data_shift > 0, data_shift*jnp.log(jnp.maximum(data_shift, 1e-3)/model_shift), 0.)
+    deviance = 2*jnp.sum((model_shift - data_shift + log_term) / gain, axis=(1,2,3,4)) / (data[0].size)
+    return score, deviance
 
 @functools.partial(jax.jit, static_argnames=['dim_simu'])
-def eval_batch(x_found, y_found, z_found, zernx, zerny, rho_found, eta_found, delta_found, N_found2, noisy_psf, background, sigma, dim_simu):
+def eval_batch(x_found, y_found, z_found, zernx, zerny, rho_found, eta_found, delta_found, N_found2, noisy_psf, background, noise, dim_simu):
     M = compute_M_jax(xp=x_found, yp=y_found, zp=z_found, d=d_, x=xx, y=yy, th1=th1, phi=phi, 
                       Ex0=Ex0, Ex1=Ex1, Ex2=Ex2, Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, 
                       zernike_base=zernike_base, zernike_coefs_x=zernx, zernike_coefs_y=zerny,
                       second_plane=second_plane, polar_projections=polar_projections, 
                       lambd=lambd, f_tube=f_tube)
-    return score_eval(M, rho_found, eta_found, delta_found, N_found2, noisy_psf, background, sigma, dim_simu)
-#%% extracting positions/pre-loc
-csv_files = list(path.glob("*.csv"))
-data = pos_from_csv(csv_files[0])
-match = re.search(r'_(\d+)\.csv$', csv_files[0].name)
-if match:
-    number = int(match.group(1))
-else:
-    raise ValueError("No ending number found")
-interplane = jax.device_put(number/1000)
-print('Interplane: '+str(interplane)+'um')
-#%% defining useful variables
-
-lambda_emission = jax.device_put(620) # nm
-middle_plane = jax.device_put(1.)
-d = jnp.array([middle_plane-interplane, middle_plane, middle_plane+interplane])
-
-
-# %% calibration data
-
-def rot(angle):
-    angle=angle*np.pi/180
-    return np.array([[np.cos(angle), -np.sin(angle)],[np.sin(angle), np.cos(angle)]])
-
-J1 = np.array([[ 0.77294344        ,             -0.37847298 + 1j*  -0.5097466 ],[
-      -0.24436265 + 1j*  0.58565116  ,   -0.7503899 + 1j*  0.18626373 ]])
-J2 = np.array([[ 0.22273345               ,      -0.8014731 + 1j*  -0.55417156 ],[
-      0.48960716 + 1j*  0.84284395   ,  -0.017539864 + 1j*  0.2226117 ]])
-
-'''
-J1 = np.array([[ 0.86687591+0.j        , -0.57183764-0.13293168j],
-       [ 0.47786187+0.14203586j,  0.74024064+0.32768077j]])
-J2 = np.array([[ 0.31561277+0.j        , -0.95752769-0.05599034j],
-       [-0.65325986-0.68821518j, -0.19602931-0.2039076j ]])
-'''
-'''
-J1 = np.array([[ 0.89097912+0.j        , -0.25009759-0.43946158j],
-       [ 0.43033225-0.14481147j,  0.6335862 +0.58557087j]])
-J2 = np.array([[ 0.31676515+0.j        , -0.93297585-0.07330244j],
-       [-0.58381747+0.74754063j, -0.26412184+0.23328625j]])
-'''
-rotation = 0#7
-rotation2 =  0#2
-J_dichroic = np.array([J1@rot(rotation), J2@rot(-rotation2), J1@rot(rotation)])
-rho_offset = 0#-4
-
-# %% SGD PARANETERS TO DEFINE
-Nphotons_speed1 = jax.device_put(2000)
-background_speed = jax.device_put(100)
-LR1 = jax.device_put(0.05)
-num_epochs_max1 = 80
-
-num_epochs_max2 = 120
-LR2 = jax.device_put(1.2)
-delta_speed = jax.device_put(1.8)
-nphotons_speed2 = jax.device_put(50)
-xy_speed2 = jax.device_put(1/70)
-z_speed2=jax.device_put(1/70)
-# relative learning rates of the aberrations fitted in SGD2, one per coefficient: 3 planes x 15 Noll modes,
-# index = 15*plane + mode, for each polarisation channel. Coefficients in radians, fitted as an offset
-# shared by all the PSF of the batch around zern_x/zern_y. 0 freezes a coefficient (all 0 = no aberration fit)
-zern_speed2_x = jax.device_put(jnp.full(3*15, 0.01))
-zern_speed2_y = jax.device_put(jnp.full(3*15, 0.01))
-
-# extraction parameters
-Nframe= 20 # nb of frame per batch of extraction
-last_frame_processed=2000 #starting point 
-NPSF = 100 # nb of PSF per batch
-
-n_photons_filtering = 100
-
-# nb of batch of SGD
-batch_nb = 30000
-dimensions = [215,160] # the dimension of the channels can slightly vary depending on the reconstruction file
-
-# microscope parameters
-polar_projections = jax.device_put(jnp.array([0, 45, 0]))
-N=jax.device_put(jnp.array(80))
-l_pixel=jax.device_put(jnp.array(16))
-NA=jax.device_put(jnp.array(1.4))
-mag=jax.device_put(jnp.array(100))
-f_tube=jax.device_put(jnp.array(200))
-MAG=jax.device_put(jnp.array(200/150))
-
-SAF = True
-
-# aberrations, 0 everywhere means a perfect system. zernike_coefs_x/y are used by the
-# first SGD, zern_x/zern_y by the second one, they are fitted in SGD_aberrations.py
-zernike_coefs_x = jnp.zeros((3,15)).astype(jnp.complex64)
-zernike_coefs_y = jnp.zeros((3,15)).astype(jnp.complex64)
-zern_x = jnp.zeros(3*15)
-zern_y = jnp.zeros(3*15)
-
-#%%   #### OPTIONAL - reloading the parameters of a previous run instead of the cells above ####
-# run this cell only if you want to reproduce an old run: it overwrites the parameters
-# defined above with the ones stored in the config.txt of that run
-
+    return score_eval(M, rho_found, eta_found, delta_found, N_found2, noisy_psf, background, noise, dim_simu)
 def parse_config(config_path):
     cfg = {}
     with open(config_path) as f:
@@ -337,26 +268,190 @@ reloaded = ['QE', 'EM', 'sensitivity',
             'zernike_coefs_x', 'zernike_coefs_y', 'zern_x', 'zern_y',
             'LR1', 'num_epochs_max1', 'Nphotons_speed1', 'background_speed',
             'LR2', 'num_epochs_max2', 'delta_speed', 'nphotons_speed2', 'xy_speed2', 'z_speed2',
-            'zern_speed2_x', 'zern_speed2_y',
+            'zern_speed2_x', 'zern_speed2_y', 'zern_start_epoch2', 'fit_zernike', 'loss2',
             'Nframe', 'last_frame_processed', 'NPSF', 'n_photons_filtering', 'batch_nb', 'dimensions']
+
+def reload_config(config_file):
+    # overwrites the parameters of the script with the ones stored in a config.txt, returns the whole config
+    old_config = parse_config(config_file)
+    print('Reloading the parameters of the run of '+str(old_config.get('date', 'unknown date')))
+    for key in reloaded:
+        if key in old_config:
+            globals()[key] = old_config[key]
+            print('  '+key+' = '+str(old_config[key]))
+        else:
+            print('  '+key+' is missing from the file, keeping the value defined above')
+    return old_config
+
+#%% extracting positions/pre-loc
+csv_files = list(path.glob("*.csv"))
+data = pos_from_csv(csv_files[0])
+match = re.search(r'_(\d+)\.csv$', csv_files[0].name)
+if match:
+    number = int(match.group(1))
+else:
+    raise ValueError("No ending number found")
+interplane = jax.device_put(number/1000)
+print('Interplane: '+str(interplane)+'um')
+# camera baseline (ADU), from the raw files next to the reconstruction, used by the noise model
+baseline_adu = measure_baseline(path.parent)
+#%% defining useful variables
+
+lambda_emission = jax.device_put(620) # nm
+middle_plane = jax.device_put(1.)
+d = jnp.array([middle_plane-interplane, middle_plane, middle_plane+interplane])
+
+
+# %% calibration data
+
+def rot(angle):
+    angle=angle*np.pi/180
+    return np.array([[np.cos(angle), -np.sin(angle)],[np.sin(angle), np.cos(angle)]])
+'''
+J1 = np.array([[ 0.77294344        ,             -0.37847298 + 1j*  -0.5097466 ],[
+      -0.24436265 + 1j*  0.58565116  ,   -0.7503899 + 1j*  0.18626373 ]])
+J2 = np.array([[ 0.22273345               ,      -0.8014731 + 1j*  -0.55417156 ],[
+      0.48960716 + 1j*  0.84284395   ,  -0.017539864 + 1j*  0.2226117 ]])
+'''
+'''
+J1 = np.array([[ 0.86687591+0.j        , -0.57183764-0.13293168j],
+       [ 0.47786187+0.14203586j,  0.74024064+0.32768077j]])
+J2 = np.array([[ 0.31561277+0.j        , -0.95752769-0.05599034j],
+       [-0.65325986-0.68821518j, -0.19602931-0.2039076j ]])
+'''
+
+J1 = np.array([[ 0.89097912+0.j        , -0.25009759-0.43946158j],
+       [ 0.43033225-0.14481147j,  0.6335862 +0.58557087j]])
+J2 = np.array([[ 0.31676515+0.j        , -0.93297585-0.07330244j],
+       [-0.58381747+0.74754063j, -0.26412184+0.23328625j]])
+
+rotation = 7
+rotation2 =  2
+J_dichroic = np.array([J1@rot(rotation), J2@rot(-rotation2), J1@rot(rotation)])
+rho_offset = -4
+
+# %% SGD PARANETERS TO DEFINE
+Nphotons_speed1 = jax.device_put(2000)
+background_speed = jax.device_put(100)
+LR1 = jax.device_put(0.05)
+num_epochs_max1 = 80
+
+num_epochs_max2 = 120
+LR2 = jax.device_put(1.2)
+delta_speed = jax.device_put(1.8)
+nphotons_speed2 = jax.device_put(50)
+xy_speed2 = jax.device_put(1/70)
+z_speed2=jax.device_put(1/70)
+# relative learning rates of the aberrations fitted in SGD2, one per coefficient: 3 planes x 15 Noll modes,
+# index = 15*plane + mode, for each polarisation channel. Coefficients in radians, fitted as an offset
+# shared by all the PSF of the batch around zern_x/zern_y. 0 freezes a coefficient (all 0 = no aberration fit)
+# only primary astigmatism (Noll 5, 6) and primary spherical (Noll 11) are fitted, the other modes stay at 0
+fitted_noll = [5, 6, 11]
+zern_fitted = jnp.tile(jnp.isin(jnp.arange(1, 16), jnp.array(fitted_noll)), 3).astype(jnp.float32) # 1 for a fitted coefficient
+zern_speed2_x = jax.device_put(0.007*zern_fitted)
+zern_speed2_y = jax.device_put(0.007*zern_fitted)
+# False: no aberration in SGD2, all the Zernike coefficients stay at 0 whatever zern_x/zern_y and the speeds
+fit_zernike = False
+zern_start_epoch2 = 50 # the aberrations stay at zern_x/zern_y during the first epochs of SGD2, then are fitted
+# loss of SGD2: 'lms' = least squares normalised by the variance of each pixel estimated from the data,
+# 'poisson' = Poisson likelihood. Both use the noise model of noise_model. The saved score is this loss
+# for each PSF. The cells defining step2 and eval_batch must be run again after a change (jit)
+loss2 = 'lms'
+
+# extraction parameters
+Nframe= 20 # nb of frame per batch of extraction
+last_frame_processed=2000 #starting point 
+NPSF = 100 # nb of PSF per batch
+
+n_photons_filtering = 100
+
+# nb of batch of SGD
+batch_nb = 30000
+# changed only by the resume sub-option of the OPTIONAL cell, keep these values for a new run
+first_batch = 0 # index of the first npz file written
+n_psf_to_skip = 0 # PSF of the first frame that were already saved by the resumed run
+config_name = 'config.txt'
+dimensions = [215,160] # the dimension of the channels can slightly vary depending on the reconstruction file
+
+# microscope parameters
+polar_projections = jax.device_put(jnp.array([0, 45, 0]))
+N=jax.device_put(jnp.array(80))
+l_pixel=jax.device_put(jnp.array(16))
+NA=jax.device_put(jnp.array(1.4))
+mag=jax.device_put(jnp.array(100))
+f_tube=jax.device_put(jnp.array(200))
+MAG=jax.device_put(jnp.array(200/150))
+
+SAF = True
+
+# aberrations, 0 everywhere means a perfect system. zernike_coefs_x/y are used by the
+# first SGD, zern_x/zern_y by the second one (starting point of the aberration fit), in rad
+zernike_coefs_x = jnp.zeros((3,15)).astype(jnp.complex64)
+zernike_coefs_y = jnp.zeros((3,15)).astype(jnp.complex64)
+# mean over the 221 batches of the SGD2 aberration fit of fit_2026-10-02_19h42.csv
+# (2026_02_02_SLB_1um_new_process/SM_tres_haut), one row per plane, Noll index 1 to 15,
+# only primary astigmatism (Noll 5, 6) and primary spherical (Noll 11) are kept
+zern_x = jnp.zeros(3*15) # start from a perfect system, the means of the previous fit are kept below
+''' jnp.array([
+    0.000000, 0.000000, 0.000000, 0.000000, 0.064880, -0.307965, 0.000000, 0.000000, 0.000000, 0.000000, 0.053822, 0.000000, 0.000000, 0.000000, 0.000000,
+    0.000000, 0.000000, 0.000000, 0.000000, 0.420010, -0.011255, 0.000000, 0.000000, 0.000000, 0.000000, 0.205577, 0.000000, 0.000000, 0.000000, 0.000000,
+    0.000000, 0.000000, 0.000000, 0.000000, -0.001132, -0.183550, 0.000000, 0.000000, 0.000000, 0.000000, 0.203165, 0.000000, 0.000000, 0.000000, 0.000000])
+'''
+zern_y = jnp.zeros(3*15)
+''' jnp.array([
+    0.000000, 0.000000, 0.000000, 0.000000, -0.091603, -0.102861, 0.000000, 0.000000, 0.000000, 0.000000, 0.135169, 0.000000, 0.000000, 0.000000, 0.000000,
+    0.000000, 0.000000, 0.000000, 0.000000, 0.185555, -0.316491, 0.000000, 0.000000, 0.000000, 0.000000, 0.281857, 0.000000, 0.000000, 0.000000, 0.000000,
+    0.000000, 0.000000, 0.000000, 0.000000, 0.214820, -0.010762, 0.000000, 0.000000, 0.000000, 0.000000, 0.184550, 0.000000, 0.000000, 0.000000, 0.000000])
+'''
+#%%   #### OPTIONAL - reloading the parameters of a previous run instead of the cells above ####
+# run this cell only if you want to reproduce an old run: it overwrites the parameters
+# defined above with the ones stored in the config.txt of that run
 
 config_file = filedialog.askopenfilename(initialdir=look_up_folder,
                                          title="Select the config.txt of the run to reproduce",
                                          filetypes=[("Config file", "config*.txt"), ("All files", "*.*")])
-old_config = parse_config(config_file)
-print('Reloading the parameters of the run of '+str(old_config.get('date', 'unknown date')))
-for key in reloaded:
-    if key in old_config:
-        globals()[key] = old_config[key]
-        print('  '+key+' = '+str(old_config[key]))
-    else:
-        print('  '+key+' is missing from the file, keeping the value defined above')
+old_config = reload_config(config_file)
+
+#%%   #### OPTIONAL - resuming a run that stopped ####
+# run this cell (and not the one above) to continue a run that stopped, in its own NPZ folder and from the
+# frame where it stopped: it reloads the parameters of the run and finds in its npz files where it stopped.
+# The raw files are the ones selected at the beginning of the script. Do not run the parameter cells
+# above after this one, they would set the starting point back to a new run
+
+resume_folder = Path(filedialog.askdirectory(initialdir=look_up_folder,
+                                             title="Select the NPZ folder of the run to resume"))
+old_config = reload_config(resume_folder / 'config.txt')
+if old_config.get('reconstruction_path', str(path)) != str(path):
+    print('WARNING: the stopped run processed '+str(old_config['reconstruction_path'])+' but '+str(path)+' is selected')
+
+frames_done, batches_done = [], []
+for npz_file in resume_folder.glob('*.npz'):
+    if not npz_file.stem.isdigit():
+        continue
+    try:
+        with np.load(npz_file) as npz:
+            frames_done.append(npz['frame'])
+        batches_done.append(int(npz_file.stem))
+    except Exception as error: # typically the file being written when the run stopped
+        print('  '+npz_file.name+' cannot be read, its batch will be processed again ('+str(error)+')')
+if len(batches_done) == 0:
+    raise ValueError('No readable npz file in '+str(resume_folder)+', nothing to resume')
+frames_done = np.concatenate(frames_done)
+last_frame_saved = int(np.max(frames_done))
+# a batch ends in the middle of a frame: the last saved frame is extracted again and its PSF
+# already saved are skipped, the order of the PSF inside a frame being the one of the csv
+last_frame_processed = last_frame_saved - 1
+n_psf_to_skip = int(np.sum(frames_done == last_frame_saved))
+first_batch = max(batches_done) + 1
+if save_folder != resume_folder and save_folder.is_dir() and not any(save_folder.iterdir()):
+    save_folder.rmdir() # the empty NPZ folder created at the beginning
+save_folder = resume_folder
+config_name = f'config_resumed_{datetime.now():%Y-%m-%d_%Hh%M}.txt' # the config.txt of the run is kept
+print('Resuming in '+str(save_folder)+' at batch '+str(first_batch)+', frame '+str(last_frame_saved)
+      +' ('+str(n_psf_to_skip)+' PSF of this frame already saved)')
 
 #%%   #################### saving the configuration of the run ##################
 
-raw = np.zeros((Nframe,6,dimensions[0],dimensions[1]))
-buffer = (np.array([]), np.array([]), np.array([]))
-psf_buffer = np.empty((0, 3, 2, 13, 13))  # adjust shape to match your PSF dimensions
 
 config = {
     'date': f'{datetime.now():%Y-%m-%d %H:%M:%S}',
@@ -365,6 +460,7 @@ config = {
     'QE': QE,
     'EM': EM,
     'sensitivity': sensitivity,
+    'baseline_adu': baseline_adu, # measured on the raw files, not reloaded
     # microscope and planes
     'lambda_emission': lambda_emission,
     'middle_plane': middle_plane,
@@ -405,6 +501,9 @@ config = {
     'z_speed2': z_speed2,
     'zern_speed2_x': zern_speed2_x,
     'zern_speed2_y': zern_speed2_y,
+    'zern_start_epoch2': zern_start_epoch2,
+    'fit_zernike': fit_zernike,
+    'loss2': loss2,
     # extraction
     'Nframe': Nframe,
     'last_frame_processed': last_frame_processed,
@@ -412,9 +511,12 @@ config = {
     'n_photons_filtering': n_photons_filtering,
     'batch_nb': batch_nb,
     'dimensions': dimensions,
+    # resume, 0 for a new run
+    'first_batch': first_batch,
+    'n_psf_to_skip': n_psf_to_skip,
 }
 
-with open(save_folder / 'config.txt', 'w') as f:
+with open(save_folder / config_name, 'w') as f:
     f.write('# 4polarMFM SGD run configuration, reloadable by the OPTIONAL cell of SGD_jax.py\n')
     f.write('# lengths in um, angles in degrees, wavelengths in nm\n')
     for key, value in config.items():
@@ -424,7 +526,7 @@ with open(save_folder / 'config.txt', 'w') as f:
             line = np.array2string(np.asarray(value), separator=', ', max_line_width=10**6, floatmode='unique')
             line = line.replace('\n', '') # 2D arrays are printed over several rows, one key per line is needed to reload
         f.write(f'{key} = {line}\n')
-print('Config saved in: '+str(save_folder / 'config.txt'))
+print('Config saved in: '+str(save_folder / config_name))
 
 #%%   #################### gradient descent ##################
 
@@ -481,13 +583,15 @@ htest = PSF_jax(rho=rho_start, eta=eta_start, delta=delta_start, M=Mtest, N_phot
 dim_simu = int(htest.shape[-1]//2)
 
 
-def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result):
-    bufferx, buffery, bufferindex = buffer
+def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result, n_skip=0):
+    # n_skip: number of first PSF to drop, already saved by the run that is resumed
+    bufferx, buffery, bufferindex, buffernoise = buffer
     x, y, index_frame = bufferx, buffery, bufferindex
-    single_psf = psf_buffer    
-    sigma = np.std(single_psf.flatten())
-    background = np.mean(single_psf.flatten())
-    while len(x)<NPSF:
+    # noise of each PSF: gain, shift and background level of its 3 planes x 2 polarisations (see noise_model),
+    # measured on the chunk of frames the PSF comes from and kept with it in the buffer
+    psf_noise = buffernoise
+    single_psf = psf_buffer
+    while len(x)<NPSF+n_skip:
         #t0 = time.time()
         raw, error_indices = extract_frames(last_frame_processed+1, Nframe, dimensions)
         #print(f'extract_frames: {time.time()-t0:.2f}s')
@@ -495,8 +599,10 @@ def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result):
         #print(f'extract_positions: {time.time()-t0:.2f}s')
         # converting to photon count
         raw = raw*sensitivity/(QE*EM)
-        sigma = np.std(raw.flatten())
-        background = np.mean(raw.flatten())
+        gain, shift, level = noise_model(raw, -baseline_adu*sensitivity/(QE*EM))
+        background = np.mean(level)
+        print('noise of frames '+str(last_frame_processed+1)+' to '+str(last_frame_processed+Nframe)+', var = gain*(value + shift), shift = -baseline')
+        print('  gain  '+str(np.round(gain, 2))+'\n  shift '+str(np.round(shift, 1))+'\n  background '+str(np.round(level, 1)))
         L = raw.shape[2]*120
         W = raw.shape[3]*120
         # removing all the PSF where a parameter is evaluated to nan in Louise pipeline
@@ -528,6 +634,9 @@ def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result):
         y = np.concatenate((y, y_))
         index_frame = np.concatenate((index_frame, index_frame_))
         single_psf = np.concatenate((single_psf, single_psf_))
+        # channel 2*plane+polarisation of raw, as in extract_raw_xy, then planes reversed as single_psf_
+        chunk_noise = np.stack((gain, shift, level))[:, np.arange(6).reshape(3, 2)[::-1]]
+        psf_noise = np.concatenate((psf_noise, np.tile(chunk_noise, (len(single_psf_), 1, 1, 1))))
         
         # filter after concatenation, inside while loop
         n_pixels = single_psf.shape[2] * single_psf.shape[3] * single_psf.shape[4]
@@ -544,14 +653,14 @@ def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result):
                 single_psf = np.delete(single_psf, k, 0)
         '''
         last_frame_processed+=Nframe
-    
-    buffer = x[NPSF:], y[NPSF:], index_frame[NPSF:]
+
+    x, y, index_frame, single_psf, psf_noise = x[n_skip:], y[n_skip:], index_frame[n_skip:], single_psf[n_skip:], psf_noise[n_skip:]
+    buffer = x[NPSF:], y[NPSF:], index_frame[NPSF:], psf_noise[NPSF:]
     psf_buffer = single_psf[NPSF:]
     noisy_psf = single_psf[:NPSF]
     x, y = x[:NPSF], y[:NPSF]
     index_frame = index_frame[:NPSF]
-
-    Nstart_by_plane = np.sum(noisy_psf, axis=(2,3,4)) - background*len(noisy_psf[0,0].flatten())
+    psf_noise = psf_noise[:NPSF]
     
     result['buffer'] = buffer        
     result['psf_buffer'] = psf_buffer 
@@ -559,22 +668,22 @@ def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result):
     result['x'] = jnp.array(x)
     result['y'] = jnp.array(y)
     result['Nstart'] = jnp.array([3000. for i in range(NPSF)]).astype(jnp.float32)#jnp.array(jnp.sum(Nstart_by_plane, axis=1)).astype(jnp.float32)
-    result['background_array'] = jnp.array(background*jnp.ones((NPSF,3,2))).astype(jnp.float32)
-    result['sigma'] = jnp.array(sigma)
+    result['background_array'] = jnp.array(psf_noise[:, 2]).astype(jnp.float32) # starting background of each channel
+    result['noise'] = jnp.array(psf_noise[:, :2]).astype(jnp.float32) # (NPSF, gain/shift, 3, 2)
     result['frame'] = index_frame
     result['last_frame_processed'] = last_frame_processed
 
 # functions for the SGD steps
 @functools.partial(jax.jit, static_argnames=['dim_simu'])#, donate_argnums=(0, 1))
-def step1(params, opt_state, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, sigma, dim_simu, d_):
-    loss, grads = jax.value_and_grad(loss_pos)(params, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, sigma, dim_simu, d_)
+def step1(params, opt_state, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, noise, dim_simu, d_):
+    loss, grads = jax.value_and_grad(loss_pos)(params, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, noise, dim_simu, d_)
     updates, opt_state = optimizer1.update(grads, opt_state, params)
     params = optax.apply_updates(params, updates)
     return params, opt_state, loss
 
 @functools.partial(jax.jit, static_argnames=['dim_simu'])#, donate_argnums=(0, 1))
-def step2(params, opt_state, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, zern_speed2_x, zern_speed2_y, data, background, sigma, dim_simu, d_):
-    loss, grads = jax.value_and_grad(loss_angle_with_M)(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, zern_speed2_x, zern_speed2_y, data, background, sigma, dim_simu, d_)
+def step2(params, opt_state, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, zern_speed2_x, zern_speed2_y, data, background, noise, dim_simu, d_):
+    loss, grads = jax.value_and_grad(loss_angle_with_M)(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, zern_speed2_x, zern_speed2_y, data, background, noise, dim_simu, d_)
     updates, opt_state = optimizer2.update(grads, opt_state, params)
     params = optax.apply_updates(params, updates)
     return params, opt_state, loss
@@ -584,18 +693,29 @@ optimizer2 = optax.adam(learning_rate=LR2)
 
 
 ################# main loop ########################
+if not fit_zernike: # no aberration in SGD2, applied here so that it also holds after reloading an old config
+    zern_x, zern_y = jnp.zeros(3*15), jnp.zeros(3*15)
+    zern_speed2_x, zern_speed2_y = jnp.zeros(3*15), jnp.zeros(3*15)
+    print('Zernike aberrations off: all the coefficients stay at 0 in SGD2')
+
+# working buffers of the extraction, empty at the start of a launch (new or resumed run)
+raw = np.zeros((Nframe,6,dimensions[0],dimensions[1]))
+buffer = (np.array([]), np.array([]), np.array([]), np.empty((0, 3, 3, 2))) # x, y, frame, noise of each PSF
+psf_buffer = np.empty((0, 3, 2, 13, 13))  # adjust shape to match your PSF dimensions
 first_loop_of_the_launch = True
-for batch in range(batch_nb):
-   
+print('Starting at batch '+str(first_batch)+' after frame '+str(last_frame_processed)+', saving in '+str(save_folder))
+for batch in range(first_batch, batch_nb):
+
     current = {}
-    load_batch(last_frame_processed, buffer, psf_buffer, NPSF, current)
+    load_batch(last_frame_processed, buffer, psf_buffer, NPSF, current, n_skip=n_psf_to_skip)
+    n_psf_to_skip = 0 # only the first batch of a resumed run skips PSF
     buffer = current.get('buffer', buffer)
     psf_buffer = current.get('psf_buffer', psf_buffer)
     last_frame_processed = current.get('last_frame_processed', last_frame_processed)
 
     # build params from current batch
     noisy_psf = current['noisy_psf']  
-    sigma = current['sigma']        
+    noise = current['noise']        
     x = current['x']  
     y = current['y']  
     frame = current['frame'] 
@@ -619,7 +739,7 @@ for batch in range(batch_nb):
     bck = []
     
     for i in tqdm(range(num_epochs_max1)):
-        params, opt_state, loss = step1(params, opt_state, Nphotons_speed1, background_speed, angle_rd2, angle_rd2, angle_rd1, noisy_psf, second_plane, sigma, dim_simu, d_)
+        params, opt_state, loss = step1(params, opt_state, Nphotons_speed1, background_speed, angle_rd2, angle_rd2, angle_rd1, noisy_psf, second_plane, noise, dim_simu, d_)
         loss_.append(float(loss))
         z__.append(np.array(params['zp']))
         N__.append(np.array(params['N_photons'] * Nphotons_speed1))
@@ -679,7 +799,9 @@ for batch in range(batch_nb):
     zy_ = []
     
     for i in tqdm(range(num_epochs_max2)):
-        params, opt_state, loss = step2(params, opt_state, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern_x, zern_y, zern_speed2_x, zern_speed2_y, noisy_psf, background_array_found, sigma, dim_simu, d_)
+        # a speed of 0 gives a gradient of 0: the aberrations do not move before zern_start_epoch2
+        zern_on = float(i >= zern_start_epoch2)
+        params, opt_state, loss = step2(params, opt_state, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern_x, zern_y, zern_speed2_x*zern_on, zern_speed2_y*zern_on, noisy_psf, background_array_found, noise, dim_simu, d_)
         loss_.append(float(loss))
         rho_.append(np.array(params['rho']))
         eta_.append(np.array(params['eta']))
@@ -753,7 +875,7 @@ for batch in range(batch_nb):
     #plt.show()
     '''
     if first_loop_of_the_launch:
-        plot_results(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern_x + params['zern_x']*zern_speed2_x, zern_y + params['zern_y']*zern_speed2_y, noisy_psf, background_array_found, sigma, dim_simu, d_)
+        plot_results(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern_x + params['zern_x']*zern_speed2_x, zern_y + params['zern_y']*zern_speed2_y, noisy_psf, background_array_found, noise, dim_simu, d_)
         first_loop_of_the_launch = False
     del(eta_, rho_, delta_, x_, z_, zx_, zy_)
 
@@ -769,7 +891,7 @@ for batch in range(batch_nb):
     zerny = jnp.reshape(zern_y + params['zern_y']*zern_speed2_y, (3,15))
     del(params, loss)
     
-    score = eval_batch(x_found, y_found, z_found, zernx, zerny, rho_found, eta_found, delta_found, N_found2, noisy_psf, background_array_found, sigma, dim_simu)
+    score, deviance = eval_batch(x_found, y_found, z_found, zernx, zerny, rho_found, eta_found, delta_found, N_found2, noisy_psf, background_array_found, noise, dim_simu)
     
     rho_found = np.array(rho_found)+rho_offset
     eta_found = np.array(eta_found)
@@ -790,11 +912,12 @@ for batch in range(batch_nb):
                         frame = frame, x=np.array(x_), 
                         y=np.array(y_), z=np.array(1000*z_found), N_photons=np.array(N_found2), 
                         rho=np.array(rho_found), eta=np.array(eta_found), 
-                        delta=np.array(delta_found), score=np.array(score), x_start=np.array(x), 
+                        delta=np.array(delta_found), score=np.array(score), deviance=np.array(deviance), x_start=np.array(x), 
                         y_start=np.array(y), z_start=np.nan,
                         rho_start=np.nan, delta_start=np.nan, 
                         background_array_found=np.array(background_array_found),
-                        zernx_found=np.array(zernx), zerny_found=np.array(zerny))
+                        zernx_found=np.array(zernx), zerny_found=np.array(zerny),
+                        noise_gain=np.array(noise[:, 0]), noise_shift=np.array(noise[:, 1]))
 
 # %%
  

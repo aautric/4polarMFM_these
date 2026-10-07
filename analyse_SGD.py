@@ -57,6 +57,8 @@ if "eta" in data.columns: # case to process SGD data
     delta = data['delta'].to_numpy()
     N_photons = data['N_photon'].to_numpy()
     score = data['score'].to_numpy()
+    # deviance per pixel (goodness of fit, ~1 for a good fit), only in the runs where it was computed
+    deviance = data['deviance'].to_numpy() if 'deviance' in data.columns else None
     #x_start = data['x_start'].to_numpy()
     #y_start = data['y_start'].to_numpy()
     #z_start = data['z_start'].to_numpy()
@@ -72,12 +74,27 @@ else: # case ratiometric only
     delta = data['delta'].to_numpy()
     N_photons = data['intensity [a.u.]'].to_numpy()
     score = data['sigmax [nm]'].to_numpy()
-    
+    deviance = None
+
+# aberrations fitted in SGD2, copied by post_process_SGD.py on each localisation of a batch:
+# one row per batch is kept, with the frames the batch covers
+zern_columns = [c for c in data.columns if c[:2] in ('x_', 'y_') and '_Z' in c]
+if 'batch' in data.columns and len(zern_columns) > 0:
+    zern_data = data.groupby('batch').agg(first_frame=('frame', 'min'), last_frame=('frame', 'max'),
+                                          **{c: (c, 'first') for c in zern_columns})
+    zern_data = zern_data.dropna().reset_index() # the batches of a run without aberration fit
+    print('Aberrations of '+str(len(zern_data))+' batches loaded')
+else:
+    zern_data = None
+
 # %% basic plots to see the thresholding
 %matplotlib inline
 plt.rcParams['figure.figsize'] = [12,3]
 fig, ax = plt.subplots(1,3)
-hist = ax[0].hist(score, bins=50)
+# range from the 1st to the 99th percentile: a few PSF with a huge loss would otherwise put all the others in one bin
+score_range = np.nanpercentile(score, [1, 99])
+hist = ax[0].hist(score, bins=50, range=score_range)
+ax[0].set_title(f'{np.sum((score < score_range[0]) | (score > score_range[1]))} PSF out of the range', fontsize=10)
 ax[0].set_xlabel('Finale loss per PSF')
 ax[0].set_ylabel('Occurences')
 
@@ -90,8 +107,51 @@ hist = ax[2].hist(z, bins=80)
 ax[2].set_xlabel('z')
 ax[2].set_ylabel('Occurences')
 
+# %% zernike aberrations across the SGD
+if zern_data is None:
+    print('No aberrations in '+path+', run post_process_SGD.py on a run with the aberration fit')
+else:
+    to_mlambda = 1000/(2*np.pi) # rad to milli-waves
+    column = lambda pol, p, m: pol+'_p'+str(p)+'_Z'+str(m) # plane p, polarisation pol, Noll index m
+    # only the fitted modes, the switched off ones (piston, tilt, defocus) stay at 0
+    modes = [m for m in range(1, 16) if any((zern_data[column(pol, p, m)] != 0).any() for pol in 'xy' for p in range(3))]
+    batch_frame = (zern_data['first_frame'] + zern_data['last_frame'])/2
+
+    plt.rcParams['figure.figsize'] = [14, 10]
+    fig, ax = plt.subplots(3, 2, sharex=True, sharey=True)
+    for p in range(3):
+        for c, pol in enumerate(['x', 'y']):
+            for m in modes:
+                ax[p,c].plot(batch_frame, zern_data[column(pol, p, m)]*to_mlambda, label='Z'+str(m))
+            ax[p,c].set(title='plane '+str(p)+' - '+pol+' polarisation', ylabel='coefficient (m$\\lambda$)')
+    ax[2,0].set_xlabel('frame (middle of the batch)')
+    ax[2,1].set_xlabel('frame (middle of the batch)')
+    ax[0,1].legend(title='Noll index', fontsize=8, loc='upper left', bbox_to_anchor=(1.01,1))
+    fig.suptitle('Aberrations fitted in SGD 2, one point per batch')
+    plt.show()
+
+    # distribution over the batches
+    fig, ax = plt.subplots(3, 2, sharex=True, sharey=True)
+    for p in range(3):
+        for c, pol in enumerate(['x', 'y']):
+            values = np.array([zern_data[column(pol, p, m)] for m in modes])*to_mlambda # modes x batches
+            # the density of a constant coefficient (frozen with a speed of 0) cannot be computed, it is shown as a point
+            varying = np.std(values, axis=1) > 0
+            positions = np.arange(len(modes))
+            if varying.any():
+                parts = ax[p,c].violinplot(list(values[varying]), positions=positions[varying], showmeans=True, showmedians=True, showextrema=False)
+                parts['cmeans'].set_color('k')
+                parts['cmedians'].set_color('r')
+            ax[p,c].scatter(positions[~varying], values[~varying, 0], color='k', s=15)
+            ax[p,c].axhline(0, color='k', lw=0.8)
+            ax[p,c].set(title='plane '+str(p)+' - '+pol+' polarisation', ylabel='coefficient (m$\\lambda$)')
+            ax[p,c].set_xticks(positions)
+            ax[p,c].set_xticklabels(['Z'+str(m) for m in modes])
+    fig.suptitle('Distribution of the aberrations over the '+str(len(zern_data))+' batches (black: mean, red: median)')
+    plt.show()
+
 # %% TO BE MODIFIED
-loss_thresh = -1*10**6
+loss_thresh = 5000
 mask1 = (score<loss_thresh) & (delta<150) & (delta>50) & (N_photons>300) & (N_photons<10000) & (z<1800) & (z>0) #& (eta>30) & (eta<150)
 #mask1 = (delta<150) & (delta>60)
 #%% mask selection
@@ -254,7 +314,7 @@ def recursive_call(i, x, y, z, rho, eta, delta, frame, previous_index, not_count
     else:
         return previous_index.astype(int)
 
-def link_localizations(x, y, z, rho, eta, delta, N_photons, score, frame):
+def link_localizations(x, y, z, rho, eta, delta, N_photons, score, frame, deviance=None):
     not_counted = np.ones(len(x), dtype=bool)
     frame = frame.astype(float) 
     stdx, stdy, stdz, stdrho, stdeta, stddelta = [], [], [], [], [], []
@@ -296,6 +356,9 @@ def link_localizations(x, y, z, rho, eta, delta, N_photons, score, frame):
                 N_photons[indices[:-1]] = np.nan
                 score[indices[-1]] = np.mean(score[indices])
                 score[indices[:-1]] = np.nan
+                if deviance is not None: # modified in place as the other arrays
+                    deviance[indices[-1]] = np.mean(deviance[indices])
+                    deviance[indices[:-1]] = np.nan
                 frame[indices[-1]] = np.mean(frame[indices])
                 frame[indices[:-1]] = np.nan
 
@@ -304,30 +367,20 @@ def link_localizations(x, y, z, rho, eta, delta, N_photons, score, frame):
             np.array(stdx), np.array(stdy), np.array(stdz), np.array(stdrho), np.array(stdeta), np.array(stddelta),
             np.array(meanx), np.array(meany), np.array(meanz), np.array(meanrho), np.array(meaneta), np.array(meandelta), np.array(meanN), np.array(meanscore))#%% select zone to analyse
 
-x, y, z, rho, eta, delta, N_photons, score, frame, stdx, stdy, stdz, stdrho, stdeta, stddelta, meanx, meany, meanz, meanrho, meaneta, meandelta, meanN, meanscore = link_localizations(x, y, z, rho, eta, delta, N_photons, score, frame)
-#%% std x
-fig, ax = plt.subplots()
-hh = ax.hist(stdx, bins=100)
-ax.set_xlabel('std x (nm)')
-#%% std z
-plt.show()
-hh = plt.hist(stdz, bins=100)
-plt.xlabel('std z (nm)')
-#%%std rho
-plt.show()
-hh = plt.hist(stdrho, bins=100)
-plt.xlabel('std $\\rho$ (degree)')
-plt.show()
-#%% std eta
-hh = plt.hist(stdeta, bins=100)
-plt.xlabel('std $\\eta$ (degree)')
-plt.show()
-#%% std delta
-hh = plt.hist(stddelta, bins=100)
-plt.xlabel('std $\\delta$ (degree)')
+x, y, z, rho, eta, delta, N_photons, score, frame, stdx, stdy, stdz, stdrho, stdeta, stddelta, meanx, meany, meanz, meanrho, meaneta, meandelta, meanN, meanscore = link_localizations(x, y, z, rho, eta, delta, N_photons, score, frame, deviance=deviance)
+#%% std x, z, rho, eta, delta
+fig, ax = plt.subplots(2, 3, figsize=(15, 8))
+for a, values, label in [(ax[0,0], stdx, 'std x (nm)'), (ax[0,1], stdz, 'std z (nm)'),
+                         (ax[1,0], stdrho, 'std $\\rho$ (degree)'), (ax[1,1], stdeta, 'std $\\eta$ (degree)'),
+                         (ax[1,2], stddelta, 'std $\\delta$ (degree)')]:
+    a.hist(values, bins=100)
+    a.set_xlabel(label)
+    a.set_ylabel('Occurences')
+ax[0,2].axis('off')
+plt.tight_layout()
 plt.show()
 #%% select new filter
-mask1 = (score<loss_thresh) & (z<1300) & (z>0) & (delta<150) &  (delta>50) & (N_photons>300) & (N_photons<10000)
+mask1 = (score<loss_thresh) & (z<1000) & (z>500) & (delta<150) &  (delta>50) & (N_photons>300) & (N_photons<10000)
 #%% select mask
 %matplotlib qt
 plt.rcParams['figure.figsize'] = [10,10]
@@ -352,7 +405,7 @@ def onselect(verts):
 lasso = LassoSelector(ax, onselect)
 plt.show()
 #%% SIZE OF THE SCATTER POINTS
-s = 0.005
+s = 0.001
 #%% plot rho
 plt.rcParams['figure.figsize'] = [8, 5]
 plt.rcParams.update({'font.size': 15})
@@ -463,6 +516,32 @@ ax[1].set_xlim(50, 150)
 ax[1].set_xlabel(r"$\delta$ (°)")
 ax[1].set_ylabel("Count")
 ax[1].set_title(r"$\delta$ distribution")
+plt.tight_layout()
+plt.show()
+#%% plot deviance and photon number
+# two maps of the points of mask, coloured by the deviance per pixel of each PSF (goodness of fit: ~1 when the
+# model describes the data, whatever the photon number and the background) and by its photon number.
+# Without deviance in the csv (runs before it was added), the score is shown instead, but it mostly follows
+# the background. Colour range from the 1st to the 99th percentile so that a few outliers do not hide the rest
+plt.rcParams['figure.figsize'] = [12, 5]
+plt.rcParams.update({'font.size': 15})
+fig, ax = plt.subplots(1, 2)
+if deviance is not None and len(deviance) == len(x):
+    fit_quality = (deviance[mask], 'deviance per pixel')
+else:
+    if deviance is not None: # deviance left from another csv loaded before in the session
+        print('deviance has '+str(len(deviance))+' values for '+str(len(x))+' points: it comes from another file, run the cell that loads the csv again')
+    fit_quality = (score[mask], 'score')
+for a, values, cmap_name, label in [(ax[0], fit_quality[0], 'viridis', fit_quality[1]),
+                                    (ax[1], N_photons[mask], 'YlOrRd', 'N photons')]:
+    a.set_facecolor('black')
+    vmin, vmax = np.nanpercentile(values, [1, 99])
+    sc = a.scatter(x[mask]/1000, y[mask]/1000, c=values, cmap=cmap_name, vmin=vmin, vmax=vmax, s=s, rasterized=True)
+    fig.colorbar(sc, ax=a, fraction=0.046, pad=0.04, label=label)
+    a.set_aspect('equal')
+    a.set_xlabel('x ($\\mu$m)')
+    a.set_ylabel('y ($\\mu$m)')
+    a.set_title(label+' map')
 plt.tight_layout()
 plt.show()
 #%%colormap
@@ -921,6 +1000,12 @@ ax0 = fig.add_subplot(3, 1, 1)
 ax_xy = fig.add_subplot(3, 1, 2)
 ax1 = fig.add_subplot(3, 1, 3, projection='polar')
 
+# the direction of a PCA axis is arbitrary, it is chosen with an in-plane angle in [0, 180[ as rho,
+# so that the tilt of the PCA has the same sign convention as the tilt from eta
+if eigenvectors[1, 0] < 0:
+    eigenvectors[:, 0] = -eigenvectors[:, 0]
+    w[:, 0] = -w[:, 0]
+
 # --- linear regression ---
 slope, intercept, r_value, p_value, std_err = stats.linregress(w[:,0]/1000, z[mask]/1000)
 slope_deg = np.rad2deg(np.arctan(slope))
@@ -929,16 +1014,31 @@ print(f"Slope: {slope_deg:.2f}°")
 x_fit = np.linspace(w[:,0].min()/1000, w[:,0].max()/1000, 500)
 y_fit = slope * x_fit + intercept
 
+# tilt of the dipoles from eta, with the same convention as the polar plot: tilt = 90 - eta
+tilt_median = 90 - np.median(eta[mask])
+tilt_mean = 90 - np.mean(eta[mask])
+# the lines of the tilts from eta go through the centre of the data, as the regression line
+w_mean, z_mean = np.mean(w[:,0])/1000, np.mean(z[mask])/1000
+lines = [(slope_deg, 'red', '-', 'PCA'),
+         (tilt_median, 'k', '-', '$\\eta$ median'),
+         (tilt_mean, 'k', '--', '$\\eta$ mean')]
+
 # --- scatter plot w vs z ---
-ax0.scatter(w[:,0]/1000, z[mask]/1000, s=0.1, color='steelblue', alpha=0.5, rasterized=True)
-ax0.plot(x_fit, y_fit, color='red', linewidth=2, label=f'slope = {slope_deg:.2f}°')
+# points coloured by eta, with the colormap and the range of the plot eta cell
+eta_norm = plt.Normalize(30, 150)
+sc0 = ax0.scatter(w[:,0]/1000, z[mask]/1000, s=0.1, c=eta[mask], cmap=cmap, norm=eta_norm, alpha=0.5, rasterized=True)
+fig.colorbar(sc0, ax=ax0, label='$\\eta$ (°)').solids.set_alpha(1) # opaque colorbar despite the transparent points
+for tilt, color, style, name in lines:
+    ax0.plot(x_fit, z_mean + np.tan(np.deg2rad(tilt))*(x_fit - w_mean), color=color, linestyle=style, linewidth=2,
+             label=f'{name}: {tilt:.2f}°')
 ax0.set_xlabel('PCA axis ($\\mu$m)')
 ax0.set_ylabel('z ($\\mu$m)')
 ax0.legend()
 ax0.grid(True, alpha=0.4)
 
 # --- xy scatter with PCA axis direction ---
-ax_xy.scatter(x[mask]/1000, y[mask]/1000, s=0.1, color='steelblue', alpha=0.3, rasterized=True)
+sc_xy = ax_xy.scatter(x[mask]/1000, y[mask]/1000, s=0.1, c=eta[mask], cmap=cmap, norm=eta_norm, alpha=0.3, rasterized=True)
+fig.colorbar(sc_xy, ax=ax_xy, label='$\\eta$ (°)').solids.set_alpha(1)
 
 # PCA axis direction (eigenvectors[:,0] is the first PC)
 cx = np.mean(x[mask]/1000)
@@ -971,10 +1071,11 @@ centers_folded = centers % np.pi
 colors = cmap(norm(np.rad2deg(centers_folded)))
 ax1.bar(centers, counts, width=width, bottom=0, color=colors, edgecolor='none', alpha=0.95)
 
-slope_med = np.median(eta[mask])
-slope_rad = np.deg2rad(slope_med)
-ax1.axvline(slope_rad, color='red', linewidth=2, label=f'{90-slope_med:.2f}°')
-ax1.axvline(slope_rad + np.pi, color='red', linewidth=2)
+# same three lines as in the first plot, at eta = 90 - tilt, mirrored as the histogram
+for tilt, color, style, name in lines:
+    eta_line = np.deg2rad(90 - tilt)
+    ax1.axvline(eta_line, color=color, linestyle=style, linewidth=2, label=f'{name}: {tilt:.2f}°')
+    ax1.axvline(eta_line + np.pi, color=color, linestyle=style, linewidth=2)
 
 ax1.set_theta_zero_location('N')
 ax1.set_theta_direction(-1)
@@ -991,10 +1092,319 @@ for label in ax1.get_yticklabels():
 
 ax1.set_thetagrids(np.arange(0, 360, 60), labels=[f"{d}°" for d in np.arange(0, 360, 60)])
 ax1.set_ylabel("Count", labelpad=25)
-ax1.legend(loc='upper right')
+ax1.legend(loc='upper center', bbox_to_anchor=(0.5, -0.12), fontsize=9)
+#%%
+############ interactive plots ######################
 
 plt.tight_layout()
 plt.show()
 print(90-np.mean(eta[mask]))
 print(90-np.median(eta[mask]))
-# %%
+#%% plot rho, interactive window of 10 degrees in rho
+# the slider sets the centre of the window, mask_rho keeps the points of mask inside it for the next cells
+%matplotlib qt
+rho_window = 10 # width of the window in degrees
+plt.rcParams['figure.figsize'] = [12, 6]
+plt.rcParams.update({'font.size': 15})
+fig = plt.figure()
+ax0 = fig.add_subplot(1, 2, 1)
+ax1 = fig.add_subplot(1, 2, 2, projection='polar')
+fig.subplots_adjust(bottom=0.2)
+ax_slider = fig.add_axes([0.2, 0.05, 0.6, 0.04])
+
+def in_rho_window(rho_values, centre):
+    # distance on the 180 degrees circle, so that a window around 0 also takes the points around 180
+    return np.abs((rho_values - centre + 90) % 180 - 90) <= rho_window/2
+
+ax0.set_facecolor('black')
+# only the points in the window are shown, the limits are the ones of the whole mask to keep the view fixed
+ax0.set_xlim(np.min(x[mask])/1000, np.max(x[mask])/1000)
+ax0.set_ylim(np.min(y[mask])/1000, np.max(y[mask])/1000)
+sc_window = ax0.scatter([], [], c=[], cmap='hsv', vmin=0, vmax=180, s=10*s, rasterized=True)
+ax0.set_aspect('equal')
+ax0.set_xlabel('x ($\\mu$m)')
+ax0.set_ylabel('y ($\\mu$m)')
+
+# half circle polar histogram, as in the cell before
+rho_rad = np.deg2rad(rho[mask])
+counts, edges = np.histogram(np.concatenate([rho_rad, rho_rad + np.pi]), bins=np.linspace(0, 2*np.pi, 73))
+centers = (edges[:-1] + edges[1:]) / 2
+bars = ax1.bar(centers, counts, width=edges[1]-edges[0], bottom=0, color=plt.cm.hsv((centers % np.pi) / np.pi))
+ax1.set_thetamin(0)
+ax1.set_thetamax(180)
+ax1.set_theta_zero_location('E')
+ax1.set_theta_direction(1)
+ax1.set_xticks(np.deg2rad([0, 30, 60, 90, 120, 150, 180]))
+ax1.set_xticklabels(['0°', '30°', '60°', '90°', '120°', '150°', '180°'])
+ax1.set_ylabel('Count', labelpad=30)
+
+rho_slider = Slider(ax_slider, r'$\rho$ centre (°)', 0, 180, valinit=120, valstep=1)
+
+def update_rho_window(centre):
+    global mask_rho
+    mask_rho = mask & in_rho_window(rho, centre)
+    sc_window.set_offsets(np.column_stack((x[mask_rho]/1000, y[mask_rho]/1000)))
+    sc_window.set_array(rho[mask_rho])
+    # the bars outside the window are faded
+    for bar, c in zip(bars, np.rad2deg(centers) % 180):
+        bar.set_alpha(0.9 if in_rho_window(c, centre) else 0.15)
+    ax0.set_title(f'$\\rho$ in [{centre-rho_window/2:.0f}°, {centre+rho_window/2:.0f}°]: {np.sum(mask_rho)} points')
+    fig.canvas.draw_idle()
+
+rho_slider.on_changed(update_rho_window)
+update_rho_window(rho_slider.val)
+plt.show()
+
+#%% plot z, interactive window in z
+# the slider sets the centre of the window, mask_z keeps the points of mask inside it for the next cells
+%matplotlib qt
+z_window = 100 # width of the window in nm
+plt.rcParams['figure.figsize'] = [12, 6]
+plt.rcParams.update({'font.size': 15})
+fig, (ax0, ax1) = plt.subplots(1, 2)
+fig.subplots_adjust(bottom=0.2)
+ax_slider = fig.add_axes([0.2, 0.05, 0.6, 0.04])
+z_min, z_max = np.min(z[mask]), np.max(z[mask])
+
+ax0.set_facecolor('black')
+# only the points in the window are shown, the limits are the ones of the whole mask to keep the view fixed
+ax0.set_xlim(np.min(x[mask])/1000, np.max(x[mask])/1000)
+ax0.set_ylim(np.min(y[mask])/1000, np.max(y[mask])/1000)
+sc_window = ax0.scatter([], [], c=[], cmap='plasma', vmin=z_min, vmax=z_max, s=10*s, rasterized=True)
+ax0.set_aspect('equal')
+ax0.set_xlabel('x ($\\mu$m)')
+ax0.set_ylabel('y ($\\mu$m)')
+
+z_bin = 100 # nm
+counts, edges = np.histogram(z[mask], bins=np.arange(np.floor(z_min/z_bin)*z_bin, np.ceil(z_max/z_bin)*z_bin + z_bin, z_bin))
+centers = (edges[:-1] + edges[1:]) / 2
+# same colormap as the plot z cell: plasma over the z range of the mask
+bars = ax1.bar(centers, counts, width=z_bin, color=plt.cm.plasma(np.clip((centers - z_min) / (z_max - z_min), 0, 1)), edgecolor='black')
+ax1.set_xlabel('z (nm)')
+ax1.set_ylabel('Count')
+
+z_slider = Slider(ax_slider, 'z centre (nm)', z_min, z_max, valinit=(z_min + z_max)/2)
+
+def update_z_window(centre):
+    global mask_z
+    mask_z = mask & (np.abs(z - centre) <= z_window/2)
+    sc_window.set_offsets(np.column_stack((x[mask_z]/1000, y[mask_z]/1000)))
+    sc_window.set_array(z[mask_z])
+    # the bars that do not overlap the window are faded
+    for bar, c in zip(bars, centers):
+        bar.set_alpha(0.9 if abs(c - centre) < (z_window + z_bin)/2 else 0.15)
+    ax0.set_title(f'z in [{centre-z_window/2:.0f}, {centre+z_window/2:.0f}] nm: {np.sum(mask_z)} points')
+    fig.canvas.draw_idle()
+
+z_slider.on_changed(update_z_window)
+update_z_window(z_slider.val)
+plt.show()
+
+#%% plot eta, interactive window of 10 degrees in eta
+# the slider sets the centre of the window, mask_eta keeps the points of mask inside it for the next cells
+%matplotlib qt
+eta_window = 10 # width of the window in degrees
+eta_cmap = mcolors.ListedColormap(sns.color_palette("hls", 256)) # same colormap as the plot eta cell
+plt.rcParams['figure.figsize'] = [12, 6]
+plt.rcParams.update({'font.size': 15})
+fig = plt.figure()
+ax0 = fig.add_subplot(1, 2, 1)
+ax1 = fig.add_subplot(1, 2, 2, projection='polar')
+fig.subplots_adjust(bottom=0.2)
+ax_slider = fig.add_axes([0.2, 0.05, 0.6, 0.04])
+
+def in_eta_window(eta_values, centre):
+    # eta is defined modulo 180 degrees, a window around 0 also takes the points around 180
+    return np.abs((eta_values - centre + 90) % 180 - 90) <= eta_window/2
+
+ax0.set_facecolor('black')
+# only the points in the window are shown, the limits are the ones of the whole mask to keep the view fixed
+ax0.set_xlim(np.min(x[mask])/1000, np.max(x[mask])/1000)
+ax0.set_ylim(np.min(y[mask])/1000, np.max(y[mask])/1000)
+sc_window = ax0.scatter([], [], c=[], cmap=eta_cmap, vmin=30/180, vmax=150/180, s=10*s, rasterized=True) # as in the plot eta cell
+ax0.set_aspect('equal')
+ax0.set_xlabel('x ($\\mu$m)')
+ax0.set_ylabel('y ($\\mu$m)')
+
+# half circle polar histogram of eta
+eta_rad = np.deg2rad(eta[mask])
+counts, edges = np.histogram(eta_rad, bins=np.linspace(0, np.pi, 37))
+centers = (edges[:-1] + edges[1:]) / 2
+bars = ax1.bar(centers, counts, width=edges[1]-edges[0], bottom=0, color=eta_cmap(centers / np.pi), edgecolor='none') # as in the plot eta cell
+ax1.set_thetamin(0)
+ax1.set_thetamax(180)
+ax1.set_theta_zero_location('N') # 0 on top
+ax1.set_theta_direction(-1) # clockwise, 90 on the right
+ax1.set_xticks(np.deg2rad([0, 30, 60, 90, 120, 150, 180]))
+ax1.set_xticklabels(['0°', '30°', '60°', '90°', '120°', '150°', '180°'])
+ax1.set_ylabel('Count', labelpad=30)
+
+eta_slider = Slider(ax_slider, r'$\eta$ centre (°)', 0, 180, valinit=90, valstep=1)
+
+def update_eta_window(centre):
+    global mask_eta
+    mask_eta = mask & in_eta_window(eta, centre)
+    sc_window.set_offsets(np.column_stack((x[mask_eta]/1000, y[mask_eta]/1000)))
+    sc_window.set_array(eta[mask_eta] / 180)
+    # the bars outside the window are faded
+    for bar, c in zip(bars, np.rad2deg(centers)):
+        bar.set_alpha(0.9 if in_eta_window(c, centre) else 0.15)
+    ax0.set_title(f'$\\eta$ in [{centre-eta_window/2:.0f}°, {centre+eta_window/2:.0f}°]: {np.sum(mask_eta)} points')
+    fig.canvas.draw_idle()
+
+eta_slider.on_changed(update_eta_window)
+update_eta_window(eta_slider.val)
+plt.show()
+
+#%% plot z of the points in an interactive window of 10 degrees in eta
+# the slider sets the centre of the eta window, the image and the last histogram show z of the points inside it,
+# mask_eta_z keeps the points of mask inside it for the next cells
+%matplotlib qt
+eta_window = 10 # width of the window in degrees
+eta_cmap = mcolors.ListedColormap(sns.color_palette("hls", 256)) # same colormap as the plot eta cell
+plt.rcParams['figure.figsize'] = [18, 6]
+plt.rcParams.update({'font.size': 15})
+fig = plt.figure()
+ax0 = fig.add_subplot(1, 3, 1)
+ax1 = fig.add_subplot(1, 3, 2, projection='polar')
+ax2 = fig.add_subplot(1, 3, 3)
+fig.subplots_adjust(bottom=0.2, wspace=0.5) # room for the colorbar of z
+ax_slider = fig.add_axes([0.2, 0.05, 0.6, 0.04])
+
+def in_eta_window(eta_values, centre):
+    # eta is defined modulo 180 degrees, a window around 0 also takes the points around 180
+    return np.abs((eta_values - centre + 90) % 180 - 90) <= eta_window/2
+
+ax0.set_facecolor('black')
+# only the points in the window are shown, the limits are the ones of the whole mask to keep the view fixed
+ax0.set_xlim(np.min(x[mask])/1000, np.max(x[mask])/1000)
+ax0.set_ylim(np.min(y[mask])/1000, np.max(y[mask])/1000)
+# z in um with plasma over the z range of the mask, as in the plot z cell
+sc_window = ax0.scatter([], [], c=[], cmap='plasma', vmin=np.min(z[mask])/1000, vmax=np.max(z[mask])/1000, s=10*s, rasterized=True)
+cbar = plt.colorbar(sc_window, ax=ax0, fraction=0.046, pad=0.04)
+cbar.set_label("$z$ ($\\mu$m)")
+ax0.set_aspect('equal')
+ax0.set_xlabel('x ($\\mu$m)')
+ax0.set_ylabel('y ($\\mu$m)')
+
+# half circle polar histogram of eta
+eta_rad = np.deg2rad(eta[mask])
+counts, edges = np.histogram(eta_rad, bins=np.linspace(0, np.pi, 37))
+centers = (edges[:-1] + edges[1:]) / 2
+bars = ax1.bar(centers, counts, width=edges[1]-edges[0], bottom=0, color=eta_cmap(centers / np.pi), edgecolor='none') # as in the plot eta cell
+ax1.set_thetamin(0)
+ax1.set_thetamax(180)
+ax1.set_theta_zero_location('N') # 0 on top
+ax1.set_theta_direction(-1) # clockwise, 90 on the right
+ax1.set_xticks(np.deg2rad([0, 30, 60, 90, 120, 150, 180]))
+ax1.set_xticklabels(['0°', '30°', '60°', '90°', '120°', '150°', '180°'])
+ax1.set_ylabel('Count', labelpad=30)
+
+# histogram of z of the points in the window, 100 nm bins over the z range of the mask
+z_bin = 100 # nm
+z_min, z_max = np.min(z[mask]), np.max(z[mask])
+z_edges = np.arange(np.floor(z_min/z_bin)*z_bin, np.ceil(z_max/z_bin)*z_bin + z_bin, z_bin)
+z_centers = (z_edges[:-1] + z_edges[1:]) / 2
+z_bars = ax2.bar(z_centers, np.zeros(len(z_centers)), width=z_bin, edgecolor='black',
+                 color=plt.cm.plasma(np.clip((z_centers - z_min) / (z_max - z_min), 0, 1)))
+ax2.set_xlabel('z (nm)')
+ax2.set_ylabel('Count')
+
+eta_z_slider = Slider(ax_slider, r'$\eta$ centre (°)', 0, 180, valinit=90, valstep=1)
+
+def update_eta_z_window(centre):
+    global mask_eta_z
+    mask_eta_z = mask & in_eta_window(eta, centre)
+    sc_window.set_offsets(np.column_stack((x[mask_eta_z]/1000, y[mask_eta_z]/1000)))
+    sc_window.set_array(z[mask_eta_z] / 1000)
+    z_counts, _ = np.histogram(z[mask_eta_z], bins=z_edges)
+    for bar, count in zip(z_bars, z_counts):
+        bar.set_height(count)
+    ax2.set_ylim(0, max(1, z_counts.max())*1.1)
+    ax2.set_title(f'median z: {np.median(z[mask_eta_z]):.0f} nm' if np.any(mask_eta_z) else 'no point')
+    # the bars outside the window are faded
+    for bar, c in zip(bars, np.rad2deg(centers)):
+        bar.set_alpha(0.9 if in_eta_window(c, centre) else 0.15)
+    ax0.set_title(f'$\\eta$ in [{centre-eta_window/2:.0f}°, {centre+eta_window/2:.0f}°]: {np.sum(mask_eta_z)} points')
+    fig.canvas.draw_idle()
+
+eta_z_slider.on_changed(update_eta_z_window)
+update_eta_z_window(eta_z_slider.val)
+plt.show()
+
+#%% plot yz of the points in an interactive window of 10 degrees in eta
+# same as the cell before with a yz view instead of xy: the slider sets the centre of the eta window,
+# the yz scatter and the last histogram show z of the points inside it, mask_eta_yz keeps them for the next cells
+%matplotlib qt
+eta_window = 10 # width of the window in degrees
+eta_cmap = mcolors.ListedColormap(sns.color_palette("hls", 256)) # same colormap as the plot eta cell
+plt.rcParams['figure.figsize'] = [18, 6]
+plt.rcParams.update({'font.size': 15})
+fig = plt.figure()
+ax0 = fig.add_subplot(1, 3, 1)
+ax1 = fig.add_subplot(1, 3, 2, projection='polar')
+ax2 = fig.add_subplot(1, 3, 3)
+fig.subplots_adjust(bottom=0.2, wspace=0.5) # room for the colorbar of z
+ax_slider = fig.add_axes([0.2, 0.05, 0.6, 0.04])
+
+def in_eta_window(eta_values, centre):
+    # eta is defined modulo 180 degrees, a window around 0 also takes the points around 180
+    return np.abs((eta_values - centre + 90) % 180 - 90) <= eta_window/2
+
+ax0.set_facecolor('black')
+# only the points in the window are shown, the limits are the ones of the whole mask to keep the view fixed
+ax0.set_xlim(np.min(y[mask])/1000, np.max(y[mask])/1000)
+ax0.set_ylim(np.min(z[mask])/1000, np.max(z[mask])/1000)
+# z in um with plasma over the z range of the mask, as in the plot z cell
+sc_window = ax0.scatter([], [], c=[], cmap='plasma', vmin=np.min(z[mask])/1000, vmax=np.max(z[mask])/1000, s=10*s, rasterized=True)
+cbar = plt.colorbar(sc_window, ax=ax0, fraction=0.046, pad=0.04)
+cbar.set_label("$z$ ($\\mu$m)")
+# no equal aspect: the z range is much smaller than the y one
+ax0.set_xlabel('y ($\\mu$m)')
+ax0.set_ylabel('z ($\\mu$m)')
+
+# half circle polar histogram of eta
+eta_rad = np.deg2rad(eta[mask])
+counts, edges = np.histogram(eta_rad, bins=np.linspace(0, np.pi, 37))
+centers = (edges[:-1] + edges[1:]) / 2
+bars = ax1.bar(centers, counts, width=edges[1]-edges[0], bottom=0, color=eta_cmap(centers / np.pi), edgecolor='none') # as in the plot eta cell
+ax1.set_thetamin(0)
+ax1.set_thetamax(180)
+ax1.set_theta_zero_location('N') # 0 on top
+ax1.set_theta_direction(-1) # clockwise, 90 on the right
+ax1.set_xticks(np.deg2rad([0, 30, 60, 90, 120, 150, 180]))
+ax1.set_xticklabels(['0°', '30°', '60°', '90°', '120°', '150°', '180°'])
+ax1.set_ylabel('Count', labelpad=30)
+
+# histogram of z of the points in the window, 100 nm bins over the z range of the mask
+z_bin = 100 # nm
+z_min, z_max = np.min(z[mask]), np.max(z[mask])
+z_edges = np.arange(np.floor(z_min/z_bin)*z_bin, np.ceil(z_max/z_bin)*z_bin + z_bin, z_bin)
+z_centers = (z_edges[:-1] + z_edges[1:]) / 2
+z_bars = ax2.bar(z_centers, np.zeros(len(z_centers)), width=z_bin, edgecolor='black',
+                 color=plt.cm.plasma(np.clip((z_centers - z_min) / (z_max - z_min), 0, 1)))
+ax2.set_xlabel('z (nm)')
+ax2.set_ylabel('Count')
+
+eta_yz_slider = Slider(ax_slider, r'$\eta$ centre (°)', 0, 180, valinit=90, valstep=1)
+
+def update_eta_yz_window(centre):
+    global mask_eta_yz
+    mask_eta_yz = mask & in_eta_window(eta, centre)
+    sc_window.set_offsets(np.column_stack((y[mask_eta_yz]/1000, z[mask_eta_yz]/1000)))
+    sc_window.set_array(z[mask_eta_yz] / 1000)
+    z_counts, _ = np.histogram(z[mask_eta_yz], bins=z_edges)
+    for bar, count in zip(z_bars, z_counts):
+        bar.set_height(count)
+    ax2.set_ylim(0, max(1, z_counts.max())*1.1)
+    ax2.set_title(f'median z: {np.median(z[mask_eta_yz]):.0f} nm' if np.any(mask_eta_yz) else 'no point')
+    # the bars outside the window are faded
+    for bar, c in zip(bars, np.rad2deg(centers)):
+        bar.set_alpha(0.9 if in_eta_window(c, centre) else 0.15)
+    ax0.set_title(f'$\\eta$ in [{centre-eta_window/2:.0f}°, {centre+eta_window/2:.0f}°]: {np.sum(mask_eta_yz)} points')
+    fig.canvas.draw_idle()
+
+eta_yz_slider.on_changed(update_eta_yz_window)
+update_eta_yz_window(eta_yz_slider.val)
+plt.show()
+
