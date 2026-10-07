@@ -51,7 +51,7 @@ if len(csv_files) != 1:
         f"Expected exactly one CSV file in {directory}, found {len(csv_files)}."
     )
 df = pd.read_csv(csv_files[0])
-plt.scatter(df['row'], df['col'], s=0.001, marker='.')
+plt.scatter(df['row'], df['col'], s=0.01, marker='.')
 plt.show()
 print(df.shape[0])
 # %%

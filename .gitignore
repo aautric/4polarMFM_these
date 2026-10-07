@@ -1,1 +1,5 @@
 MC.svg
+# generated files: Python bytecode and Jupyter autosave copies
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
