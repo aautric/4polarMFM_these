@@ -398,21 +398,46 @@ def beads_location(X, Y, vecteurs, data_beads):
     return coord_beads_loc, nb_billes
 
 
-def find_normalization(data_beads,X,Y):
-    beads_tot = np.concatenate(data_beads, axis = 0)
-    max_beads_tot = np.max(beads_tot, axis=0)
-    # normalisation par les moyennes de chaque canal billes et soustraction du bruit
-    read_noise = np.mean(max_beads_tot[1:Y[0]-2,:])
-    norm0 = np.mean(max_beads_tot[Y[0]:Y[1],X[0]:X[1]])-read_noise
-    norm1 = np.mean(max_beads_tot[Y[0]:Y[1],X[2]:X[3]])-read_noise
-    norm2 = np.mean(max_beads_tot[Y[0]:Y[1],X[4]:X[5]])-read_noise
-    norm3 = np.mean(max_beads_tot[Y[2]:Y[3],X[0]:X[1]])-read_noise
-    norm4 = np.mean(max_beads_tot[Y[2]:Y[3],X[2]:X[3]])-read_noise
-    norm5 = np.mean(max_beads_tot[Y[2]:Y[3],X[4]:X[5]])-read_noise
+def measure_baseline(frames):
+    # camera baseline (ADU, value of a pixel without light) of a stack of raw frames (frames, rows, cols): median of
+    # the rows outside the 6 channels, the rows whose level is close to the one of the darkest row
+    frames = np.asarray(frames, dtype=float)
+    rows = np.median(np.median(frames, axis=0), axis=1)
+    dark = rows < rows.min() + 0.2*(np.median(rows) - rows.min())
+    return float(np.median(frames[:, dark]))
 
-    mn = (norm0+norm1+norm2+norm3+norm4+norm5)/6
-    normalization_coeff = np.array([norm0/mn, norm1/mn, norm2/mn, norm3/mn, norm4/mn, norm5/mn])
-    print( normalization_coeff)
+def dark_variance(frames):
+    # variance without light (ADU^2) of a stack of raw frames: read noise + clock induced charge, measured on the dark
+    # rows outside the 6 channels (same rows as measure_baseline) with the MAD of the differences between consecutive
+    # frames (/2 because a difference has twice the variance)
+    frames = np.asarray(frames, dtype=float)
+    rows = np.median(np.median(frames, axis=0), axis=1)
+    dark = rows < rows.min() + 0.2*(np.median(rows) - rows.min())
+    d = np.diff(frames[:, dark], axis=0)
+    return float((1.4826*np.median(np.abs(d - np.median(d))))**2/2)
+
+def interpolation_factor(deformation, shape, seed=0):
+    # factor by which the cubic warp of each channel multiplies the variance of independent pixels (white noise warped
+    # as the channel, 1 for the reference channel, lower for the interpolated ones)
+    noise = np.random.default_rng(seed).standard_normal(shape).astype(np.float32)
+    return np.array([cv2.warpPerspective(noise, M, shape[::-1], flags=cv2.INTER_CUBIC)[15:-15, 15:-15].var()
+                     for M in deformation])
+
+def baseline_of_file(path_raw, n_frames=100):
+    # baseline of a raw ome.tif file, on n_frames frames in its middle
+    with tifffile.TiffFile(path_raw) as tif:
+        n = len(tif.pages)
+        start = max(0, n//2 - n_frames//2)
+        return measure_baseline(np.stack([tif.pages[i].asarray() for i in range(start, min(n, start + n_frames))]))
+
+def find_normalization(data_lamp, X, Y, vecteurs, margin=10):
+    # normalisation coefficient of each channel (the reconstruction divides (frame - baseline) by it): mean signal of
+    # the white lamp (no polariser) above the camera baseline, on the pixels that subcanals cuts for the reconstruction
+    # (without a margin at the edges), relative to the mean of the 6 channels
+    signal = np.mean(np.asarray(data_lamp, dtype=float), axis=0) - measure_baseline(data_lamp)
+    norm = np.array([np.mean(canal[margin:-margin, margin:-margin]) for canal in subcanals(signal, X, Y, vecteurs)])
+    normalization_coeff = norm/norm.mean()
+    print('normalisation (white lamp):', np.round(normalization_coeff, 4))
     return normalization_coeff
 
 def check_calib(cwd):
@@ -493,10 +518,11 @@ def calibration(cwd):
             if data.shape[1:] != (512, 512):
                 raise ValueError(f"Fichier {fichiers[i]} : taille inattendue {data.shape[1:]}, attendu (512, 512)")
             
-        data_intensity = extract_raw_ome(filedialog.askopenfilename(
+        data_lamp = extract_raw_ome(filedialog.askopenfilename(
             title="Choisir un fichier intensité",
             filetypes=[("Images", "*.tif"), ("Tous", "*.*")]
-            ))[0]
+            ))
+        data_intensity = data_lamp[0]
         
         #detection des différent canaux
         X = detect_plateau_0(data_intensity)
@@ -525,7 +551,7 @@ def calibration(cwd):
         # coord_par_canal[i] = array (N_total, 2) de toutes les billes du canal i
         coord_par_canal = [np.concatenate([all_locs[f][i] for f in range(len(fichiers))], axis=0)
             for i in range(6)]
-        normalisation = find_normalization(data_beads,X,Y)
+        normalisation = find_normalization(data_lamp, X, Y, vecteurs)
         deformation = [cv2.findHomography(coord_par_canal[i], coord_par_canal[1], method=0)[0]
                            for i in range(6)]
         save_calibration(deformation, X, Y, vecteurs, normalisation, deltaz, fichiers)
@@ -550,6 +576,7 @@ def reconstruction(cwd):
     title="Choisir un fichier à reconstruire",
     filetypes=[("Images", "*.tif"), ("Tous", "*.*")]
     ))
+    data_raw = np.asarray(data_raw, dtype=np.float32) - measure_baseline(data_raw) # camera baseline removed
     max_data_raw = np.max(data_raw, axis=0)
     canaux = subcanals(max_data_raw, X, Y, vecteurs)
     canaux_corriges = [cv2.warpPerspective(canaux[i],
@@ -612,14 +639,24 @@ def reconstruction_stack(cwd):
     
     output_dir.mkdir()
     count = 0
+    dark_variances = []
     for jj, input_file in enumerate(input_files):
         # choix des données à utiliser
         #data_raw = extract_raw_ome(input_file)
         
         print("Input file:", input_file)
+        # camera baseline of the file, removed from every frame before the warp and the normalisation: the
+        # reconstructed channels are (channel - baseline)/normalisation, 0 without light
+        baseline = baseline_of_file(input_file)
+        print("Baseline removed:", baseline, "ADU")
         with tifffile.TiffFile(input_file) as tif:
+            # variance without light of the raw frames (read noise + clock induced charge), on 100 frames in the middle
+            n = len(tif.pages)
+            middle = np.stack([tif.pages[i].asarray() for i in range(max(0, n//2 - 50), min(n, n//2 + 50))])
+            dark_variances.append(dark_variance(middle))
+            channel_shape = subcanals(middle[0], X, Y, vecteurs)[0].shape
             for ii in tqdm(range(len(tif.pages))):
-                canaux = subcanals(tif.pages[ii].asarray(), X, Y, vecteurs)
+                canaux = subcanals(tif.pages[ii].asarray().astype(np.float32) - baseline, X, Y, vecteurs)
                 canaux_corriges = [cv2.warpPerspective(canaux[i],
                                                        deformation[i],
                                                        canaux[i].shape[:2][::-1],
@@ -632,6 +669,16 @@ def reconstruction_stack(cwd):
                 output_file = output_dir / f"{count}.tif"
                 tifffile.imwrite(output_file, data_corr)#.astype(np.uint16))
                 count+=1
+    # variance without light of each reconstructed channel (read by SGD_jax.py, noise model var = gain*v + V): the one of
+    # the raw dark rows times the interpolation factor of the channel, divided by its normalisation squared, in the
+    # order of the channels of the reconstructed frames
+    order = [0, 3, 1, 4, 2, 5]
+    factor = interpolation_factor(deformation, channel_shape)
+    v_channels = np.mean(dark_variances)*factor[order]/np.asarray(normalisation)[order]**2
+    np.savetxt(output_dir / "dark_variance.txt", v_channels.reshape(1, 6), fmt="%.4f",
+               header="variance without light (ADU^2) of the 6 channels of the reconstructed frames: read noise + clock "
+                      "induced charge of the raw dark rows x interpolation factor / normalisation^2")
+    print("Variance without light of the channels (ADU^2):", np.round(v_channels, 1))
     
 def find_pre_loc(img, vmin, connectivity=8, min_size=4, max_size=15, weighted=True, plot=False, ax=None):
     img = np.asarray(img)

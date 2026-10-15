@@ -15,7 +15,7 @@ from pathlib import Path
 import sys
 sys.path.append(os.path.abspath('/mnt/c/Users/Amaury/'))
 
-#%%
+#%% loading files 
 look_up_folder = '/mnt/d/Amaury/DATA'
 folder = Path(filedialog.askdirectory(
     initialdir=look_up_folder,
@@ -76,7 +76,7 @@ background_array_found = np.array(background_array_found)
 batch = np.concatenate(batch)
 zern_found = np.concatenate(zern_found)
 with_zernike = not np.all(np.isnan(zern_found))
-#%%
+#%% plot
 threshold = (N_photons>0)
 
 plt.rcParams['figure.figsize'] = [5, 5]

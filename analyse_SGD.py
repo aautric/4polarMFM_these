@@ -87,15 +87,23 @@ if 'batch' in data.columns and len(zern_columns) > 0:
 else:
     zern_data = None
 
+# goodness of fit used to filter: deviance per pixel (~1 for a good fit, same meaning whatever the loss and the
+# background), or the score (final loss) for the files without deviance (older runs, ratiometric data).
+# fit_quality is the same array as deviance / score, so it follows the merging of link_localizations
+if deviance is not None:
+    fit_quality, fit_quality_label = deviance, 'Deviance per pixel'
+else:
+    fit_quality, fit_quality_label = score, 'Final loss per PSF (no deviance in this file)'
+
 # %% basic plots to see the thresholding
 %matplotlib inline
 plt.rcParams['figure.figsize'] = [12,3]
 fig, ax = plt.subplots(1,3)
-# range from the 1st to the 99th percentile: a few PSF with a huge loss would otherwise put all the others in one bin
-score_range = np.nanpercentile(score, [1, 99])
-hist = ax[0].hist(score, bins=50, range=score_range)
-ax[0].set_title(f'{np.sum((score < score_range[0]) | (score > score_range[1]))} PSF out of the range', fontsize=10)
-ax[0].set_xlabel('Finale loss per PSF')
+# range from the 1st to the 99th percentile: a few badly fitted PSF would otherwise put all the others in one bin
+quality_range = np.nanpercentile(fit_quality, [1, 99])
+hist = ax[0].hist(fit_quality, bins=50, range=quality_range)
+ax[0].set_title(f'median {np.nanmedian(fit_quality):.3g}, {np.sum((fit_quality < quality_range[0]) | (fit_quality > quality_range[1]))} PSF out of the range', fontsize=10)
+ax[0].set_xlabel(fit_quality_label)
 ax[0].set_ylabel('Occurences')
 
 hist = ax[1].hist(N_photons, bins=50)
@@ -151,8 +159,9 @@ else:
     plt.show()
 
 # %% TO BE MODIFIED
-loss_thresh = 5000
-mask1 = (score<loss_thresh) & (delta<150) & (delta>50) & (N_photons>300) & (N_photons<10000) & (z<1800) & (z>0) #& (eta>30) & (eta<150)
+# threshold on fit_quality: deviance per pixel (~1 for a good fit), or the final loss for files without deviance
+quality_thresh = 1.6 if deviance is not None else 1500
+mask1 = (fit_quality<quality_thresh) & (delta<150) & (delta>50) & (N_photons>50) & (N_photons<10000) & (z<1800) & (z>0) #& (eta>30) & (eta<150)
 #mask1 = (delta<150) & (delta>60)
 #%% mask selection
 %matplotlib widget
@@ -240,7 +249,7 @@ def onselect(verts):
     mask_fiducial = path.contains_points(points) 
 
 lasso = LassoSelector(ax, onselect)
-#%%
+#%% fiducial suite
 _, unique_indices = np.unique(frame[mask_fiducial], return_index=True)
 mask_fiducial_clean = np.where(mask_fiducial)[0][unique_indices]
 frames_fiducial = frame[mask_fiducial_clean]
@@ -304,83 +313,150 @@ for ind, frame_ in tqdm(enumerate(frame)):
     #print(ind, frame_, x[ind], y[ind], xcorr[idx-1]*0.45, ycorr[idx-1]*0.6)
     
 #%% correction doublons
-def recursive_call(i, x, y, z, rho, eta, delta, frame, previous_index, not_counted):
-    mask = ((frame==frame[i]+1)|(frame==frame[i]+1)|(frame==frame[i]+1)) & ((x-x[i])**2+(y-y[i])**2<30**2) & ((z-z[i])**2<60**2) #& ((rho-rho[i])<30)
-    if (mask==True).any():
-        not_counted[i] = False
-        return recursive_call(np.where(mask)[0][0], x, y, z, rho, eta, delta, frame, 
-                             previous_index=np.concatenate((previous_index, np.where(mask)[0])),
-                             not_counted=not_counted)
-    else:
-        return previous_index.astype(int)
+# 1. duplicates in the same frame (the same PSF fitted twice): pairs closer than same_frame_xy in xy and link_z in z are
+#    merged into one localisation (mean, circular for rho and eta). Not used for the precision: same image
+# 2. the same molecule on several frames: tracking frame by frame, each localisation is attached to the closest track
+#    whose last point is closer than link_xy in xy and link_z in z, at most max_gap missing frames before (one to one,
+#    closest pairs first). Each track of 2 points or more is merged into its last point; its std give the precision
+# link_z: about 3*sqrt(2)*(precision in z); 60 nm for actin, ~130 nm for SLB (z less precise at low photon numbers)
+from scipy.spatial import cKDTree
+link_xy = 30.        # nm
+link_z = 100.         # nm
+max_gap = 1          # number of missing frames allowed inside a track (0: consecutive frames only)
+same_frame_xy = 30.  # nm, duplicates in the same frame
 
-def link_localizations(x, y, z, rho, eta, delta, N_photons, score, frame, deviance=None):
-    not_counted = np.ones(len(x), dtype=bool)
-    frame = frame.astype(float) 
-    stdx, stdy, stdz, stdrho, stdeta, stddelta = [], [], [], [], [], []
+def circular_mean_180(angles):
+    # mean of angles defined modulo 180 deg (rho, eta): 178 and 2 give 0, not 90
+    return (np.degrees(np.angle(np.mean(np.exp(2j*np.radians(angles)))))/2) % 180
+
+def circular_std_180(angles):
+    # std (n-1) of angles defined modulo 180 deg, deviations taken around the circular mean in [-90, 90[
+    deviations = (angles - circular_mean_180(angles) + 90) % 180 - 90
+    return np.sqrt(np.sum(deviations**2)/(len(angles)-1))
+
+def merge_into(keep, others, arrays, angles):
+    # arrays[keep] = mean over keep and others (circular for the angles), the others set to nan
+    group = np.concatenate(([keep], others))
+    for name, a in arrays.items():
+        a[keep] = circular_mean_180(a[group]) if name in angles else np.mean(a[group])
+        a[others] = np.nan
+
+def link_localizations(x, y, z, rho, eta, delta, N_photons, score, frame, deviance=None,
+                       link_xy=link_xy, link_z=link_z, max_gap=max_gap, same_frame_xy=same_frame_xy):
+    frame = frame.astype(float)
+    arrays = {'x': x, 'y': y, 'z': z, 'rho': rho, 'eta': eta, 'delta': delta, 'N_photons': N_photons, 'score': score,
+              'frame': frame}
+    if deviance is not None: # modified in place as the other arrays
+        arrays['deviance'] = deviance
+    angles = ('rho', 'eta')
+    valid = np.where(np.isfinite(x) & np.isfinite(frame))[0]
+    valid = valid[np.argsort(frame[valid], kind='stable')]
+    frames, starts = np.unique(frame[valid], return_index=True)
+    groups = np.split(valid, starts[1:]) # indices of the localisations of each frame
+
+    # 1. duplicates in the same frame
+    n_duplicates = 0
+    for g in groups:
+        if len(g) < 2:
+            continue
+        pairs = [(a, b) for a, b in cKDTree(np.column_stack((x[g], y[g]))).query_pairs(same_frame_xy)
+                 if abs(z[g[a]] - z[g[b]]) < link_z]
+        if not pairs:
+            continue
+        parent = list(range(len(g))) # union find: a duplicate of a duplicate is the same emitter
+        def root(a):
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]; a = parent[a]
+            return a
+        for a, b in pairs:
+            parent[root(a)] = root(b)
+        for r in set(root(a) for a in range(len(g))):
+            members = g[[a for a in range(len(g)) if root(a) == r]]
+            if len(members) > 1:
+                merge_into(members[0], members[1:], arrays, angles)
+                n_duplicates += len(members) - 1
+    groups = [g[np.isfinite(x[g])] for g in groups]
+
+    # 2. tracks over the frames
+    tracks = []      # indices of each track
+    active = []      # index in tracks of the tracks that can still be extended
+    for f, g in zip(frames, groups):
+        active = [t for t in active if f - frame[tracks[t][-1]] <= max_gap + 1]
+        attached = np.zeros(len(g), dtype=bool)
+        if active and len(g):
+            last = np.array([tracks[t][-1] for t in active])
+            dist, nearest = cKDTree(np.column_stack((x[last], y[last]))).query(
+                np.column_stack((x[g], y[g])), k=min(5, len(last)), distance_upper_bound=link_xy)
+            dist, nearest = dist.reshape(len(g), -1), nearest.reshape(len(g), -1)
+            candidates = sorted((dist[a, c], a, nearest[a, c]) for a in range(len(g)) for c in range(dist.shape[1])
+                                if np.isfinite(dist[a, c]) and abs(z[g[a]] - z[last[nearest[a, c]]]) < link_z)
+            used = set()
+            for d, a, c in candidates: # closest pairs first, one to one
+                if attached[a] or c in used:
+                    continue
+                tracks[active[c]].append(g[a]); attached[a] = True; used.add(c)
+        for a in np.where(~attached)[0]:
+            tracks.append([g[a]]); active.append(len(tracks) - 1)
+
+    # 3. each track of 2 points or more merged into its last point, with its std for the precision
+    stdx, stdy, stdz, stdrho, stdeta, stddelta, nlink = [], [], [], [], [], [], []
     meanx, meany, meanz, meanrho, meaneta, meandelta, meanN, meanscore = [], [], [], [], [], [], [], []
-    
-    for i in tqdm(range(len(x))):
-        if not_counted[i]:
-            indices = recursive_call(i, x, y, z, rho, eta, delta, frame,
-                                     previous_index=np.array([i]),
-                                     not_counted=not_counted)
-            if len(indices) > 1:
-                stdx.append(np.std(x[indices]))
-                stdy.append(np.std(y[indices]))
-                stdz.append(np.std(z[indices]))
-                stdrho.append(np.std(rho[indices]))
-                stdeta.append(np.std(eta[indices]))
-                stddelta.append(np.std(delta[indices]))
-                meanx.append(np.mean(x[indices]))
-                meany.append(np.mean(y[indices]))
-                meanz.append(np.mean(z[indices]))
-                meanrho.append(np.mean(rho[indices]))
-                meaneta.append(np.mean(eta[indices]))
-                meandelta.append(np.mean(delta[indices]))
-                meanN.append(np.mean(N_photons[indices]))
-                meanscore.append(np.mean(score[indices]))
-                x[indices[-1]] = np.mean(x[indices])
-                x[indices[:-1]] = np.nan
-                y[indices[-1]] = np.mean(y[indices])
-                y[indices[:-1]] = np.nan
-                z[indices[-1]] = np.mean(z[indices])
-                z[indices[:-1]] = np.nan
-                rho[indices[-1]] = np.mean(rho[indices])
-                rho[indices[:-1]] = np.nan
-                eta[indices[-1]] = np.mean(eta[indices])
-                eta[indices[:-1]] = np.nan
-                delta[indices[-1]] = np.mean(delta[indices])
-                delta[indices[:-1]] = np.nan
-                N_photons[indices[-1]] = np.mean(N_photons[indices])
-                N_photons[indices[:-1]] = np.nan
-                score[indices[-1]] = np.mean(score[indices])
-                score[indices[:-1]] = np.nan
-                if deviance is not None: # modified in place as the other arrays
-                    deviance[indices[-1]] = np.mean(deviance[indices])
-                    deviance[indices[:-1]] = np.nan
-                frame[indices[-1]] = np.mean(frame[indices])
-                frame[indices[:-1]] = np.nan
+    for t in tracks:
+        if len(t) < 2:
+            continue
+        idx = np.array(t)
+        nlink.append(len(idx))
+        stdx.append(np.std(x[idx], ddof=1)); stdy.append(np.std(y[idx], ddof=1)); stdz.append(np.std(z[idx], ddof=1))
+        stdrho.append(circular_std_180(rho[idx])); stdeta.append(circular_std_180(eta[idx]))
+        stddelta.append(np.std(delta[idx], ddof=1))
+        meanx.append(np.mean(x[idx])); meany.append(np.mean(y[idx])); meanz.append(np.mean(z[idx]))
+        meanrho.append(circular_mean_180(rho[idx])); meaneta.append(circular_mean_180(eta[idx]))
+        meandelta.append(np.mean(delta[idx])); meanN.append(np.mean(N_photons[idx])); meanscore.append(np.mean(score[idx]))
+        merge_into(idx[-1], idx[:-1], arrays, angles)
 
-    print('removed ', len(np.where(np.isnan(x))[0]), ' over ', len(x))
+    print(f'{n_duplicates} duplicates in the same frame merged; {len(nlink)} molecules linked over several frames '
+          f'(link_xy {link_xy} nm, link_z {link_z} nm, max_gap {max_gap}); removed {int(np.sum(np.isnan(x)))} over {len(x)}')
     return (x, y, z, rho, eta, delta, N_photons, score, frame,
             np.array(stdx), np.array(stdy), np.array(stdz), np.array(stdrho), np.array(stdeta), np.array(stddelta),
-            np.array(meanx), np.array(meany), np.array(meanz), np.array(meanrho), np.array(meaneta), np.array(meandelta), np.array(meanN), np.array(meanscore))#%% select zone to analyse
+            np.array(meanx), np.array(meany), np.array(meanz), np.array(meanrho), np.array(meaneta), np.array(meandelta), np.array(meanN), np.array(meanscore), np.array(nlink))
 
-x, y, z, rho, eta, delta, N_photons, score, frame, stdx, stdy, stdz, stdrho, stdeta, stddelta, meanx, meany, meanz, meanrho, meaneta, meandelta, meanN, meanscore = link_localizations(x, y, z, rho, eta, delta, N_photons, score, frame, deviance=deviance)
+x, y, z, rho, eta, delta, N_photons, score, frame, stdx, stdy, stdz, stdrho, stdeta, stddelta, meanx, meany, meanz, meanrho, meaneta, meandelta, meanN, meanscore, nlink = link_localizations(x, y, z, rho, eta, delta, N_photons, score, frame, deviance=deviance)
 #%% std x, z, rho, eta, delta
+# precision: std of the localisations linked over consecutive frames (same molecule). The mean and median of the
+# per-molecule std underestimate the precision (molecules seen on 2-3 frames only); the pooled std
+# sqrt(sum((n-1) s^2) / sum(n-1)) uses all the frames of all the molecules and is unbiased (sensitive to wrong links)
+if len(stdx) == 0 or len(nlink) != len(stdx):
+    raise ValueError(str(len(stdx))+' linked molecules ('+str(len(nlink))+' in nlink): load the csv again and run '
+                     'the "correction doublons" cell once (a second linking on already linked data finds almost nothing)')
 fig, ax = plt.subplots(2, 3, figsize=(15, 8))
-for a, values, label in [(ax[0,0], stdx, 'std x (nm)'), (ax[0,1], stdz, 'std z (nm)'),
-                         (ax[1,0], stdrho, 'std $\\rho$ (degree)'), (ax[1,1], stdeta, 'std $\\eta$ (degree)'),
-                         (ax[1,2], stddelta, 'std $\\delta$ (degree)')]:
+summary = []
+for a, values, label, unit in [(ax[0,0], stdx, 'std x', 'nm'), (ax[0,1], stdz, 'std z', 'nm'),
+                               (ax[1,0], stdrho, 'std $\\rho$', 'deg'), (ax[1,1], stdeta, 'std $\\eta$', 'deg'),
+                               (ax[1,2], stddelta, 'std $\\delta$', 'deg')]:
+    mean_v, median_v = np.nanmean(values), np.nanmedian(values)
+    ok = ~np.isnan(values)
+    pooled_v = np.sqrt(np.sum((nlink[ok]-1)*values[ok]**2) / np.sum(nlink[ok]-1))
     a.hist(values, bins=100)
-    a.set_xlabel(label)
+    a.axvline(mean_v, color='r', label='mean')
+    a.axvline(median_v, color='k', linestyle='--', label='median')
+    a.axvline(pooled_v, color='g', label='pooled')
+    a.set_title(f'pooled {pooled_v:.1f} {unit} (mean {mean_v:.1f}, median {median_v:.1f})', fontsize=11)
+    a.set_xlabel(label+' ('+unit+')')
     a.set_ylabel('Occurences')
+    a.legend(fontsize=9)
+    summary.append((label.replace('$\\', '').replace('$', ''), unit, pooled_v, mean_v, median_v))
+print(f'{len(stdx)} molecules seen on more than one frame (median {np.median(nlink):.0f} frames)')
+print(f"{'':16s} {'pooled':>8s} {'mean':>8s} {'median':>8s}")
+for name, unit, pooled_v, mean_v, median_v in summary:
+    print(f'{name+" ("+unit+")":16s} {pooled_v:8.2f} {mean_v:8.2f} {median_v:8.2f}')
 ax[0,2].axis('off')
+ax[0,2].text(0, 0.95, f'{len(stdx)} molecules on > 1 frame\n\n{"":16s}{"pooled":>7s}{"mean":>7s}{"median":>7s}\n'
+             + '\n'.join(f'{name+" ("+unit+")":16s}{pooled_v:7.1f}{mean_v:7.1f}{median_v:7.1f}' for name, unit, pooled_v, mean_v, median_v in summary),
+             va='top', family='monospace', fontsize=11)
 plt.tight_layout()
 plt.show()
 #%% select new filter
-mask1 = (score<loss_thresh) & (z<1000) & (z>500) & (delta<150) &  (delta>50) & (N_photons>300) & (N_photons<10000)
+mask1 = (fit_quality<quality_thresh) & (z<800) & (z>300) & (delta<150) &  (delta>50) & (N_photons>50) & (N_photons<10000)
 #%% select mask
 %matplotlib qt
 plt.rcParams['figure.figsize'] = [10,10]
@@ -405,7 +481,17 @@ def onselect(verts):
 lasso = LassoSelector(ax, onselect)
 plt.show()
 #%% SIZE OF THE SCATTER POINTS
-s = 0.001
+s = 0.05
+#%% plot of the localisations, white on black, no colour coding
+plt.rcParams.update({'font.size': 15})
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.set_facecolor('black')
+ax.scatter(x[mask]/1000, y[mask]/1000, color='white', s=s, rasterized=True)
+ax.set_aspect('equal')
+ax.set_xlabel('x ($\\mu$m)')
+ax.set_ylabel('y ($\\mu$m)')
+ax.set_title(f'{np.sum(mask)} localisations')
+plt.show()
 #%% plot rho
 plt.rcParams['figure.figsize'] = [8, 5]
 plt.rcParams.update({'font.size': 15})
@@ -417,24 +503,6 @@ ax0.set_facecolor('black')
 sc = ax0.scatter(x[mask]/1000, y[mask]/1000,
                  c=rho[mask] / 180.0,
                  cmap='hsv', s=s, rasterized=True)
-cax = fig.add_axes([0.5, 0.62, 0.15, 0.15], projection='polar')
-theta = np.linspace(0, np.pi, 512)
-r = np.array([0.8, 1.0])
-Theta, R = np.meshgrid(theta, r)
-C = np.tile(np.linspace(0, 180, theta.size), (2, 1))
-# Label in the center of the semicircle
-cax.text(np.pi/2, 0.2, r'$\rho$ (°)', ha='center', va='center', fontsize=14)
-cax.pcolormesh(Theta, R, C, cmap='hsv', shading='auto', edgecolors='none', linewidth=0)
-cax.set_theta_zero_location('E')   # start at right
-cax.set_theta_direction(1)         # counterclockwise
-cax.set_thetamin(0)
-cax.set_thetamax(180)
-cax.set_rticks([])
-cax.grid(False)
-ticks_deg = np.arange(0, 181, 45)
-cax.set_thetagrids(ticks_deg, labels=[f"{d}°" for d in ticks_deg])
-cax.spines['polar'].set_visible(False)
-ticks = np.linspace(0, 1, 7)
 ax0.set_aspect('equal')
 ax0.set_xlabel('x ($\\mu$m)')
 ax0.set_ylabel('y ($\\mu$m)')
@@ -461,6 +529,16 @@ ax1.set_theta_direction(1)         # counter clockwise
 ax1.set_xticks(np.deg2rad([0, 30, 60, 90, 120, 150, 180]))
 ax1.set_xticklabels(['0°', '30°', '60°', '90°', '120°', '150°', '180°'])
 ax1.set_ylabel('Count', labelpad=30)
+ax1.set_title(r'$\rho$')
+
+# colour scale of rho as the outer border of the histogram (replaces the small circular colorbar)
+r_max = counts.max()*1.05
+ring = np.linspace(0, np.pi, 512)
+ax1.pcolormesh(*np.meshgrid(ring, [r_max, r_max*1.08]), np.tile(np.rad2deg(ring), (2, 1)),
+               cmap='hsv', vmin=0, vmax=180, shading='auto')
+ax1.set_ylim(0, r_max*1.08)
+ax1.set_rticks(np.round(np.linspace(0, counts.max(), 4)[1:], -int(np.floor(np.log10(counts.max()))) + 1)) # 3 count ticks, inside the border
+ax1.spines['polar'].set_visible(False)
 
 plt.tight_layout()
 plt.show()
@@ -527,12 +605,12 @@ plt.rcParams['figure.figsize'] = [12, 5]
 plt.rcParams.update({'font.size': 15})
 fig, ax = plt.subplots(1, 2)
 if deviance is not None and len(deviance) == len(x):
-    fit_quality = (deviance[mask], 'deviance per pixel')
+    map_quality = (deviance[mask], 'deviance per pixel')
 else:
     if deviance is not None: # deviance left from another csv loaded before in the session
         print('deviance has '+str(len(deviance))+' values for '+str(len(x))+' points: it comes from another file, run the cell that loads the csv again')
-    fit_quality = (score[mask], 'score')
-for a, values, cmap_name, label in [(ax[0], fit_quality[0], 'viridis', fit_quality[1]),
+    map_quality = (score[mask], 'score')
+for a, values, cmap_name, label in [(ax[0], map_quality[0], 'viridis', map_quality[1]),
                                     (ax[1], N_photons[mask], 'YlOrRd', 'N photons')]:
     a.set_facecolor('black')
     vmin, vmax = np.nanpercentile(values, [1, 99])
@@ -760,7 +838,24 @@ def find_params(xxxx, yyyy):
     plt.show()
     return params.detach().numpy()
     
-params = find_params(x[new_zoom], y[new_zoom])
+def fit_circle(xx, yy):
+    ''' closed-form least squares circle fit (Kasa): minimizes the same loss as loss__, exactly, without iterations.
+    returns [radius, centerx, centery] as find_params '''
+    A = np.c_[2*xx, 2*yy, np.ones_like(xx)]
+    (cx, cy, c), *_ = np.linalg.lstsq(A, xx**2 + yy**2, rcond=None)
+    return np.array([np.sqrt(c + cx**2 + cy**2), cx, cy])
+
+#params = find_params(x[new_zoom], y[new_zoom])
+r_frac = 0.7  # keep only the localizations near the equator of the bead: r > r_frac*R
+params = fit_circle(x[mask], y[mask])  # 1st fit on the whole bead (projection = filled disk) -> center
+r_all = np.sqrt((x-params[1])**2 + (y-params[2])**2)
+R_bead = np.percentile(r_all[mask], 95)  # apparent radius of the bead
+new_zoom = mask & (r_all > r_frac*R_bead)
+params = fit_circle(x[new_zoom], y[new_zoom])  # 2nd fit on the equatorial ring only (points really on a circle)
+r_all = np.sqrt((x-params[1])**2 + (y-params[2])**2)
+new_zoom = mask & (r_all > r_frac*R_bead)
+print(f'center = ({params[1]:.1f}, {params[2]:.1f}) nm, R = {params[0]:.1f} nm, '
+      f'{new_zoom.sum()}/{mask.sum()} localizations kept (r > {r_frac}*{R_bead:.0f} nm)')
 rho_th = np.arctan2(y[new_zoom]-params[2], x[new_zoom]-params[1])*(180/np.pi)%180
 th = np.linspace(0,2*np.pi,100)
 line = np.arctan2(params[1]+(200+params[0])*np.sin(th)-params[1], params[2]+(200+params[0])*np.cos(th)-params[2])*(180/np.pi)%180.
@@ -862,6 +957,36 @@ ax[1].set_xticks(np.linspace(0, 180, 7), ['0', '30', '60', '90', '120', '150', '
 ax[1].grid()
 plt.show()
 
+#%% check of the bead center: delta rho vs the full azimuth phi (0-360)
+# a center error d gives delta_rho ~ (d/r) sin(phi - phi0): a 360 periodic sinusoid, which cancels in the
+# rho bias plot (phi and phi+180 have the same rho_th) but is visible here. Flat = good center
+phi_th = np.arctan2(y[new_zoom]-params[2], x[new_zoom]-params[1])*(180/np.pi)%360
+delta_rho = (rho[new_zoom] - rho_th + 90) % 180 - 90
+ok = np.abs(delta_rho) < 40  # outliers
+# least squares fit delta_rho = a cos(phi) + b sin(phi) + c
+A = np.c_[np.cos(np.deg2rad(phi_th[ok])), np.sin(np.deg2rad(phi_th[ok])), np.ones(ok.sum())]
+(a, b, c), *_ = np.linalg.lstsq(A, delta_rho[ok], rcond=None)
+amp = np.hypot(a, b)
+print(f'360-periodic component: {amp:.2f} deg -> fitted center off by ~ {np.deg2rad(amp)*params[0]:.1f} nm '
+      f'towards phi = {(np.degrees(np.arctan2(b, a))+90)%360:.0f} deg, mean delta rho = {c:.2f} deg')
+plt.rcParams['figure.figsize'] = [8, 4]
+fig, ax = plt.subplots()
+ax.scatter(phi_th, delta_rho, s=4, c=rgb_colors, rasterized=True)
+pp = np.linspace(0, 360, 361)
+ax.plot(pp, a*np.cos(np.deg2rad(pp)) + b*np.sin(np.deg2rad(pp)) + c, c='k', lw=2)
+bins_phi = np.linspace(0, 360, 37)
+med = [np.median(delta_rho[ok & (phi_th >= bins_phi[i]) & (phi_th < bins_phi[i+1])])
+       if np.any(ok & (phi_th >= bins_phi[i]) & (phi_th < bins_phi[i+1])) else np.nan for i in range(36)]
+ax.plot(bins_phi[:-1] + 5, med, 'o', c='k', ms=4)
+ax.axhline(0., c='r')
+ax.set_xlabel(r'$\phi$ (azimuth on the bead, $^\circ$)')
+ax.set_ylabel(r'$\Delta\rho$ ($^\circ$)')
+ax.set_xlim(0, 360)
+ax.set_ylim(-60, 60)
+ax.set_xticks(np.linspace(0, 360, 7))
+ax.grid()
+plt.show()
+
  #%% delta bias
 plt.rcParams['figure.figsize'] = [8, 5]
 plt.rcParams.update({'font.size': 13})
@@ -955,6 +1080,7 @@ ax[1].set_xticks(np.linspace(0, 180, 7), ['0', '30', '60', '90', '120', '150', '
 ax[1].grid()
 plt.show()
 # %%function for the pca
+from scipy import stats
 def pca_xy(x, y, z):
     """
     PCA on the xy plane of a 3D point cloud.
@@ -981,6 +1107,15 @@ def pca_xy(x, y, z):
     
     return w, eigenvectors, eigenvalues, mean_xy
 
+def theil_sen_slope(xx, yy, n_max=3000, seed=0):
+    # robust slope (median of the slopes between pairs of points) with its 95 % confidence interval.
+    # The number of pairs grows as n^2: above n_max points, computed on a fixed random sample of n_max points
+    if len(xx) > n_max:
+        keep = np.random.default_rng(seed).choice(len(xx), n_max, replace=False)
+        xx, yy = xx[keep], yy[keep]
+    slope, intercept, low, high = stats.theilslopes(yy, xx)
+    return slope, intercept, low, high
+
 # usage
 w, eigenvectors, eigenvalues, mean_xy = pca_xy(x[mask], y[mask], z[mask])
 
@@ -988,6 +1123,32 @@ w, eigenvectors, eigenvalues, mean_xy = pca_xy(x[mask], y[mask], z[mask])
 # w[:,1] — coordinate along second principal axis
 print(f"Principal axis direction: {eigenvectors[:,0]}")
 print(f"Explained variance: {eigenvalues/eigenvalues.sum()*100}")
+
+# %% lasso selection on z along the PCA axis (refines mask, then the PCA is recomputed)
+# z vs the position along the first PCA axis of the points of mask: circle the points to keep (e.g. one filament,
+# without the clusters or the points of another structure). mask is reduced to them and w, eigenvectors are
+# recomputed, so that the orientation cells below use the selection. mask_before_pca_lasso keeps the previous mask
+%matplotlib widget
+mask_before_pca_lasso = mask.copy()
+plt.rcParams['figure.figsize'] = [7, 4]
+fig, ax = plt.subplots()
+ax.scatter(w[:,0]/1000, z[mask]/1000, s=1, c=frame[mask], cmap='coolwarm')
+ax.set_xlabel('PCA axis ($\\mu$m)')
+ax.set_ylabel('z ($\\mu$m)')
+ax.set_title('circle the points to keep')
+pca_points = np.column_stack((w[:,0]/1000, z[mask]/1000))
+mask_indices = np.where(mask)[0] # index in the full arrays of each point of the plot
+
+def onselect_pca(verts):
+    global mask, w, eigenvectors, eigenvalues, mean_xy
+    inside = Path(verts).contains_points(pca_points)
+    mask = np.zeros(len(x), dtype=bool)
+    mask[mask_indices[inside]] = True
+    w, eigenvectors, eigenvalues, mean_xy = pca_xy(x[mask], y[mask], z[mask])
+    print(f'{inside.sum()} points kept out of {len(inside)}, PCA recomputed')
+
+lasso_pca = LassoSelector(ax, onselect_pca)
+plt.show()
 
 # %% orientation of filaments
 from scipy import stats
@@ -1007,9 +1168,10 @@ if eigenvectors[1, 0] < 0:
     w[:, 0] = -w[:, 0]
 
 # --- linear regression ---
-slope, intercept, r_value, p_value, std_err = stats.linregress(w[:,0]/1000, z[mask]/1000)
+# robust line (Theil-Sen) of z along the PCA axis, with its 95 % confidence interval
+slope, intercept, slope_low, slope_high = theil_sen_slope(w[:,0]/1000, z[mask]/1000)
 slope_deg = np.rad2deg(np.arctan(slope))
-print(f"Slope: {slope_deg:.2f}°")
+print(f"Slope (Theil-Sen): {slope_deg:.2f}° [95 % CI {np.rad2deg(np.arctan(slope_low)):.2f}, {np.rad2deg(np.arctan(slope_high)):.2f}]")
 
 x_fit = np.linspace(w[:,0].min()/1000, w[:,0].max()/1000, 500)
 y_fit = slope * x_fit + intercept
@@ -1093,6 +1255,160 @@ for label in ax1.get_yticklabels():
 ax1.set_thetagrids(np.arange(0, 360, 60), labels=[f"{d}°" for d in np.arange(0, 360, 60)])
 ax1.set_ylabel("Count", labelpad=25)
 ax1.legend(loc='upper center', bbox_to_anchor=(0.5, -0.12), fontsize=9)
+# %% orientation of filaments, compact: z along the PCA axis (equal scales) and polar histogram of eta
+# same computations as the cell above (to run after it or after the pca cell). The legend of the slopes is placed
+# outside the plots, above them, by the constrained layout: it keeps its room when the figure is resized
+from scipy import stats
+from matplotlib.gridspec import GridSpec
+
+plt.rcParams.update({'font.size': 13})
+fig = plt.figure(figsize=(6, 8), layout='constrained')
+gs = GridSpec(2, 1, height_ratios=[0.6, 1.3], figure=fig)
+ax0 = fig.add_subplot(gs[0])
+ax1 = fig.add_subplot(gs[1], projection='polar')
+
+# direction of the PCA axis with an in-plane angle in [0, 180[ as rho (same sign convention as the tilt from eta)
+if eigenvectors[1, 0] < 0:
+    eigenvectors[:, 0] = -eigenvectors[:, 0]
+    w[:, 0] = -w[:, 0]
+
+slope, intercept, slope_low, slope_high = theil_sen_slope(w[:,0]/1000, z[mask]/1000) # robust line, 95 % CI
+slope_deg = np.rad2deg(np.arctan(slope))
+x_fit = np.linspace(w[:,0].min()/1000, w[:,0].max()/1000, 500)
+tilt_median = 90 - np.median(eta[mask])
+tilt_mean = 90 - np.mean(eta[mask])
+w_mean, z_mean = np.mean(w[:,0])/1000, np.mean(z[mask])/1000
+lines = [(slope_deg, 'red', '-', 'PCA'),
+         (tilt_median, 'k', '-', '$\\eta$ median'),
+         (tilt_mean, 'k', '--', '$\\eta$ mean')]
+
+# --- z along the PCA axis, equal scales ---
+eta_norm = plt.Normalize(30, 150) # colours of the histogram
+ax0.scatter(w[:,0]/1000, z[mask]/1000, s=0.1, color='steelblue', alpha=0.5, rasterized=True)
+handles = []
+for tilt, color, style, name in lines:
+    handles += ax0.plot(x_fit, z_mean + np.tan(np.deg2rad(tilt))*(x_fit - w_mean), color=color, linestyle=style,
+                        linewidth=2, label=f'{name}: {tilt:.2f}°')
+ax0.set_aspect('equal')
+ax0.set_xlabel('PCA axis ($\\mu$m)')
+ax0.set_ylabel('z ($\\mu$m)')
+ax0.grid(True, alpha=0.4)
+
+# --- legend of the slopes, outside the plots, on top ---
+legend = fig.legend(handles=handles, loc='outside upper center', ncol=len(handles), fontsize=11)
+legend_width = legend.get_window_extent(fig.canvas.get_renderer()).width # width with the entries on one row
+def fit_legend(event=None):
+    # the entries on one row if they fit in the width of the figure, else one per row (called at each resize).
+    # The legend is rebuilt: changing its number of columns afterwards does not move the entries
+    global legend
+    ncol = len(handles) if legend_width < 0.98*fig.bbox.width else 1
+    if ncol != legend._ncols:
+        legend.remove()
+        legend = fig.legend(handles=handles, loc='outside upper center', ncol=ncol, fontsize=11)
+fig.canvas.mpl_connect('resize_event', fit_legend)
+fit_legend()
+
+# --- polar histogram of eta, same lines, no legend ---
+eta_rad = np.deg2rad(eta[mask])
+counts, edges = np.histogram(np.concatenate([eta_rad, eta_rad + np.pi]), bins=np.linspace(0, 2*np.pi, 201))
+centers = (edges[:-1] + edges[1:]) / 2
+ax1.bar(centers, counts, width=edges[1]-edges[0], bottom=0, color=cmap(eta_norm(np.rad2deg(centers % np.pi))),
+        edgecolor='none', alpha=0.95)
+for tilt, color, style, name in lines:
+    eta_line = np.deg2rad(90 - tilt)
+    ax1.axvline(eta_line, color=color, linestyle=style, linewidth=2)
+    ax1.axvline(eta_line + np.pi, color=color, linestyle=style, linewidth=2)
+ax1.set_theta_zero_location('N')
+ax1.set_theta_direction(-1)
+ax1.set_thetagrids(np.arange(0, 360, 60), labels=[f"{d}°" for d in np.arange(0, 360, 60)])
+ax1.set_ylabel("Count", labelpad=25)
+
+plt.show()
+# %% orientation of filaments in the plane: rho of the PCA axis vs the fitted rho (precision and consistency)
+# same as the compact eta cell, for rho: the in-plane angle of the first PCA axis (from x, counterclockwise, in
+# [0, 180[ as rho) is compared with the rho of the localisations of mask. rho is an axis (rho and rho+180 are the
+# same), so its mean is the circular mean of 2 rho / 2 and the differences are wrapped in [-90, 90[
+from matplotlib.gridspec import GridSpec
+
+def axial_mean(angles_deg):
+    # mean of an axis in [0, 180[ and its circular std (deg), from the mean resultant of 2*angle
+    r = np.mean(np.exp(2j*np.deg2rad(angles_deg)))
+    return np.rad2deg(np.angle(r))/2 % 180, np.rad2deg(np.sqrt(-2*np.log(np.abs(r))))/2
+
+def wrap90(d):
+    return (d + 90) % 180 - 90
+
+rho_pca = np.rad2deg(np.arctan2(eigenvectors[1, 0], eigenvectors[0, 0])) % 180
+# 95 % confidence interval of the PCA axis: bootstrap over the points of mask
+rng = np.random.default_rng(0)
+xy_mask = np.column_stack((x[mask], y[mask]))
+boot = []
+for _ in range(500):
+    pick = xy_mask[rng.integers(0, len(xy_mask), len(xy_mask))]
+    vals, vecs = np.linalg.eigh(np.cov((pick - pick.mean(0)).T))
+    boot.append(wrap90(np.rad2deg(np.arctan2(vecs[1, -1], vecs[0, -1])) - rho_pca))
+rho_pca_low, rho_pca_high = rho_pca + np.percentile(boot, [2.5, 97.5])
+
+rho_mean, rho_circ_std = axial_mean(rho[mask])
+d_rho = wrap90(rho[mask] - rho_pca) # rho of each localisation relative to the PCA axis
+rho_median = (rho_pca + np.median(d_rho)) % 180
+print(f'rho of the PCA axis: {rho_pca:.2f}° [95 % CI {rho_pca_low % 180:.2f}, {rho_pca_high % 180:.2f}], {np.sum(mask)} points')
+print(f'rho fitted: median {rho_median:.2f}°, mean {rho_mean:.2f}°')
+print(f'consistency, rho - rho_PCA: median {np.median(d_rho):.2f}°, mean {np.rad2deg(np.angle(np.mean(np.exp(2j*np.deg2rad(d_rho)))))/2:.2f}°')
+print(f'precision, spread of rho around the PCA axis: robust std {1.4826*np.median(np.abs(d_rho - np.median(d_rho))):.2f}°, '
+      f'circular std {rho_circ_std:.2f}°, std {np.std(d_rho, ddof=1):.2f}°')
+
+lines_rho = [(rho_pca, 'red', '-', 'PCA'),
+             (rho_median, 'k', '-', '$\\rho$ median'),
+             (rho_mean, 'k', '--', '$\\rho$ mean')]
+
+plt.rcParams.update({'font.size': 13})
+fig = plt.figure(figsize=(6, 8), layout='constrained')
+gs = GridSpec(2, 1, height_ratios=[1, 1.3], figure=fig)
+ax0 = fig.add_subplot(gs[0])
+ax1 = fig.add_subplot(gs[1], projection='polar')
+
+# --- xy of the points with the three directions through their centre, equal scales ---
+ax0.scatter(x[mask]/1000, y[mask]/1000, s=0.1, color='steelblue', alpha=0.5, rasterized=True)
+cx, cy = np.mean(x[mask])/1000, np.mean(y[mask])/1000
+half = 0.5*np.max(w[:, 0].max() - w[:, 0].min())/1000 # half length of the points along the PCA axis
+handles_rho = []
+for angle, color, style, name in lines_rho:
+    u = np.array([np.cos(np.deg2rad(angle)), np.sin(np.deg2rad(angle))])
+    handles_rho += ax0.plot([cx - half*u[0], cx + half*u[0]], [cy - half*u[1], cy + half*u[1]], color=color,
+                            linestyle=style, linewidth=2, label=f'{name}: {angle:.2f}°')
+ax0.set_aspect('equal')
+ax0.set_xlabel('x ($\\mu$m)')
+ax0.set_ylabel('y ($\\mu$m)')
+ax0.grid(True, alpha=0.4)
+
+# --- legend of the directions, outside the plots, on top (one row if it fits, as in the eta cell) ---
+legend_rho = fig.legend(handles=handles_rho, loc='outside upper center', ncol=len(handles_rho), fontsize=11)
+legend_rho_width = legend_rho.get_window_extent(fig.canvas.get_renderer()).width
+def fit_legend_rho(event=None):
+    global legend_rho
+    ncol = len(handles_rho) if legend_rho_width < 0.98*fig.bbox.width else 1
+    if ncol != legend_rho._ncols:
+        legend_rho.remove()
+        legend_rho = fig.legend(handles=handles_rho, loc='outside upper center', ncol=ncol, fontsize=11)
+fig.canvas.mpl_connect('resize_event', fit_legend_rho)
+fit_legend_rho()
+
+# --- polar histogram of rho (mirrored on 360 as rho and rho+180 are the same), same lines ---
+rho_rad = np.deg2rad(rho[mask])
+counts, edges = np.histogram(np.concatenate([rho_rad, rho_rad + np.pi]), bins=np.linspace(0, 2*np.pi, 201))
+centers = (edges[:-1] + edges[1:]) / 2
+ax1.bar(centers, counts, width=edges[1]-edges[0], bottom=0, color=plt.cm.hsv((centers % np.pi) / np.pi),
+        edgecolor='none', alpha=0.95)
+for angle, color, style, name in lines_rho:
+    ax1.axvline(np.deg2rad(angle), color=color, linestyle=style, linewidth=2)
+    ax1.axvline(np.deg2rad(angle) + np.pi, color=color, linestyle=style, linewidth=2)
+ax1.set_theta_zero_location('E') # as the rho cells: 0 along x, counterclockwise
+ax1.set_theta_direction(1)
+ax1.set_thetagrids(np.arange(0, 360, 60), labels=[f"{d}°" for d in np.arange(0, 360, 60)])
+ax1.set_ylabel("Count", labelpad=25)
+
+plt.show()
 #%%
 ############ interactive plots ######################
 
@@ -1154,6 +1470,80 @@ def update_rho_window(centre):
 rho_slider.on_changed(update_rho_window)
 update_rho_window(rho_slider.val)
 plt.show()
+
+#%% gif of the rho window: all points, then the rho_theory dots of the bead fit, then the sliding rho window
+# needs the bead fit cell (params, th, line, rgb_colorsL) and the plot rho cell above (rho_window, in_rho_window)
+from matplotlib.animation import FuncAnimation, PillowWriter
+gif_path = os.path.join(os.getcwd(), 'rho_window.gif')
+gif_fps = 10
+faded_alpha = 0.35  # opacity of the histogram bars outside the window. Not lower: too pale colors are merged with white in the 256-color palette of the gif
+n_fade, n_hold_all = 5, 15     # phase 1: all the points fade in, then stay
+n_ring, n_hold_ring = 20, 10   # phase 2: the rho_theory dots appear one after the other around the bead, then stay
+n_sweep, n_hold_end = 90, 10   # phase 3: the rho window slides from 0 to 180 degrees, then stays at the end
+
+plt.rcParams['figure.figsize'] = [12, 6]
+plt.rcParams.update({'font.size': 15})
+fig = plt.figure()
+ax0 = fig.add_subplot(1, 2, 1)
+ax1 = fig.add_subplot(1, 2, 2, projection='polar')
+fig.subplots_adjust(bottom=0.15)
+
+x_ring = (params[1]+(200+params[0])*np.cos(th))/1000
+y_ring = (params[2]+(200+params[0])*np.sin(th))/1000
+ax0.set_facecolor('black')
+# limits fixed for the whole gif, large enough for the points and the rho_theory dots
+ax0.set_xlim(min(np.min(x[mask])/1000, np.min(x_ring)) - 0.05, max(np.max(x[mask])/1000, np.max(x_ring)) + 0.05)
+ax0.set_ylim(min(np.min(y[mask])/1000, np.min(y_ring)) - 0.05, max(np.max(y[mask])/1000, np.max(y_ring)) + 0.05)
+ax0.set_aspect('equal')
+ax0.set_xlabel('x ($\\mu$m)')
+ax0.set_ylabel('y ($\\mu$m)')
+sc_all = ax0.scatter(x[mask]/1000, y[mask]/1000, c=rho[mask], cmap='hsv', vmin=0, vmax=180, s=10*s, alpha=0., rasterized=True)
+sc_window = ax0.scatter([], [], c=[], cmap='hsv', vmin=0, vmax=180, s=10*s, rasterized=True)
+sc_ring = ax0.scatter([], [], s=20, zorder=3)
+ring_rgba = np.column_stack((rgb_colorsL, np.ones(len(th))))
+
+# half circle polar histogram, as in the plot rho cell
+rho_rad = np.deg2rad(rho[mask])
+counts, edges = np.histogram(np.concatenate([rho_rad, rho_rad + np.pi]), bins=np.linspace(0, 2*np.pi, 73))
+centers = (edges[:-1] + edges[1:]) / 2
+bars = ax1.bar(centers, counts, width=edges[1]-edges[0], bottom=0, color=plt.cm.hsv((centers % np.pi) / np.pi))
+ax1.set_thetamin(0)
+ax1.set_thetamax(180)
+ax1.set_theta_zero_location('E')
+ax1.set_theta_direction(1)
+ax1.set_xticks(np.deg2rad([0, 30, 60, 90, 120, 150, 180]))
+ax1.set_xticklabels(['0°', '30°', '60°', '90°', '120°', '150°', '180°'])
+ax1.set_ylabel('Count', labelpad=30)
+
+n1_, n2_ = n_fade + n_hold_all, n_fade + n_hold_all + n_ring + n_hold_ring
+n_frames = n2_ + n_sweep + n_hold_end
+
+def update_gif(i):
+    if i < n1_:  # phase 1: all the points
+        sc_all.set_alpha(min(1., (i+1)/n_fade))
+        ax0.set_title(f'all localizations: {np.sum(mask)} points')
+    elif i < n2_:  # phase 2: rho_theory dots
+        k = min(len(th), int(len(th)*(i-n1_+1)/n_ring))
+        sc_ring.set_offsets(np.column_stack((x_ring[:k], y_ring[:k])))
+        sc_ring.set_color(ring_rgba[:k])
+        ax0.set_title('$\\rho_{\\mathrm{theory}}$ (bead fit)')
+    else:  # phase 3: sliding rho window, as in the plot rho cell
+        sc_all.set_alpha(0.)
+        centre = 180*min(1., (i-n2_)/(n_sweep-1))
+        mask_rho = mask & in_rho_window(rho, centre)
+        sc_window.set_offsets(np.column_stack((x[mask_rho]/1000, y[mask_rho]/1000)))
+        sc_window.set_array(rho[mask_rho])
+        # the rho_theory dots and the bars outside the window are faded
+        ring_rgba[:, 3] = np.where(in_rho_window(line, centre), 1., 0.2)
+        sc_ring.set_color(ring_rgba)
+        for bar, c in zip(bars, np.rad2deg(centers) % 180):
+            bar.set_alpha(0.9 if in_rho_window(c, centre) else faded_alpha)
+        ax0.set_title(f'$\\rho$ in [{centre-rho_window/2:.0f}°, {centre+rho_window/2:.0f}°]: {np.sum(mask_rho)} points')
+
+anim = FuncAnimation(fig, update_gif, frames=n_frames)
+anim.save(gif_path, writer=PillowWriter(fps=gif_fps), dpi=100)  # loops forever by default
+plt.close(fig)
+print('gif saved in', gif_path)
 
 #%% plot z, interactive window in z
 # the slider sets the centre of the window, mask_z keeps the points of mask inside it for the next cells
@@ -1408,3 +1798,72 @@ eta_yz_slider.on_changed(update_eta_yz_window)
 update_eta_yz_window(eta_yz_slider.val)
 plt.show()
 
+
+#%% gif of the eta window in yz: all points, then the sliding eta window
+# needs the cell above (eta_window, eta_cmap, in_eta_window)
+from matplotlib.animation import FuncAnimation, PillowWriter
+gif_path = os.path.join(os.getcwd(), 'eta_yz_window.gif')
+gif_fps = 10
+faded_alpha = 0.35  # opacity of the histogram bars outside the window. Not lower: too pale colors are merged with white in the 256-color palette of the gif
+n_fade, n_hold_all = 5, 15     # phase 1: all the points fade in, then stay
+n_sweep, n_hold_end = 90, 10   # phase 2: the eta window slides from 0 to 180 degrees, then stays at the end
+
+plt.rcParams['figure.figsize'] = [12, 6]
+plt.rcParams.update({'font.size': 15})
+fig = plt.figure()
+ax0 = fig.add_subplot(1, 2, 1)
+ax1 = fig.add_subplot(1, 2, 2, projection='polar')
+fig.subplots_adjust(bottom=0.15, wspace=0.4) # room for the colorbar of z
+z_min, z_max = np.min(z[mask]), np.max(z[mask])
+
+ax0.set_facecolor('black')
+# limits fixed for the whole gif, with a small margin
+ax0.set_xlim(np.min(y[mask])/1000 - 0.05, np.max(y[mask])/1000 + 0.05)
+ax0.set_ylim(z_min/1000 - 0.05, z_max/1000 + 0.05)
+ax0.set_aspect('equal')
+sc_all = ax0.scatter(y[mask]/1000, z[mask]/1000, c=z[mask]/1000, cmap='plasma', vmin=z_min/1000, vmax=z_max/1000, s=10*s, alpha=0., rasterized=True)
+sc_window = ax0.scatter([], [], c=[], cmap='plasma', vmin=z_min/1000, vmax=z_max/1000, s=10*s, rasterized=True)
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+cax = make_axes_locatable(ax0).append_axes('right', size='5%', pad=0.1)  # colorbar as high as the equal aspect plot
+cbar = plt.colorbar(sc_window, cax=cax)
+cbar.set_label("$z$ ($\\mu$m)")
+ax0.set_xlabel('y ($\\mu$m)')
+ax0.set_ylabel('z ($\\mu$m)')
+
+# half circle polar histogram of eta, as in the cell above
+eta_rad = np.deg2rad(eta[mask])
+counts, edges = np.histogram(eta_rad, bins=np.linspace(0, np.pi, 37))
+centers = (edges[:-1] + edges[1:]) / 2
+bars = ax1.bar(centers, counts, width=edges[1]-edges[0], bottom=0, color=eta_cmap(centers / np.pi), edgecolor='none')
+ax1.set_thetamin(0)
+ax1.set_thetamax(180)
+ax1.set_theta_zero_location('N') # 0 on top
+ax1.set_theta_direction(-1) # clockwise, 90 on the right
+ax1.set_xticks(np.deg2rad([0, 30, 60, 90, 120, 150, 180]))
+ax1.set_xticklabels(['0°', '30°', '60°', '90°', '120°', '150°', '180°'])
+ax1.set_ylabel('Count', labelpad=30)
+
+n1_ = n_fade + n_hold_all
+n_frames = n1_ + n_sweep + n_hold_end
+
+def update_gif(i):
+    if i < n1_:  # phase 1: all the points
+        sc_all.set_alpha(min(1., (i+1)/n_fade))
+        ax0.set_title(f'all localizations: {np.sum(mask)} points')
+    else:  # phase 2: sliding eta window, as in the cell above
+        sc_all.set_alpha(0.)
+        centre = 180*min(1., (i-n1_)/(n_sweep-1))
+        mask_eta_yz = mask & in_eta_window(eta, centre)
+        sc_window.set_offsets(np.column_stack((y[mask_eta_yz]/1000, z[mask_eta_yz]/1000)))
+        sc_window.set_array(z[mask_eta_yz] / 1000)
+        # the bars outside the window are faded
+        for bar, c in zip(bars, np.rad2deg(centers)):
+            bar.set_alpha(0.9 if in_eta_window(c, centre) else faded_alpha)
+        ax0.set_title(f'$\\eta$ in [{centre-eta_window/2:.0f}°, {centre+eta_window/2:.0f}°]: {np.sum(mask_eta_yz)} points')
+
+anim = FuncAnimation(fig, update_gif, frames=n_frames)
+anim.save(gif_path, writer=PillowWriter(fps=gif_fps), dpi=100)  # loops forever by default
+plt.close(fig)
+print('gif saved in', gif_path)
+
+# %%

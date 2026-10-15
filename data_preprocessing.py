@@ -24,7 +24,7 @@ vmin = find_param_preloc(nb_frames_threshold=1, connectivity=8, min_size=4
                          , max_size=50, weighted=True, bg_subtract=True, bg_kernel_size=100, cwd=cwd)
 #%% pre-localization
 matplotlib.use("module://matplotlib_inline.backend_inline")
-pre_loc_dataset(vmin, deltaz, first_frame=2000, last_frame=None,
+pre_loc_dataset(vmin, deltaz, first_frame=500, last_frame=None,
                     connectivity=8, min_size=4, max_size=50,
                      weighted=True, plot=False, bg_kernel_size=100, cwd=cwd)
  #%% check the quality - choice of directory

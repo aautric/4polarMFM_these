@@ -465,36 +465,55 @@ def PSF_jax(rho, eta, delta, M, N_photons=1000):
 
 def noise_jax(key, PSF, QE=1.0, EM=1.0, b=0.0, sigma_b=0.0, sigma_r=0.0, bias=0.0):
     """
-    Adds mixed Poisson-Gaussian noise to a PSF using JAX.
-    
-    key      : jax.random.PRNGKey
-    PSF      : array, shape (N_psf, n_plane, n_pol, Nx, Ny)
-    QE       : quantum efficiency
-    EM       : electron-multiplying gain
-    b        : background mean
-    sigma_b  : background std
-    sigma_r  : read noise std
-    bias     : camera bias (offset)
-    """
-    key_poiss, key_b, key_r, key_gamma = random.split(key, 4)
+    Adds Poisson noise and Gaussian read noise to a PSF using JAX (no EM excess noise, see emccd_jax).
+    No camera baseline, as the data after the reconstruction (reconstruction_juliette.py removes it).
 
-    # Gaussian background (added only inside Poisson)
-    background = b + sigma_b * random.normal(key_b, PSF.shape)
-    background = jnp.clip(background, min=0.0)
-    
+    key      : jax.random.PRNGKey
+    PSF      : array, shape (N_psf, n_plane, n_pol, Nx, Ny), photons
+    QE, EM   : not used (kept for the existing calls)
+    b        : background mean (photons)
+    sigma_b  : std of the background fluctuation per pixel and frame, before the Poisson noise (photons)
+    sigma_r  : read noise std (photons)
+    bias     : not used, no camera baseline (kept for the existing calls)
+    Returns the noisy values in photons: mean PSF + b, variance PSF + b (+ sigma_b^2) + sigma_r^2.
+    """
+    if bias:
+        print('noise_jax: bias = '+str(bias)+' ignored, the simulated data have no camera baseline')
+    key_poiss, key_b, key_r = random.split(key, 3)
+
+    # background with its fluctuation, inside the Poisson noise
+    background = jnp.clip(b + sigma_b * random.normal(key_b, PSF.shape), min=0.0)
+
     # Poisson shot noise on PSF + background
-    lam = jnp.clip(PSF + background, min=1e-6)
-    poiss = random.poisson(key_poiss, lam)
-    
-    # Gaussian read noise with bias as mean
-    read = bias + sigma_r * random.normal(key_r, PSF.shape)
-    
-    # Gamma excess noise from EM gain
-    #gamma_conc = jnp.clip(poiss * QE, min=1e-6)
-    #excess = random.gamma(key_gamma, gamma_conc) / (QE )
-    
-    # Combine — same as PyTorch: read + excess only
-    noisy = read + poiss
-        
-    return noisy
+    poiss = random.poisson(key_poiss, jnp.clip(PSF + background, min=0.0))
+
+    # Gaussian read noise, zero mean
+    return poiss + sigma_r * random.normal(key_r, PSF.shape)
+
+def emccd_jax(key, PSF, QE=0.92, EM=200.0, b=0.0, sigma_b=0.0, sigma_read_e=0.0, sensitivity=3.9, cic=0.0):
+    """
+    EMCCD camera noise on a PSF using JAX, physical chain in electrons, returned in photons (units of the pipeline).
+    No camera baseline, as the data after the reconstruction.
+
+    key          : jax.random.PRNGKey
+    PSF          : array, shape (N_psf, n_plane, n_pol, Nx, Ny), photons
+    QE           : quantum efficiency
+    EM           : EM gain
+    b            : background mean (photons)
+    sigma_b      : std of the background fluctuation per pixel and frame, before the Poisson noise (photons)
+    sigma_read_e : read noise std (electrons at the output amplifier, ~85 e- at 17 MHz pre-amp 3 on the Andor sheet)
+    sensitivity  : electrons per ADU (rounding of the analog to digital converter)
+    cic          : clock induced charge (electrons per pixel and frame, amplified as the photoelectrons)
+
+    1. photoelectrons e ~ Poisson(QE*(PSF + background)) + Poisson(cic): Poisson thinning of the photons by the QE
+    2. EM register: Gamma(shape e, scale EM) electrons, 0 when e = 0 (high gain approximation, excess factor 2)
+    3. read noise (electrons), conversion to ADU and rounding, conversion back to photons: ADU*sensitivity/(QE*EM)
+    Moments in photons (high gain, cic = 0): mean PSF + b, variance 2*(PSF + b)/QE + (sigma_read_e/(QE*EM))^2
+    """
+    key_b, key_e, key_g, key_r = random.split(key, 4)
+    light = jnp.clip(PSF + b + sigma_b * random.normal(key_b, PSF.shape), min=0.0)
+    electrons = random.poisson(key_e, QE * light + cic)
+    amplified = jnp.where(electrons > 0, random.gamma(key_g, jnp.maximum(electrons, 1).astype(jnp.float32)) * EM, 0.0)
+    adu = jnp.round((amplified + sigma_read_e * random.normal(key_r, PSF.shape)) / sensitivity)
+    return adu * sensitivity / (QE * EM)
 

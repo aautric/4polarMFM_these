@@ -63,6 +63,9 @@ def extract_frames(frame_0, N_frame, dimensions):
             error_indices.append(i)
         else:
             raw[i] = raw_
+    if len(error_indices) == N_frame:
+        raise RuntimeError('none of the frames '+str(frame_0)+' to '+str(frame_0+N_frame-1)+' could be read: '
+                           'check dimensions (size of the channels of the reconstruction, here '+str(dimensions)+')')
 
     return raw, error_indices
 
@@ -81,31 +84,50 @@ def extract_positions(frame_0, N_frame, error_indices):
     index_frame=np.array(index_frame)
     return x, y, index_frame
 
-def measure_baseline(raw_folder, n_frames=100):
-    # camera baseline in ADU (value of a pixel without light), measured on the rows of the raw frames outside the
-    # 6 channels: the rows whose level is close to the one of the darkest row, over n_frames frames taken in the
-    # middle of the first raw file. Checked on the variance vs level curve of a fiducial bead (zero variance at
-    # 178 ADU for a baseline measured at 177 ADU)
-    raw_file = sorted(Path(raw_folder).glob('*.ome.tif'))[0]
-    with tifffile.TiffFile(raw_file) as tif:
-        n = len(tif.pages)
-        start = max(0, n//2 - n_frames//2)
-        frames = np.stack([tif.pages[i].asarray() for i in range(start, min(n, start+n_frames))]).astype(float)
-    rows = np.median(np.median(frames, axis=0), axis=1) # level of each row of the sensor
-    dark = rows < rows.min() + 0.2*(np.median(rows) - rows.min())
-    print('Camera baseline: '+str(np.median(frames[:, dark]))+' ADU, measured on '+str(np.sum(dark))+' dark rows of '+raw_file.name)
-    return np.median(frames[:, dark])
+# Micro-Manager metadata of the raw files read by read_camera_metadata: name in the file -> name in the config
+CAMERA_METADATA = {'Andor1-Gain': 'em_gain', 'Exposure-ms': 'exposure_ms', 'Andor1-Pre Amp Grain': 'preamp',
+                   'Andor1-HS Speed': 'hs_speed', 'Andor1-VS Speed': 'vs_speed', 'Andor1-Output Amplifier': 'output_amplifier',
+                   'Andor1-AD Converter': 'ad_converter', 'Andor1-FrameTransfer': 'frame_transfer',
+                   'Andor1-Temperature Current': 'ccd_temperature', 'Binning': 'binning', 'Andor1-Crop Enabled': 'crop',
+                   'Andor1-Head Model': 'camera_model', 'Andor1-Serial Number': 'camera_serial',
+                   'Thorlabs_BSC201_Controller-Filter': 'filter_1', 'Thorlabs_BSC201_Controller2-Filter': 'filter_2',
+                   'Nikon_TI2E_Microscope-Objective': 'objective'}
+# readout settings at which sensitivity was measured (photon transfer curves, see the parameter cell)
+SENSITIVITY_SETTINGS = {'preamp': 'Gain 1', 'hs_speed': '17.000MHz', 'output_amplifier': 'Electron Multiplying'}
 
-def noise_model(raw, shift_value, n_bins=10):
+def read_camera_metadata(raw_folder):
+    # acquisition settings of the raw ome.tif files (Micro-Manager metadata of their first frame). Returns the values of
+    # the first file (CAMERA_METADATA names) and prints a warning if a setting differs between the files
+    values = []
+    for raw_file in sorted(Path(raw_folder).glob('*.ome.tif')):
+        with tifffile.TiffFile(raw_file) as tif:
+            tag = tif.pages[0].tags.get('MicroManagerMetadata')
+            page = tag.value if tag is not None and isinstance(tag.value, dict) else {}
+        values.append({name: page[key] for key, name in CAMERA_METADATA.items() if key in page})
+    if not values or not values[0]:
+        print('No Micro-Manager metadata found in the raw files of '+str(raw_folder))
+        return {}
+    for name in values[0]:
+        differing = sorted(set(str(v.get(name)) for v in values))
+        if len(differing) > 1:
+            print('WARNING: '+name+' differs between the raw files: '+', '.join(differing)+' (first file used)')
+    print('Acquisition settings (metadata of the raw files): '+', '.join(f'{k} = {v}' for k, v in values[0].items()))
+    return values[0]
+
+def noise_model(raw, dark_variance, n_bins=10):
     # noise of each of the 6 channels of a chunk of frames (frames, channels, H, W), in the units of the data:
-    # var(v) = gain*(v + shift). shift = -baseline in these units (value of v without light, given by
-    # measure_baseline), the same for the 6 channels. gain is fitted on the photon transfer curve of the chunk:
-    # the pixels are sorted by their median over time in n_bins groups, the variance of each group is measured
-    # on the differences between consecutive frames (removes the static structure, /2 because a difference has
-    # twice the variance) with a MAD (robust to the emitters that blink in a pixel), and gain is the slope of the
-    # variance vs (level + shift) through 0. gain includes everything that scales the noise: EM excess noise,
-    # real EM gain, normalisation and interpolation of the reconstruction. level is the median background.
-    gain, shift, level = np.zeros(raw.shape[1]), np.full(raw.shape[1], shift_value), np.zeros(raw.shape[1])
+    # var(v) = gain*v + V. v = 0 without light (the reconstruction removes the camera baseline). V = dark_variance
+    # (one value per channel): variance without light, read noise + clock induced charge, measured by
+    # reconstruction_juliette.py on the dark rows of the raw frames and carried through the interpolation and the
+    # normalisation of each channel (dark_variance.txt). gain is the part proportional to the light (EM excess noise,
+    # real EM gain, normalisation and interpolation): fitted on the photon transfer curve of the whole channel, the
+    # pixels sorted by their median over time in n_bins groups, the variance of each group measured on the differences
+    # between consecutive frames (removes the static structure, /2 because a difference has twice the variance) with a
+    # MAD (robust to the emitters that blink in a pixel), and gain the slope of the variance vs level with the
+    # intercept fixed at V. shift = V/gain: (v + shift)/gain has a variance equal to its mean (shifted Poisson, see
+    # pixel_loss). level is the median background
+    gain, level = np.zeros(raw.shape[1]), np.zeros(raw.shape[1])
+    dark_variance = np.broadcast_to(np.asarray(dark_variance, dtype=float), raw.shape[1])
     for c in range(raw.shape[1]):
         med = np.median(raw[:, c], axis=0)
         dif = np.diff(raw[:, c], axis=0)
@@ -117,15 +139,24 @@ def noise_model(raw, shift_value, n_bins=10):
             d = dif[:, keep & (med >= edges[k]) & (med < edges[k+1])]
             levels.append(np.median(med[keep & (med >= edges[k]) & (med < edges[k+1])]))
             variances.append((1.4826*np.median(np.abs(d - np.median(d))))**2 / 2)
-        signal = np.array(levels) + shift_value # value above the baseline
-        gain[c] = np.sum(signal*np.array(variances)) / np.sum(signal**2) # least squares slope through 0
+        signal = np.array(levels)
+        # least squares slope of variance - V vs level, through 0
+        gain[c] = np.sum(signal*(np.array(variances) - dark_variance[c])) / np.sum(signal**2)
+    shift = dark_variance/gain
     return gain, shift, level
 
+def channel_gain():
+    # relative gain of each (plane, polarisation) channel of the model: the y channel of the planes behind J1
+    # (0 and 2) and of the plane behind J2 (1) is multiplied by y_gain_J1 and y_gain_J2 (calibration cell)
+    return jnp.array([[1., y_gain_J1], [1., y_gain_J2], [1., y_gain_J1]])
+
 def limit(x, lim, slope, upper=True):
-    if upper:
-        return jnp.sum(jnp.exp((x-lim)*slope))
-    else:
-        return jnp.sum(jnp.exp(-1*(x-lim)*slope))
+    # exp of the overshoot, continued linearly (same value and slope) beyond an exponent of 30: exp(88.7) overflows
+    # float32, and an inf loss gives nan parameters in Adam (seen with a PSF whose delta went to ~0.1 deg with the
+    # bound at 1: exponent (1 - 0.06)*100 = 94). Beyond 30 the penalty is >1e13 and still pushes back
+    e = (x-lim)*slope if upper else -1*(x-lim)*slope
+    cap = 30.
+    return jnp.sum(jnp.exp(jnp.minimum(e, cap)) * (1 + jnp.maximum(e - cap, 0.)))
     
 def loss_pos(params, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, noise, dim_simu, d_):
     Mj = compute_M_jax(xp=params['xp'], yp=params['yp'], zp=params['zp'], d=d_, x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2
@@ -134,6 +165,7 @@ def loss_pos(params, Nphotons_speed1, background_speed, rho, eta, delta, data, s
     dim_data = 6
     dim_simu = int(dim_simu)
     h = PSF_jax(rho=rho, eta=eta, delta=delta, M=Mj, N_photons=params['N_photons']*Nphotons_speed1)[:,:,:,dim_simu-dim_data:dim_simu+dim_data+1,dim_simu-dim_data:dim_simu+dim_data+1]
+    h = h * channel_gain()[None, :, :, None, None] # x/y gain correction of the channels, see y_gain_J1/J2
 
     loss = jnp.sum(jnp.pow(jnp.sum(jnp.add(h+jnp.reshape(params['background']*background_speed, (h.shape[0],3,2))[:, :, :, None, None], -data), axis=(2,)), 2))
 
@@ -143,32 +175,60 @@ def loss_pos(params, Nphotons_speed1, background_speed, rho, eta, delta, data, s
     N_bound = limit(params['N_photons'], 0., 10000, upper=False)
     return (loss +x_bound+y_bound+z_bound+N_bound).astype(jnp.float32)
 
+def pixel_loss(model, data, gain, shift):
+    # loss of each pixel for SGD2 and for the saved score, chosen by loss2, with the noise model var = gain*v + V and
+    # shift = V/gain (see noise_model)
+    if loss2 == 'lms':
+        # least squares normalised by the variance of each pixel: (mu - d)^2 / var. var = gain*d is estimated from the
+        # data, so it does not depend on the fitted parameters: the weights are fixed during the descent. Clipped at 1
+        # to avoid dividing by ~0
+        return jnp.pow(model - data, 2) / jnp.maximum(gain*data, 1.)
+    if loss2 == 'poisson':
+        # shifted Poisson: (d + shift)/gain has the mean (mu + shift)/gain and the variance (gain*mu + V)/gain^2, equal
+        # to it, so it is treated as a Poisson count: likelihood ((mu + shift) - (d + shift) log(mu + shift)) / gain
+        # (Poisson noise of the light times the EM excess noise, plus the read noise and the clock induced charge V).
+        # Each pixel is weighted by 1/(gain*mu + V). Clipped to keep the log defined
+        return (model + shift - (data + shift)*jnp.log(jnp.maximum(model + shift, 1e-3))) / gain
+    if loss2 == 'huber':
+        # Poisson likelihood made robust with the Huber function of the deviance residual r of each pixel
+        # (r^2 = deviance of the pixel). Half deviance = Poisson loss + constant, so for |r| <= huber_c the pixel is
+        # treated exactly as with 'poisson'; beyond, the loss grows as huber_c*|r| instead of r^2/2: the pull of the
+        # pixel is capped at the one of a pixel at huber_c. With huber_positive_only, only the pixels brighter than
+        # the model are capped (light the model does not contain: neighbours, irregular background). Shifted
+        # quantities as in 'poisson'
+        data_s = data + shift
+        model_s = jnp.maximum(model + shift, 1e-3)
+        log_term = jnp.where(data_s > 0, data_s*jnp.log(jnp.maximum(data_s, 1e-3)/model_s), 0.)
+        half_deviance = jnp.maximum((model_s - data_s + log_term) / gain, 0.) # r^2/2
+        outer = half_deviance > huber_c**2/2
+        if huber_positive_only:
+            outer = outer & (data > model)
+        # sqrt of a value >= c^2 only: no infinite gradient at r = 0. Continuous with its derivative at |r| = c
+        return jnp.where(outer, huber_c*jnp.sqrt(2*jnp.maximum(half_deviance, huber_c**2/2)) - huber_c**2/2, half_deviance)
+    raise ValueError("loss2 must be 'poisson', 'lms' or 'huber', not "+repr(loss2))
+
 def loss_angle_with_M(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, zern_speed2_x, zern_speed2_y, data, background, noise, dim_simu, d_):
     # remove plot argument entirely
     dim_data = 6
     dim_simu = int(dim_simu)
     # zernx/zerny are the starting aberrations, params['zern_x'/'zern_y'] the fitted offset shared by the whole batch
     # (an offset rather than a ratio so that a speed of 0 freezes a coefficient at its starting value)
+    # jnp.where: a coefficient of speed 0 gets a gradient of exactly 0. With params*speed it would get nan*0 = nan
+    # as soon as one PSF diverges, and these coefficients, shared by the batch, would make all its PSF nan
+    zern_offset_x = jnp.where(zern_speed2_x == 0, 0., params['zern_x']*zern_speed2_x)
+    zern_offset_y = jnp.where(zern_speed2_y == 0, 0., params['zern_y']*zern_speed2_y)
     Mj = compute_M_jax(xp=params['x']*xy_speed2, yp=params['y']*xy_speed2, zp=params['z']*z_speed2, d=d_, x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2,
                    Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, phase_maskx=phase_mask, phase_masky=phase_mask, zernike_base=zernike_base,
-                   zernike_coefs_x=jnp.reshape(zernx + params['zern_x']*zern_speed2_x, (3,15)), zernike_coefs_y=jnp.reshape(zerny + params['zern_y']*zern_speed2_y, (3,15)),
+                   zernike_coefs_x=jnp.reshape(zernx + zern_offset_x, (3,15)), zernike_coefs_y=jnp.reshape(zerny + zern_offset_y, (3,15)),
                    second_plane=second_plane, polar_projections=polar_projections, lambd=lambd, f_tube=f_tube)
 
     h = PSF_jax(rho=params['rho'], eta=params['eta'], delta=params['delta']*delta_speed, M=Mj, N_photons=params['N_photons']*nphotons_speed2)[:,:,:,dim_simu-dim_data:dim_simu+dim_data+1,dim_simu-dim_data:dim_simu+dim_data+1]
+    h = h * channel_gain()[None, :, :, None, None] # x/y gain correction of the channels, see y_gain_J1/J2
     model = h + jnp.reshape(background, (h.shape[0],3,2))[:, :, :, None, None] # expected value per pixel
-    # noise model of each channel, var(v) = gain*(v + shift), see noise_model
+    # noise model of each channel, var(v) = gain*v + V, shift = V/gain, see noise_model
     gain = noise[:, 0, :, :, None, None]
     shift = noise[:, 1, :, :, None, None]
-    if loss2 == 'poisson':
-        # (v + shift)/gain follows a Poisson law: its likelihood, sum over the pixels of
-        # (mu - (d+shift) log(mu+shift)) / gain. Clipped to keep the log defined
-        loss = jnp.sum((model - (data+shift)*jnp.log(jnp.maximum(model+shift, 1e-3))) / gain)
-    else:
-        # least squares normalised by the variance of each pixel: sum over the pixels of (mu - d)^2 / var.
-        # var = gain*(d + shift) is estimated from the data, so it does not depend on the fitted parameters:
-        # the weights are fixed during the descent. Clipped at 1 to avoid dividing by ~0
-        variance = jnp.maximum(gain*(data + shift), 1.)
-        loss = jnp.sum(jnp.pow(model - data, 2) / variance)
+    loss = jnp.sum(pixel_loss(model, data, gain, shift)) # loss chosen by loss2
     delta_bound = limit(params['delta'], 180, 100, upper=True) + limit(params['delta'], 1, 100, upper=False)
     # N_photons >= 0 (as in SGD1): without it the fit can make the PSF negative to lower the model when the
     # background, fixed after SGD1, is too high. Slope 10 on the scaled parameter (N/nphotons_speed2): the penalty
@@ -187,6 +247,7 @@ def plot_results(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern
                     zernike_coefs_x=jnp.reshape(zernx, (3,15)), zernike_coefs_y=jnp.reshape(zerny, (3,15)),
                     second_plane=second_plane, polar_projections=polar_projections, lambd=lambd, f_tube=f_tube)
     h = np.array(PSF_jax(rho=params['rho'], eta=params['eta'], delta=params['delta']*delta_speed, M=Mj, N_photons=params['N_photons']*nphotons_speed2)[:,:,:,dim_simu-dim_data:dim_simu+dim_data+1,dim_simu-dim_data:dim_simu+dim_data+1])
+    h = np.array(h * channel_gain()[None, :, :, None, None]) # x/y gain correction of the channels, see y_gain_J1/J2
     data = np.array(data)
     
     rho = np.array(params['rho'])
@@ -223,22 +284,21 @@ def plot_results(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern
 def score_eval(M_, rho, eta, delta, N_photons, data, background, noise, dim_simu):
     dim_data = 6
     h = PSF_jax(rho=rho, eta=eta, delta=delta, M=M_, N_photons=N_photons)[:,:,:,dim_simu-dim_data:dim_simu+dim_data+1,dim_simu-dim_data:dim_simu+dim_data+1]
+    h = h * channel_gain()[None, :, :, None, None] # x/y gain correction of the channels, see y_gain_J1/J2
     # loss of SGD2 for each PSF, with the loss chosen by loss2 and the noise model of its channels
     # (same formulas as loss_angle_with_M, summed over the pixels of each PSF only)
     model = h + jnp.reshape(background, (h.shape[0],3,2))[:, :, :, None, None]
     gain = noise[:, 0, :, :, None, None]
     shift = noise[:, 1, :, :, None, None]
-    if loss2 == 'poisson':
-        score = jnp.sum((model - (data+shift)*jnp.log(jnp.maximum(model+shift, 1e-3))) / gain, axis=(1,2,3,4))
-    else:
-        score = jnp.sum(jnp.pow(model - data, 2) / jnp.maximum(gain*(data + shift), 1.), axis=(1,2,3,4))
-    # Poisson deviance with the same noise model, per pixel: 2 sum[(mu+shift) - (d+shift) + (d+shift) log((d+shift)/(mu+shift))]/gain
-    # divided by the number of pixels. Close to 1 when the model describes the data whatever the photon number and
-    # the background (unlike the score), larger where the model does not fit. A pixel with d+shift <= 0 has no log term
-    data_shift = data + shift
-    model_shift = jnp.maximum(model + shift, 1e-3)
-    log_term = jnp.where(data_shift > 0, data_shift*jnp.log(jnp.maximum(data_shift, 1e-3)/model_shift), 0.)
-    deviance = 2*jnp.sum((model_shift - data_shift + log_term) / gain, axis=(1,2,3,4)) / (data[0].size)
+    score = jnp.sum(pixel_loss(model, data, gain, shift), axis=(1,2,3,4))
+    # deviance of the shifted Poisson of the same noise model, per pixel: 2 sum[mu' - d' + d' log(d'/mu')]/gain with
+    # mu' = mu + shift, d' = d + shift, divided by the number of pixels. Close to 1 when the model describes the data
+    # whatever the photon number and the background (unlike the score), larger where the model does not fit. A pixel
+    # with d' <= 0 has no log term
+    data_s = data + shift
+    model_s = jnp.maximum(model + shift, 1e-3)
+    log_term = jnp.where(data_s > 0, data_s*jnp.log(jnp.maximum(data_s, 1e-3)/model_s), 0.)
+    deviance = 2*jnp.sum((model_s - data_s + log_term) / gain, axis=(1,2,3,4)) / (data[0].size)
     return score, deviance
 
 @functools.partial(jax.jit, static_argnames=['dim_simu'])
@@ -272,7 +332,7 @@ reloaded = ['QE', 'EM', 'sensitivity',
             'zernike_coefs_x', 'zernike_coefs_y', 'zern_x', 'zern_y',
             'LR1', 'num_epochs_max1', 'Nphotons_speed1', 'background_speed',
             'LR2', 'num_epochs_max2', 'delta_speed', 'nphotons_speed2', 'xy_speed2', 'z_speed2',
-            'zern_speed2_x', 'zern_speed2_y', 'zern_start_epoch2', 'fit_zernike', 'loss2',
+            'zern_speed2_x', 'zern_speed2_y', 'zern_start_epoch2', 'fit_zernike', 'loss2', 'huber_c', 'huber_positive_only', 'y_gain_J1', 'y_gain_J2', 'unitary_J',
             'Nframe', 'last_frame_processed', 'NPSF', 'n_photons_filtering', 'batch_nb', 'dimensions']
 
 def reload_config(config_file):
@@ -297,8 +357,26 @@ else:
     raise ValueError("No ending number found")
 interplane = jax.device_put(number/1000)
 print('Interplane: '+str(interplane)+'um')
-# camera baseline (ADU), from the raw files next to the reconstruction, used by the noise model
-baseline_adu = measure_baseline(path.parent)
+# acquisition settings from the metadata of the raw files: EM gain used for the conversion to photons (the value of the
+# parameter cell is kept if the metadata has none). sensitivity is not changed: the pre-amp label of the metadata
+# does not give it (see the parameter cell), a warning is printed if the readout differs from the one it was measured with
+camera_metadata = read_camera_metadata(path.parent)
+if 'em_gain' in camera_metadata:
+    EM = float(camera_metadata['em_gain'])
+    print('EM gain from the metadata: '+str(EM))
+else:
+    print('EM gain not in the metadata, value of the parameter cell kept: '+str(EM))
+for name, expected in SENSITIVITY_SETTINGS.items():
+    if name in camera_metadata and str(camera_metadata[name]) != expected:
+        print('WARNING: '+name+' = '+str(camera_metadata[name])+', sensitivity = '+str(sensitivity)+' was measured with '+expected+': check it')
+# variance without light of each channel of the reconstruction (ADU^2, read noise + clock induced charge of the dark
+# rows of the raw frames carried through the reconstruction), written by reconstruction_juliette.py
+if (path / 'dark_variance.txt').exists():
+    dark_variance_adu = np.loadtxt(path / 'dark_variance.txt').reshape(6)
+    print('Variance without light of the channels (ADU^2): '+str(np.round(dark_variance_adu, 1)))
+else:
+    dark_variance_adu = np.zeros(6)
+    print('No dark_variance.txt in the reconstruction folder: variance without light set to 0 (var = gain*v)')
 #%% defining useful variables
 
 lambda_emission = jax.device_put(620) # nm
@@ -329,10 +407,29 @@ J1 = np.array([[ 0.89097912+0.j        , -0.25009759-0.43946158j],
 J2 = np.array([[ 0.31676515+0.j        , -0.93297585-0.07330244j],
        [-0.58381747+0.74754063j, -0.26412184+0.23328625j]])
 
-rotation = 7
-rotation2 =  2
+# True: J1 and J2 replaced by their unitary part (polar decomposition J = U H, U = W Vh from the SVD J = W S Vh).
+# The fit of Calibration_polar2 leaves them ~3 % off unitary (diattenuation ~5 %, unpolarised light split
+# 1.050/0.950 behind J1 and 0.976/1.024 behind J2), while the reconstruction normalises the 6 channels with white
+# light, so that unpolarised light gives the same intensity in x and y. U keeps the retardance (rotation and
+# ellipticity of the polarisation) and removes the diattenuation. With it, y_gain_J1 = y_gain_J2 = 1
+unitary_J = True
+if unitary_J:
+    W, _, Vh = np.linalg.svd(J1); J1 = W @ Vh
+    W, _, Vh = np.linalg.svd(J2); J2 = W @ Vh
+
+rotation = 5
+rotation2 =  5
 J_dichroic = np.array([J1@rot(rotation), J2@rot(-rotation2), J1@rot(rotation)])
-rho_offset = -4
+rho_offset = -6.2
+# relative gain of the y polarisation channel in the model, for the planes behind J1 (planes 0 and 2) and behind
+# J2 (plane 1); 1 = no correction. The rho bias and the delta vs rho of a SLB bead (2026_02_02, rotation =
+# rotation2 = 5) vary with a 180 deg period, which rotation/rotation2 cannot produce (90 deg period) but an x/y
+# intensity ratio error can: the linearised fit of these curves gives the y channel of the data ~9 % brighter than
+# the model behind J1 and ~11 % dimmer behind J2 (estimate, to be checked on the bead)
+# with unitary_J = False, 1/(y/x of J) = 1.104 and 0.953 make unpolarised light even in x and y as after the
+# normalisation; 1.09 and 0.89 were fitted on the bias curves of the bead
+y_gain_J1 = 1.
+y_gain_J2 = 0.93
 
 # %% SGD PARANETERS TO DEFINE
 # the settings in photons (speeds of SGD1 and SGD2, starting N in load_batch, fiducial threshold in plot_results)
@@ -370,6 +467,12 @@ zern_start_epoch2 = 50 # the aberrations stay at zern_x/zern_y during the first 
 # -3000 on the SLB data of 2026_02_02 with a background of ~3 photons above the baseline). Fine for backgrounds
 # of tens of photons (cells). The Poisson likelihood has no such bias
 loss2 = 'poisson'
+# loss2 = 'huber': Poisson likelihood with the pull of each pixel capped beyond huber_c (in noise units, deviance
+# residual). huber_c = 2: pixels within 2 noise units (~98 % of the pixels of a well fitted PSF) are treated as with
+# 'poisson'; brighter pixels count no more than a pixel at 2. huber_positive_only: only the pixels brighter than the
+# model are capped (contamination always adds light)
+huber_c = 2.
+huber_positive_only = True
 
 # extraction parameters
 Nframe= 20 # nb of frame per batch of extraction
@@ -416,7 +519,7 @@ zern_y = jnp.zeros(3*15)
     0.000000, 0.000000, 0.000000, 0.000000, 0.185555, -0.316491, 0.000000, 0.000000, 0.000000, 0.000000, 0.281857, 0.000000, 0.000000, 0.000000, 0.000000,
     0.000000, 0.000000, 0.000000, 0.000000, 0.214820, -0.010762, 0.000000, 0.000000, 0.000000, 0.000000, 0.184550, 0.000000, 0.000000, 0.000000, 0.000000])
 '''
-#%%   #### OPTIONAL - reloading the parameters of a previous run instead of the cells above ####
+#%%   #### OPTIONAL - reloading the parameters of a previous run instead of the cells above ###########
 # run this cell only if you want to reproduce an old run: it overwrites the parameters
 # defined above with the ones stored in the config.txt of that run
 
@@ -473,7 +576,9 @@ config = {
     'QE': QE,
     'EM': EM,
     'sensitivity': sensitivity,
-    'baseline_adu': baseline_adu, # measured on the raw files, not reloaded
+    'dark_variance_adu': dark_variance_adu, # read from dark_variance.txt of the reconstruction, not reloaded
+    # acquisition settings from the metadata of the raw files, not reloaded
+    **{'metadata_'+k: str(v) for k, v in camera_metadata.items()},
     # microscope and planes
     'lambda_emission': lambda_emission,
     'middle_plane': middle_plane,
@@ -515,8 +620,13 @@ config = {
     'zern_speed2_x': zern_speed2_x,
     'zern_speed2_y': zern_speed2_y,
     'zern_start_epoch2': zern_start_epoch2,
+    'unitary_J': unitary_J, # J1 and J2 above are already the unitary ones when True
+    'y_gain_J1': y_gain_J1,
+    'y_gain_J2': y_gain_J2,
     'fit_zernike': fit_zernike,
     'loss2': loss2,
+    'huber_c': huber_c,
+    'huber_positive_only': huber_positive_only,
     # extraction
     'Nframe': Nframe,
     'last_frame_processed': last_frame_processed,
@@ -612,10 +722,10 @@ def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result, n_skip=0)
         #print(f'extract_positions: {time.time()-t0:.2f}s')
         # converting to photon count
         raw = raw*sensitivity/(QE*EM)
-        gain, shift, level = noise_model(raw, -baseline_adu*sensitivity/(QE*EM))
+        gain, shift, level = noise_model(raw, dark_variance_adu*(sensitivity/(QE*EM))**2)
         background = np.mean(level)
-        print('noise of frames '+str(last_frame_processed+1)+' to '+str(last_frame_processed+Nframe)+', var = gain*(value + shift), shift = -baseline')
-        print('  gain  '+str(np.round(gain, 2))+'\n  shift '+str(np.round(shift, 1))+'\n  background '+str(np.round(level, 1)))
+        print('noise of frames '+str(last_frame_processed+1)+' to '+str(last_frame_processed+Nframe)+', var = gain*value + V, shift = V/gain')
+        print('  gain  '+str(np.round(gain, 2))+'\n  shift '+str(np.round(shift, 2))+'\n  background '+str(np.round(level, 1)))
         L = raw.shape[2]*120
         W = raw.shape[3]*120
         # removing all the PSF where a parameter is evaluated to nan in Louise pipeline
@@ -713,7 +823,7 @@ if not fit_zernike: # no aberration in SGD2, applied here so that it also holds 
 
 # working buffers of the extraction, empty at the start of a launch (new or resumed run)
 raw = np.zeros((Nframe,6,dimensions[0],dimensions[1]))
-buffer = (np.array([]), np.array([]), np.array([]), np.empty((0, 3, 3, 2))) # x, y, frame, noise of each PSF
+buffer = (np.array([]), np.array([]), np.array([]), np.empty((0, 3, 3, 2))) # x, y, frame, noise (gain, shift, level) of each PSF
 psf_buffer = np.empty((0, 3, 2, 13, 13))  # adjust shape to match your PSF dimensions
 first_loop_of_the_launch = True
 print('Starting at batch '+str(first_batch)+' after frame '+str(last_frame_processed)+', saving in '+str(save_folder))
@@ -912,10 +1022,14 @@ for batch in range(first_batch, batch_nb):
     y_found = np.array(y_found)
     
     # the following manipulation is needed for consistency of the parametrization 
-    # of the angles, because they are let free to be optimized without bound
-    mask = (rho_found>180)
-    eta_found[mask] = (180-eta_found[mask])%180
-    rho_found = rho_found%180
+    # of the angles, because they are let free to be optimized without bound.
+    # (rho, eta) and (rho + 180, 180 - eta) are the same orientation: rho (offset included) is brought back to
+    # [0, 180[ and eta is flipped once for each half turn removed. Done after rho_offset, so that a rho moved
+    # below 0 or above 180 by the offset is folded with its eta (with mask = rho > 180 before the fold, the rho
+    # in [0, -rho_offset[ and [180, 180 - rho_offset[ were moved by 180 without flipping eta)
+    half_turns = np.floor(rho_found/180)
+    eta_found = np.where(half_turns % 2 == 1, (180 - eta_found) % 180, eta_found)
+    rho_found = rho_found - 180*half_turns
     
     correction_dft = 0.9952298
     
