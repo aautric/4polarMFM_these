@@ -135,18 +135,31 @@ def refine_centers(img, points, window=3):
         refined.append([x_refined, y_refined])
     return np.array(refined)
 
+def fit_bead(img, x0, y0, half=7, s_max=6.):
+    ''' gaussian fit of one bead in a (2 half + 1)^2 window around (x0, y0) (column, row); returns A, x, y, s, c or
+    None (window out of the image or no convergence). Only the pixels of the bead: the other beads of the image do not
+    enter the fit (the former fit used the whole image with one gaussian) '''
+    xi, yi = int(round(x0)), int(round(y0))
+    sub = img[yi-half:yi+half+1, xi-half:xi+half+1]
+    if sub.shape != (2*half+1, 2*half+1):
+        return None
+    yy, xx = np.mgrid[yi-half:yi+half+1, xi-half:xi+half+1]
+    try:
+        p, _ = curve_fit(gauss2d, (xx.ravel(), yy.ravel()), sub.ravel(),
+                         p0=(sub.max() - np.median(sub), x0, y0, 1.5, np.median(sub)),
+                         bounds=([0, x0-4, y0-4, 0.6, -np.inf], [np.inf, x0+4, y0+4, s_max, np.inf]), maxfev=4000)
+        return p
+    except (RuntimeError, ValueError):
+        return None
+
 def fit_one_image(img, points, n=512, m=512):
-    X, Y = np.meshgrid(np.arange(n), np.arange(m))  # n x m grids
-    xdata = np.vstack((X.ravel(), Y.ravel()))  # shape (2, 262144)
-    zdata = img.ravel()
-    offset_estime = np.percentile(img, 5)  # min sur l'image sauf 0
-    p_list = []
+    ''' gaussian fit of the beads around points (column, row), each in its own window (fit_bead); returns (n_beads, 5)
+    A, x, y, s, c, nan for a bead that cannot be fitted '''
     points = refine_centers(img, points)
+    p_list = []
     for i in range(len(points)):
-        p, pcov = curve_fit(gauss2d, xdata, zdata, p0=(200, points[i,0], points[i,1], 2,  offset_estime),
-                            bounds=([0, -np.inf, -np.inf,  1, -np.inf],  # min
-                                    [ np.inf,  np.inf,  np.inf, 5,  np.inf]))# max 
-        p_list.append(p)
+        p = fit_bead(img, points[i, 0], points[i, 1])
+        p_list.append(p if p is not None else np.full(5, np.nan))
     return np.array(p_list)
 
 def mean_intensity_per_z_moy(zstack, coord, taille=7):
@@ -370,7 +383,7 @@ def load_calibration(cwd):
     )
     cal = np.load(save_path, allow_pickle=True)
     X, Y, vecteurs, normalisation, deltaz = cal["X"], cal["Y"], cal["vecteurs"].tolist(), cal["normalisation"], cal["deltaz"]
-    n = len(cal.files) - 5
+    n = len([k for k in cal.files if k.startswith('M_')])
     deformation = [cal[f"M_{i}"] for i in range(n)]
     return deformation, X, Y, vecteurs, normalisation, deltaz
 
@@ -395,7 +408,11 @@ def beads_location(X, Y, vecteurs, data_beads):
     P_list = [fit_one_image(canal, coord_beads_approx, n, m) for canal in canaux]
 
     coord_beads_loc = [np.array(p_list[:,1:3].astype(np.float64)) for p_list in P_list]
-    return coord_beads_loc, nb_billes
+    ok = np.all([np.all(np.isfinite(c), axis=1) for c in coord_beads_loc], axis=0) # beads fitted in the 6 channels
+    if not ok.all():
+        print(f'{int((~ok).sum())} bead(s) not fitted in all the channels, left out')
+    coord_beads_loc = [c[ok] for c in coord_beads_loc]
+    return coord_beads_loc, int(ok.sum())
 
 
 def measure_baseline(frames):
@@ -439,6 +456,136 @@ def find_normalization(data_lamp, X, Y, vecteurs, margin=10):
     normalization_coeff = norm/norm.mean()
     print('normalisation (white lamp):', np.round(normalization_coeff, 4))
     return normalization_coeff
+
+def middle_focus_frame(data_beads, X, Y, vecteurs, coord_beads_loc):
+    ''' frame of the z-stack where the middle plane (canals 1 and 4) is in focus: maximum of the mean intensity of the
+    beads (7 x 7 squares), parabola on the 3 points around it '''
+    canaux = [subcanals(f, X, Y, vecteurs) for f in data_beads]
+    I = np.array([np.mean([c[1][int(y)-3:int(y)+4, int(x)-3:int(x)+4].mean() for x, y in coord_beads_loc[1]]) +
+                  np.mean([c[4][int(y)-3:int(y)+4, int(x)-3:int(x)+4].mean() for x, y in coord_beads_loc[4]]) for c in canaux])
+    i = int(np.argmax(I))
+    if 0 < i < len(I) - 1:
+        den = I[i-1] - 2*I[i] + I[i+1]
+        return i + (0.5*(I[i-1] - I[i+1])/den if den != 0 else 0.)
+    return float(i)
+
+def beads_location_same_z(data_beads, X, Y, vecteurs, coord_beads_loc, n_avg=3):
+    ''' positions of the beads in the 6 channels on the mean of n_avg frames around the focus of the middle plane, i.e.
+    at the same stage z for all the planes (outer planes defocused by -+ the interplane, as for a single molecule).
+    coord_beads_loc: positions from the maximum projection (starting points). Returns a list of 6 arrays (n_beads, 2) '''
+    f = int(round(middle_focus_frame(data_beads, X, Y, vecteurs, coord_beads_loc)))
+    img = np.mean(data_beads[max(0, f - n_avg//2):f + n_avg//2 + 1], axis=0)
+    canaux = subcanals(img, X, Y, vecteurs)
+    out = []
+    for i in range(6):
+        p = [fit_bead(canaux[i], x, y) for x, y in coord_beads_loc[i]]
+        out.append(np.array([q[1:3] if q is not None else [np.nan, np.nan] for q in p]))
+    print(f'bead positions at the same stage z: frame {f} (focus of the middle plane)')
+    return out
+
+def measure_registration_z(calibration_file, bead_files, dz_step=100., bin_nm=100., min_beads=5, save=True):
+    ''' residual registration of the 6 channels vs the stage z, after the reconstruction with calibration_file.
+    Each frame of the bead z-stacks (bead_files, z step dz_step nm) is reconstructed (subcanals + warps of the
+    calibration), the isolated beads are fitted in each channel at each z, and the offset of each channel relative to
+    channel 1 is measured at the SAME stage z (the drift of the stage cancels). It depends on z when the outer planes
+    move sideways with defocus, which a 2D warp cannot correct and which the fit reads as a tilt of the dipole.
+    Saves registration_z.npz next to the calibration (used by SGD_jax.py, parameter registration_z):
+        dz        (nz,)       stage z relative to the focus of the middle plane (nm)
+        offset    (6, nz, 2)  offset of each channel relative to channel 1, image (column, row), nm (median over beads)
+        n_beads   (6, nz)     number of beads of each median
+        focus_dz  (3,)        stage z of the focus of each plane of the reconstruction (canals 0/3, 1/4, 2/5), nm
+    and registration_z.png (offsets vs z). Returns the dict of the saved arrays '''
+    cal = np.load(calibration_file, allow_pickle=True)
+    X, Y, vec = cal['X'], cal['Y'], cal['vecteurs'].tolist()
+    M = [cal[f'M_{i}'] for i in range(len([k for k in cal.files if k.startswith('M_')]))]
+    rows = [] # bead, z (nm, relative to the focus of the middle plane), canal, x, y (px), A
+    focus = []
+    n_bead = 0
+    for f in bead_files:
+        raw = extract_raw_ome(f).astype(np.float32)
+        raw -= measure_baseline(raw)
+        rec = []
+        for frame in raw:
+            ch = subcanals(frame, X, Y, vec)
+            rec.append([cv2.warpPerspective(ch[i], M[i], ch[i].shape[:2][::-1], flags=cv2.INTER_CUBIC) for i in range(6)])
+        rec = np.array(rec) # z, canal, rows, cols
+        mp = rec[:, 1].max(0)
+        peaks = (mp == ndimage.maximum_filter(mp, 9)) & (mp > np.percentile(mp, 99.5))
+        by, bx = np.where(peaks)
+        keep = (bx > 12) & (bx < mp.shape[1] - 12) & (by > 12) & (by < mp.shape[0] - 12)
+        bx, by = bx[keep], by[keep]
+        iso = [i for i in range(len(bx)) if np.min(np.hypot(np.delete(bx, i) - bx[i], np.delete(by, i) - by[i]), initial=99) > 12]
+        for b in iso:
+            fits = np.full((len(rec), 6, 3), np.nan) # x, y, A
+            for z in range(len(rec)):
+                for i in range(6):
+                    p = fit_bead(rec[z, i], bx[b], by[b])
+                    if p is not None:
+                        fits[z, i] = p[1], p[2], p[0]
+            # focus of each plane: maximum of the intensity of the bead in its two canals (7 x 7 square minus the
+            # median of a 15 x 15 square), smoothed over z (the fitted amplitude is noisy for defocused beads), parabola
+            def bead_intensity(c):
+                x0, y0 = int(bx[b]), int(by[b])
+                return np.array([rec[z, c, y0-3:y0+4, x0-3:x0+4].sum() - 49*np.median(rec[z, c, y0-7:y0+8, x0-7:x0+8])
+                                 for z in range(len(rec))])
+            fz = []
+            for c1, c2 in ((0, 3), (1, 4), (2, 5)):
+                a = gaussian_filter1d(bead_intensity(c1) + bead_intensity(c2), 1.5); i = int(np.argmax(a))
+                if 0 < i < len(a) - 1:
+                    den = a[i-1] - 2*a[i] + a[i+1]; i = i + (0.5*(a[i-1] - a[i+1])/den if den != 0 else 0.)
+                fz.append(i*dz_step)
+            focus.append(np.array(fz) - fz[1])
+            for z in range(len(rec)):
+                for i in range(6):
+                    rows.append((n_bead, z*dz_step - fz[1], i, *(fits[z, i, :2] - fits[z, 1, :2])))
+            n_bead += 1
+        print(f'{f}: {len(rec)} z steps, {len(iso)} isolated beads')
+    rows = np.array(rows)
+    dz = np.arange(-np.floor(800/bin_nm)*bin_nm, 800 + bin_nm/2, bin_nm)
+    offset = np.full((6, len(dz), 2), np.nan); n_beads = np.zeros((6, len(dz)), int)
+    for i in range(6):
+        for j, z0 in enumerate(dz):
+            m = (rows[:, 2] == i) & (np.abs(rows[:, 1] - z0) <= bin_nm/2) & np.all(np.isfinite(rows[:, 3:5]), axis=1)
+            beads = np.unique(rows[m, 0])
+            per = np.array([np.mean(rows[m & (rows[:, 0] == b)][:, 3:5], axis=0) for b in beads]).reshape(-1, 2)*120
+            n_beads[i, j] = len(per)
+            if len(per) >= min_beads:
+                offset[i, j] = np.median(per, axis=0)
+    for i in range(6): # ends with too few beads: nearest measured value
+        for a in range(2):
+            v = offset[i, :, a]; ok = np.isfinite(v)
+            if ok.any():
+                offset[i, :, a] = np.interp(dz, dz[ok], v[ok])
+    result = dict(dz=dz, offset=offset, n_beads=n_beads, focus_dz=np.median(np.array(focus), axis=0), beads=rows)
+    if save:
+        folder = Path(calibration_file).parent
+        np.savez(folder / 'registration_z.npz', **result)
+        plot_registration_z(result, folder / 'registration_z.png')
+        print(f'focus of the planes (stage z, nm): {np.round(result["focus_dz"])}; saved in {folder / "registration_z.npz"}')
+    return result
+
+def plot_registration_z(reg, out_file):
+    ''' offsets of the channels relative to channel 1 vs the stage z: beads (points) and median (line), one panel per
+    plane and per direction '''
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    fig = Figure(figsize=(14, 7)); FigureCanvasAgg(fig)
+    rows, dz, off = reg['beads'], reg['dz'], reg['offset']
+    for col, (plane, canals) in enumerate(((0, (0, 3)), (1, (4,)), (2, (2, 5)))):
+        for r, (a, lab) in enumerate(((0, 'column (x)'), (1, 'row (y)'))):
+            ax = fig.add_subplot(2, 3, 1 + col + 3*r)
+            for c, color in zip(canals, ('C0', 'C3')):
+                m = rows[:, 2] == c
+                ax.scatter(rows[m, 1], rows[m, 3 + a]*120, s=2, color=color, alpha=0.25)
+                ax.plot(dz, off[c, :, a], color=color, lw=2.5, label=f'channel {c}')
+            for fz in reg['focus_dz']:
+                ax.axvline(fz, color='0.6', ls=':', lw=1)
+            ax.axhline(0, color='k', lw=0.6)
+            ax.set_xlim(dz[0], dz[-1]); ax.set_ylim(-80, 80); ax.grid(alpha=0.3)
+            ax.set_xlabel('stage z relative to the focus of the middle plane (nm)'); ax.set_ylabel(f'offset, {lab} (nm)')
+            ax.set_title(f'plane {plane} (reconstruction), relative to channel 1', fontsize=10); ax.legend(fontsize=8)
+    fig.suptitle('Residual registration after the reconstruction vs z (dotted: focus of the 3 planes)')
+    fig.tight_layout(); fig.savefig(out_file, dpi=110)
 
 def check_calib(cwd):
     deformation, X, Y, vecteurs, normalisation, deltaz = load_calibration(cwd)
@@ -549,12 +696,27 @@ def calibration(cwd):
     
         # concaténer les billes de tous les fichiers, canal par canal
         # coord_par_canal[i] = array (N_total, 2) de toutes les billes du canal i
+        # positions of the beads at the SAME stage z in the 6 channels: the frames around the focus of the middle plane.
+        # The former positions (maximum projection of the z-stack) were taken at the focus of each plane, i.e. at stage
+        # z 360 nm apart: they included the lateral motion of the outer planes with defocus and the drift of the stage,
+        # which do not exist in a single molecule image (the 3 planes see the emitter at the same moment)
+        all_locs = [beads_location_same_z(data, X, Y, vecteurs, loc) for data, loc in zip(data_beads, all_locs)]
         coord_par_canal = [np.concatenate([all_locs[f][i] for f in range(len(fichiers))], axis=0)
             for i in range(6)]
+        ok = np.all([np.all(np.isfinite(c), axis=1) for c in coord_par_canal], axis=0) # beads fitted in all channels
+        coord_par_canal = [c[ok] for c in coord_par_canal]
         normalisation = find_normalization(data_lamp, X, Y, vecteurs)
-        deformation = [cv2.findHomography(coord_par_canal[i], coord_par_canal[1], method=0)[0]
-                           for i in range(6)]
+        # robust fit (RANSAC, 1 px): a badly fitted bead does not distort the homography
+        deformation = []
+        for i in range(6):
+            H, inliers = cv2.findHomography(coord_par_canal[i], coord_par_canal[1], method=cv2.RANSAC, ransacReprojThreshold=1.)
+            deformation.append(H)
+            moved = cv2.perspectiveTransform(coord_par_canal[i][None].astype(np.float64), H)[0]
+            res = np.linalg.norm(moved - coord_par_canal[1], axis=1)*120
+            print(f'canal {i}: {int(inliers.sum())}/{len(inliers)} beads kept, residual median {np.median(res):.1f} nm, max {res.max():.1f} nm')
         save_calibration(deformation, X, Y, vecteurs, normalisation, deltaz, fichiers)
+        # residual registration vs z, to be corrected in the model of SGD_jax.py (registration_z)
+        measure_registration_z(str(Path(fichiers[0]).parents[4] / 'calibration.npz'), fichiers)
         return deltaz
     
 def reconstruction(cwd):

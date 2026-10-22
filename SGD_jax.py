@@ -161,7 +161,8 @@ def limit(x, lim, slope, upper=True):
 def loss_pos(params, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, noise, dim_simu, d_):
     Mj = compute_M_jax(xp=params['xp'], yp=params['yp'], zp=params['zp'], d=d_, x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2
                     , Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, phase_maskx=phase_mask, phase_masky=phase_mask, zernike_base=zernike_base, zernike_coefs_x=zernike_coefs_x, zernike_coefs_y=zernike_coefs_y
-                    , second_plane=second_plane, polar_projections=polar_projections, lambd=lambd, f_tube=f_tube)
+                    , second_plane=second_plane, polar_projections=polar_projections, lambd=lambd, f_tube=f_tube,
+                    plane_shift=plane_shift_of_z(params['zp']))
     dim_data = 6
     dim_simu = int(dim_simu)
     h = PSF_jax(rho=rho, eta=eta, delta=delta, M=Mj, N_photons=params['N_photons']*Nphotons_speed1)[:,:,:,dim_simu-dim_data:dim_simu+dim_data+1,dim_simu-dim_data:dim_simu+dim_data+1]
@@ -220,7 +221,8 @@ def loss_angle_with_M(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2,
     Mj = compute_M_jax(xp=params['x']*xy_speed2, yp=params['y']*xy_speed2, zp=params['z']*z_speed2, d=d_, x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2,
                    Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, phase_maskx=phase_mask, phase_masky=phase_mask, zernike_base=zernike_base,
                    zernike_coefs_x=jnp.reshape(zernx + zern_offset_x, (3,15)), zernike_coefs_y=jnp.reshape(zerny + zern_offset_y, (3,15)),
-                   second_plane=second_plane, polar_projections=polar_projections, lambd=lambd, f_tube=f_tube)
+                   second_plane=second_plane, polar_projections=polar_projections, lambd=lambd, f_tube=f_tube,
+                   plane_shift=plane_shift_of_z(params['z']*z_speed2))
 
     h = PSF_jax(rho=params['rho'], eta=params['eta'], delta=params['delta']*delta_speed, M=Mj, N_photons=params['N_photons']*nphotons_speed2)[:,:,:,dim_simu-dim_data:dim_simu+dim_data+1,dim_simu-dim_data:dim_simu+dim_data+1]
     h = h * channel_gain()[None, :, :, None, None] # x/y gain correction of the channels, see y_gain_J1/J2
@@ -245,7 +247,8 @@ def plot_results(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern
     Mj = compute_M_jax(xp=params['x']*xy_speed2, yp=params['y']*xy_speed2, zp=params['z']*z_speed2, d=d_, x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2,
                     Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, phase_maskx=phase_mask, phase_masky=phase_mask, zernike_base=zernike_base, 
                     zernike_coefs_x=jnp.reshape(zernx, (3,15)), zernike_coefs_y=jnp.reshape(zerny, (3,15)),
-                    second_plane=second_plane, polar_projections=polar_projections, lambd=lambd, f_tube=f_tube)
+                    second_plane=second_plane, polar_projections=polar_projections, lambd=lambd, f_tube=f_tube,
+                    plane_shift=plane_shift_of_z(params['z']*z_speed2))
     h = np.array(PSF_jax(rho=params['rho'], eta=params['eta'], delta=params['delta']*delta_speed, M=Mj, N_photons=params['N_photons']*nphotons_speed2)[:,:,:,dim_simu-dim_data:dim_simu+dim_data+1,dim_simu-dim_data:dim_simu+dim_data+1])
     h = np.array(h * channel_gain()[None, :, :, None, None]) # x/y gain correction of the channels, see y_gain_J1/J2
     data = np.array(data)
@@ -307,7 +310,7 @@ def eval_batch(x_found, y_found, z_found, zernx, zerny, rho_found, eta_found, de
                       Ex0=Ex0, Ex1=Ex1, Ex2=Ex2, Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, 
                       zernike_base=zernike_base, zernike_coefs_x=zernx, zernike_coefs_y=zerny,
                       second_plane=second_plane, polar_projections=polar_projections, 
-                      lambd=lambd, f_tube=f_tube)
+                      lambd=lambd, f_tube=f_tube, plane_shift=plane_shift_of_z(z_found))
     return score_eval(M, rho_found, eta_found, delta_found, N_found2, noisy_psf, background, noise, dim_simu)
 def parse_config(config_path):
     cfg = {}
@@ -332,7 +335,7 @@ reloaded = ['QE', 'EM', 'sensitivity',
             'zernike_coefs_x', 'zernike_coefs_y', 'zern_x', 'zern_y',
             'LR1', 'num_epochs_max1', 'Nphotons_speed1', 'background_speed',
             'LR2', 'num_epochs_max2', 'delta_speed', 'nphotons_speed2', 'xy_speed2', 'z_speed2',
-            'zern_speed2_x', 'zern_speed2_y', 'zern_start_epoch2', 'fit_zernike', 'loss2', 'huber_c', 'huber_positive_only', 'y_gain_J1', 'y_gain_J2', 'unitary_J',
+            'zern_speed2_x', 'zern_speed2_y', 'zern_start_epoch2', 'fit_zernike', 'loss2', 'huber_c', 'huber_positive_only', 'y_gain_J1', 'y_gain_J2', 'unitary_J', 'registration_z',
             'Nframe', 'last_frame_processed', 'NPSF', 'n_photons_filtering', 'batch_nb', 'dimensions']
 
 def reload_config(config_file):
@@ -500,6 +503,14 @@ MAG=jax.device_put(jnp.array(200/150))
 
 SAF = True
 
+# residual registration of the 3 planes vs the z of the emitter: registration_z.npz written by measure_registration_z
+# of reconstruction_juliette.py (bead z-stacks reconstructed with the calibration of the data, offset of each channel
+# vs the stage z). The image of each plane of the model is shifted laterally by the offset measured at the z of the
+# emitter (see plane_shift_of_z in the gradient descent cell). The 2D warps of the reconstruction cannot correct it: it
+# depends on z. With the actin2 calibration the outer planes move by 35-70 nm per um of z, which the fit reads as a
+# tilt of the dipole (eta biased by up to ~3 deg). None: no correction, the same position in the 3 planes
+registration_z = None
+
 # aberrations, 0 everywhere means a perfect system. zernike_coefs_x/y are used by the
 # first SGD, zern_x/zern_y by the second one (starting point of the aberration fit), in rad
 zernike_coefs_x = jnp.zeros((3,15)).astype(jnp.complex64)
@@ -600,6 +611,7 @@ config = {
     'f_tube': f_tube,
     'MAG': MAG,
     'SAF': SAF,
+    'registration_z': str(registration_z), # file of the residual registration of the planes vs z, None: no correction
     # aberrations
     'zernike_coefs_x': zernike_coefs_x,
     'zernike_coefs_y': zernike_coefs_y,
@@ -704,6 +716,48 @@ Mtest = compute_M_jax(xp=x_start, yp=y_start, zp=z_exp, d=d_, x=xx, y=yy, th1=th
               , polar_projections=polar_projections, lambd=lambd, f_tube=f_tube)
 htest = PSF_jax(rho=rho_start, eta=eta_start, delta=delta_start, M=Mtest, N_photons=Nstart_test).astype(jnp.float32)
 dim_simu = int(htest.shape[-1]//2)
+
+# residual registration of the planes vs z (registration_z, see the parameter cell). The file gives, for the 6
+# channels of the reconstruction, the offset relative to channel 1 (image (col, row), nm) vs the stage z relative to
+# the focus of the middle plane (dz, nm), and the stage z of the focus of each plane (focus_dz). Conversion to the model:
+# - emitter z: linear relation between the stage z of the focus of each plane (beads) and the z of the emitter at which
+#   the same plane of the model is in focus (sharpest PSF of an isotropic emitter)
+# - the planes are reversed (plane 0 of the model = plane 2 of the reconstruction, as the data patches); channel 0
+#   (Mx) of a plane = its canal of the top row of the camera (canals 0-2), channel 1 (My) = bottom row (canals 3-5);
+#   (x, y) of the fit = (col, -row) of the image. The two channels of a plane are corrected separately: they move
+#   together with z but differ by ~10 nm, and with their mean only the eta bias went from 2.3 to 1.8 deg rms (simulation)
+plane_shift_of_z = lambda z: None
+if registration_z not in (None, 'None', ''):
+    reg = np.load(registration_z)
+    z_scan = jnp.linspace(0.05, 1.5, NPSF).astype(jnp.float32)
+    M_scan = compute_M_jax(xp=x_start, yp=y_start, zp=z_scan, d=d_, x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2,
+                           Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, zernike_base=zernike_base, zernike_coefs_x=zernike_coefs_x,
+                           zernike_coefs_y=zernike_coefs_y, second_plane=second_plane, polar_projections=polar_projections,
+                           lambd=lambd, f_tube=f_tube)
+    h_scan = np.array(PSF_jax(rho=jnp.zeros(NPSF), eta=jnp.zeros(NPSF), delta=jnp.full(NPSF, 180.), M=M_scan,
+                              N_photons=jnp.full(NPSF, 1e4)))[:, :, :, dim_simu-6:dim_simu+7, dim_simu-6:dim_simu+7]
+    sharpness = h_scan.sum(2).max(axis=(-2, -1))/h_scan.sum(axis=(2, 3, 4)) # (z, plane of the model)
+    z_focus_model = np.array(z_scan)[np.argmax(sharpness, axis=0)]           # um, planes of the model
+    stage_focus = np.asarray(reg['focus_dz'], float)[::-1]                     # nm, planes of the model
+    slope, intercept = np.polyfit(stage_focus, z_focus_model, 1)               # z_emitter = intercept + slope*dz
+    z_grid = intercept + slope*np.asarray(reg['dz'], float)
+    order = np.argsort(z_grid)
+    offset = np.asarray(reg['offset'], float)                                  # (6 channels, nz, (col, row)) nm
+    canal = [[2 - P + 3*c for c in (0, 1)] for P in range(3)]                     # (plane of the model, channel)
+    reg_sx = np.array([[offset[canal[P][c], order, 0] for c in (0, 1)] for P in range(3)])/1000  # (3, 2, nz) um
+    reg_sy = np.array([[-offset[canal[P][c], order, 1] for c in (0, 1)] for P in range(3)])/1000
+    reg_z = jnp.array(z_grid[order]); reg_sx, reg_sy = jnp.array(reg_sx), jnp.array(reg_sy)
+    def plane_shift_of_z(z):
+        # lateral offset (um) of the image of each plane and channel at the z (um) of each emitter: (N_psf, 3, 2) x 2
+        sx = jnp.stack([jnp.stack([jnp.interp(z, reg_z, reg_sx[k, c]) for c in (0, 1)], -1) for k in range(3)], 1)
+        sy = jnp.stack([jnp.stack([jnp.interp(z, reg_z, reg_sy[k, c]) for c in (0, 1)], -1) for k in range(3)], 1)
+        return sx, sy
+    print('Residual registration of the planes vs z from '+str(registration_z)+': model planes in focus at z = '
+          +str(np.round(z_focus_model, 3))+' um, z_emitter = '+f'{intercept:.3f} + {slope*1000:.3f}*dz_stage (um)')
+    for P in range(3):
+        for c in (0, 1):
+            print(f'   plane {P} channel {c}: offset (x, y) nm at z = ' + ', '.join(f'{zz:.2f}: ({1000*np.interp(zz, z_grid[order], reg_sx[P, c]):+.0f}, '
+                  f'{1000*np.interp(zz, z_grid[order], reg_sy[P, c]):+.0f})' for zz in (0.3, 0.45, 0.6, 0.75, 0.9)))
 
 
 def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result, n_skip=0):

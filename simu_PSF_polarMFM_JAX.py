@@ -317,10 +317,14 @@ def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u
                   zernike_base=None, zernike_coefs_x=None, zernike_coefs_y=None, 
                   phase_maskx=None, phase_masky=None, lambd=617, f_tube=200,
               second_plane=jnp.array([0.35, 0, -0.35]), polar_projections=jnp.array([0., 45., 0.]), BFP_version=False, 
-              SAF=False, cos_th2=None):
+              SAF=False, cos_th2=None, plane_shift=None):
     """
     JAX version of compute_M for multiple PSFs and multiple planes, fully JIT-compatible.
     Returns u, v coordinates and M matrix of shape (N_psf, K_plane, 2, 3, 3, N_pix, N_pix)
+    plane_shift: None, or (shift_x, shift_y), each (N_psf, K_plane, 2) in um: lateral offset of the image of each
+    plane and polarisation channel, added to xp, yp in the lateral phase of that channel (residual registration of the
+    channels, which depends on the z of the emitter, see registration_z in SGD_jax.py); (N_psf, K_plane): the same
+    offset for the two channels of a plane. None: the same position in all the channels
     """
     print("Compiling compute_M_jax")
     #jax.debug.print("z: {}", zp)    
@@ -328,15 +332,24 @@ def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u
     lambd = 10**(-3)*lambd # conversion nm to micrometers
     f_tube = f_tube*1000 # tube length focal. everything is in micrometers
     # --- Phase for all planes (vectorized with vmap) ---
-    def phase_per_plane(dp):
+    def phase_per_plane(dp, sx, sy):
         return jnp.exp(1j * (
             psi_f_jit(th1, d + dp, lambd) +
             psi_z_jit(th1, zp, lambd, cos_th2) +
-            psi_lat_jit(xp, yp, th1, phi, lambd)
+            psi_lat_jit(xp + sx, yp + sy, th1, phi, lambd)
         ))#
     
-    # dim 3, N, Npix, Npix
-    phase = jax.vmap(phase_per_plane)(jnp.array(second_plane))  # 3 planes
+    # dim 3, N, Npix, Npix: one phase per plane, or per plane and channel with plane_shift (channel 0: Mx, 1: My)
+    if plane_shift is None:
+        zero = jnp.zeros((len(second_plane), xp.shape[0]))
+        phase = jax.vmap(phase_per_plane)(jnp.array(second_plane), zero, zero)  # 3 planes
+        phase_ch = (phase, phase)
+    else:
+        sxs, sys_ = plane_shift
+        if sxs.ndim == 2: # the same offset for the two channels of a plane
+            sxs, sys_ = jnp.stack([sxs, sxs], -1), jnp.stack([sys_, sys_], -1)
+        phase_ch = tuple(jax.vmap(phase_per_plane)(jnp.array(second_plane), sxs[:, :, c].T, sys_[:, :, c].T) for c in (0, 1))
+        phase = phase_ch[0]
 
     # --- Zernike masks --- dim 15, Npix, Npix
     '''aberrations computations'''
@@ -348,8 +361,8 @@ def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u
         zernike_mask_y = jnp.ones((Ex0.shape[-1], Ex0.shape[-1]))
     
     # --- total phase mask --- dim N, 3, uv for each polar
-    total_phase_x = jnp.einsum('pnuv, puv -> npuv', phase, zernike_mask_x)
-    total_phase_y = jnp.einsum('pnuv, puv -> npuv', phase, zernike_mask_y)
+    total_phase_x = jnp.einsum('pnuv, puv -> npuv', phase_ch[0], zernike_mask_x)
+    total_phase_y = jnp.einsum('pnuv, puv -> npuv', phase_ch[1], zernike_mask_y)
     if phase_maskx is not None:
         total_phase_x = jnp.einsum('npuv, puv -> npuv', total_phase_x, phase_maskx)
         total_phase_y = jnp.einsum('npuv, puv -> npuv', total_phase_y, phase_masky)
