@@ -160,7 +160,7 @@ else:
 
 # %% TO BE MODIFIED
 # threshold on fit_quality: deviance per pixel (~1 for a good fit), or the final loss for files without deviance
-quality_thresh = 1.6 if deviance is not None else 1500
+quality_thresh = 1.5 if deviance is not None else 1500
 mask1 = (fit_quality<quality_thresh) & (delta<150) & (delta>50) & (N_photons>50) & (N_photons<10000) & (z<1800) & (z>0) #& (eta>30) & (eta<150)
 #mask1 = (delta<150) & (delta>60)
 #%% mask selection
@@ -186,6 +186,120 @@ def onselect(verts):
 lasso = LassoSelector(ax, onselect)
 plt.show()
 
+
+#%% drift correction by cross-correlation (no fiducial), localisations of mask
+# redundant cross-correlation (RCC): the localisations of mask are cut in blocks of segment_frames frames, each block
+# rendered as an image (pixel rcc_pixel nm, counts clipped at 1 per pixel so that a few clusters do not dominate,
+# gaussian blur of rcc_blur px); the shift between two blocks is the peak of their cross-correlation (sub-pixel:
+# parabola through the 3 points around the maximum), and the drift of each block is the least squares solution of
+# d_j - d_i = shift_ij (d = 0 for the first block). In two steps, because far apart blocks have different molecules and
+# the peak can jump to another filament:
+# 1. pairs of blocks at most n_near apart, peak searched within max_drift nm -> first drift
+# 2. all the pairs, peak searched within refine_window nm around the shift predicted by the first drift; pairs with a
+#    residual above rcc_reject nm removed and solved again.
+# The drift is interpolated linearly between the centres of the blocks. Uncertainty: the same on two random halves of
+# the localisations, rms of their difference / 2 (each half has half the localisations: error of the whole ~ diff / 2).
+# More localisations per block (longer blocks, larger mask) give a more precise drift: on actin1 (whole field, 2000
+# frames, ~16000 localisations per block) ~9 nm, the two halves diverging slowly over the acquisition (up to ~40 nm)
+# xcorr, ycorr: drift for each frame number (index = frame), for the cell "drif correction : applying the correction"
+# (skip the cell "drift correction computation with no fiducial")
+from scipy.fft import rfft2, irfft2
+from scipy.ndimage import gaussian_filter
+segment_frames = 2000 # frames per block: more frames, more localisations per image (precise shift), less time resolution
+rcc_pixel = 20.       # nm
+rcc_blur = 1.         # px, gaussian blur of the images (~ localisation precision)
+max_drift = 1000.     # nm, maximum shift searched between two blocks at most n_near apart
+n_near = 3            # step 1: pairs of blocks at most n_near apart
+refine_window = 100.  # nm, step 2: half width of the search around the predicted shift
+rcc_reject = 30.      # nm, pairs with a residual above this value are left out
+rcc_check = True      # uncertainty from two random halves of the localisations (3 times longer)
+
+def rcc_drift(xs_, ys_, fs_, f_first, f_last):
+    # drift (nm) of the blocks of frames [f_first, f_last], at their centres; localisations xs_, ys_ of frames fs_
+    edges_f = np.arange(f_first, f_last + segment_frames, segment_frames)
+    n_seg = len(edges_f) - 1
+    pad = max_drift + 4*rcc_pixel # the image is padded so that a shift of max_drift does not wrap around
+    ex = np.arange(xs_.min() - pad, xs_.max() + pad + rcc_pixel, rcc_pixel)
+    ey = np.arange(ys_.min() - pad, ys_.max() + pad + rcc_pixel, rcc_pixel)
+    shape_img = (len(ex) - 1, len(ey) - 1)
+    ffts, centres, counts_seg = [], [], []
+    for k in range(n_seg):
+        s_ = (fs_ >= edges_f[k]) & (fs_ < edges_f[k+1])
+        img = gaussian_filter(np.minimum(np.histogram2d(xs_[s_], ys_[s_], bins=(ex, ey))[0], 1.), rcc_blur).astype(np.float32)
+        ffts.append(rfft2(img - img.mean()))
+        centres.append(np.mean(fs_[s_]) if s_.any() else (edges_f[k] + edges_f[k+1])/2)
+        counts_seg.append(s_.sum())
+    centres, counts_seg = np.array(centres), np.array(counts_seg)
+
+    def peak_shift(fa, fb, centre_nm=(0., 0.), half_nm=max_drift):
+        # shift (nm) of block b relative to block a, b(r) = a(r - shift), searched within half_nm of centre_nm
+        c = np.fft.fftshift(irfft2(np.conj(fa)*fb, s=shape_img))
+        m_px = int(half_nm/rcc_pixel)
+        ox, oy = int(round(centre_nm[0]/rcc_pixel)), int(round(centre_nm[1]/rcc_pixel))
+        cx, cy = shape_img[0]//2 + ox, shape_img[1]//2 + oy
+        win = c[cx-m_px:cx+m_px+1, cy-m_px:cy+m_px+1]
+        i, j = np.unravel_index(np.argmax(win), win.shape)
+        def sub(a, b, c_): # vertex of the parabola through 3 points
+            den = a - 2*b + c_
+            return 0. if den == 0 else 0.5*(a - c_)/den
+        di = sub(win[i-1, j], win[i, j], win[i+1, j]) if 0 < i < win.shape[0]-1 else 0.
+        dj = sub(win[i, j-1], win[i, j], win[i, j+1]) if 0 < j < win.shape[1]-1 else 0.
+        return (ox + i + di - m_px)*rcc_pixel, (oy + j + dj - m_px)*rcc_pixel
+
+    def solve(pairs, shifts):
+        # least squares with d = 0 for the first block, solved again without the pairs of residual > rcc_reject
+        keep = np.ones(len(pairs), dtype=bool)
+        for _ in range(2):
+            A = np.zeros((keep.sum(), n_seg))
+            A[np.arange(keep.sum()), pairs[keep, 1]] = 1; A[np.arange(keep.sum()), pairs[keep, 0]] = -1
+            d = np.vstack(([0., 0.], np.linalg.lstsq(A[:, 1:], shifts[keep], rcond=None)[0]))
+            resid = np.hypot(*(d[pairs[:, 1]] - d[pairs[:, 0]] - shifts).T)
+            keep = resid < rcc_reject
+        return d, keep, resid
+
+    valid = counts_seg > 0
+    pairs = np.array([(a, b) for a in range(n_seg) for b in range(a+1, min(a+n_near+1, n_seg)) if valid[a] and valid[b]])
+    d_seg, _, _ = solve(pairs, np.array([peak_shift(ffts[a], ffts[b]) for a, b in pairs]))
+    pairs = np.array([(a, b) for a in range(n_seg) for b in range(a+1, n_seg) if valid[a] and valid[b]])
+    shifts = np.array([peak_shift(ffts[a], ffts[b], d_seg[b] - d_seg[a], refine_window) for a, b in pairs])
+    d_seg, keep, resid = solve(pairs, shifts)
+    return d_seg, centres, counts_seg, keep, resid
+
+sel_rcc = mask if np.any(mask) else mask1
+xs_, ys_, fs_ = x[sel_rcc], y[sel_rcc], frame[sel_rcc]
+f_first, f_last = int(fs_.min()), int(fs_.max())
+frames_all = np.arange(int(np.max(frame)) + 1)
+def drift_curves(d_seg, centres):
+    # drift for each frame, 0 on the first frame of the selection
+    cx_ = np.interp(frames_all, centres, d_seg[:, 0]); cy_ = np.interp(frames_all, centres, d_seg[:, 1])
+    return cx_ - cx_[f_first], cy_ - cy_[f_first]
+
+d_seg, centres, counts_seg, keep, resid = rcc_drift(xs_, ys_, fs_, f_first, f_last)
+xcorr, ycorr = drift_curves(d_seg, centres)
+correct_z = False
+print(f'{len(centres)} blocks of {segment_frames} frames ({np.median(counts_seg):.0f} localisations per block, median), '
+      f'{keep.sum()}/{len(keep)} pairs kept, residual of the kept pairs {np.median(resid[keep]):.1f} nm (median); '
+      f'drift range x {np.ptp(xcorr[f_first:f_last+1]):.0f} nm, y {np.ptp(ycorr[f_first:f_last+1]):.0f} nm')
+if np.median(counts_seg) < 8000:
+    print('WARNING: less than 8000 localisations per block, the drift may be noisy: longer blocks (segment_frames) or a larger mask')
+
+fig, ax = plt.subplots(1, 2, figsize=(12, 4))
+in_sel = slice(f_first, f_last + 1)
+if rcc_check:
+    half_ = np.random.default_rng(0).random(len(xs_)) < 0.5
+    curves_h = [drift_curves(*rcc_drift(xs_[h], ys_[h], fs_[h], f_first, f_last)[:2]) for h in (half_, ~half_)]
+    err_x = np.std(curves_h[0][0][in_sel] - curves_h[1][0][in_sel])/2
+    err_y = np.std(curves_h[0][1][in_sel] - curves_h[1][1][in_sel])/2
+    print(f'uncertainty (two halves of the localisations): x {err_x:.1f} nm, y {err_y:.1f} nm')
+for k, (a_, curve, lab) in enumerate(((ax[0], xcorr, 'x'), (ax[1], ycorr, 'y'))):
+    if rcc_check:
+        for h, c_ in enumerate(curves_h):
+            a_.plot(frames_all[in_sel], c_[k][in_sel], lw=0.8, alpha=0.6, label=f'half {"AB"[h]}')
+    a_.plot(frames_all[in_sel], curve[in_sel], 'k-', lw=1.5, label='all')
+    a_.plot(centres, d_seg[:, k] - np.interp(f_first, centres, d_seg[:, k]), 'ko', ms=4)
+    a_.set_xlabel('frame'); a_.set_ylabel(f'drift {lab} (nm)'); a_.grid(alpha=0.4); a_.legend(fontsize=9)
+plt.tight_layout()
+plt.show()
 #%% drift correction computation with no fiducial
 def mean_x_per_20_frames(x, frame, window=20):
 
@@ -318,12 +432,23 @@ for ind, frame_ in tqdm(enumerate(frame)):
 # 2. the same molecule on several frames: tracking frame by frame, each localisation is attached to the closest track
 #    whose last point is closer than link_xy in xy and link_z in z, at most max_gap missing frames before (one to one,
 #    closest pairs first). Each track of 2 points or more is merged into its last point; its std give the precision
-# link_z: about 3*sqrt(2)*(precision in z); 60 nm for actin, ~130 nm for SLB (z less precise at low photon numbers)
+# thresholds from the distances between localisations of actin1 (10-15) and actin2 (10-10), after the filters on the
+# deviance, delta, N and z:
+# - same frame: the duplicates are within 10 nm for most of them (actin1), up to ~50 nm for actin2; two distinct
+#   emitters closer than ~200 nm are not detected separately, so nothing real is lost below 50 nm
+# - consecutive frames: distance between the two positions of the same molecule, std sqrt(2)*(precision per axis):
+#   half of the maximum at ~12 nm (actin1) and ~23 nm (actin2), above the background of the other molecules up to
+#   ~60 nm (actin1) and ~100 nm (actin2). With 60 nm, wrong links (other molecules) are < 0.3 % of the links
+# - z: |dz| between consecutive frames of the same molecule, 95th percentile 52 nm (actin1) and 77 nm (actin2),
+#   99th 90 and 125 nm, ~3*sqrt(2)*(precision in z); also used for the duplicates of the same frame
+# conservative values below (few wrong links and merges, the tail of the less precise molecules is cut: precision
+# slightly underestimated); 50 / 60 / 100 nm keep this tail (actin1: lateral 10.0 nm instead of 8.4 with 30 / 60)
+# distances: in the plane sqrt(dx^2 + dy^2) (not x and y separately), and |dz| separately
 from scipy.spatial import cKDTree
-link_xy = 30.        # nm
-link_z = 100.         # nm
+link_xy = 40.        # nm, the same molecule on consecutive frames
+link_z = 70.         # nm, consecutive frames and duplicates of the same frame; ~130 nm for SLB (fewer photons)
 max_gap = 1          # number of missing frames allowed inside a track (0: consecutive frames only)
-same_frame_xy = 30.  # nm, duplicates in the same frame
+same_frame_xy = 20.  # nm, duplicates in the same frame (the same PSF fitted twice)
 
 def circular_mean_180(angles):
     # mean of angles defined modulo 180 deg (rho, eta): 178 and 2 give 0, not 90
@@ -421,16 +546,20 @@ def link_localizations(x, y, z, rho, eta, delta, N_photons, score, frame, devian
             np.array(meanx), np.array(meany), np.array(meanz), np.array(meanrho), np.array(meaneta), np.array(meandelta), np.array(meanN), np.array(meanscore), np.array(nlink))
 
 x, y, z, rho, eta, delta, N_photons, score, frame, stdx, stdy, stdz, stdrho, stdeta, stddelta, meanx, meany, meanz, meanrho, meaneta, meandelta, meanN, meanscore, nlink = link_localizations(x, y, z, rho, eta, delta, N_photons, score, frame, deviance=deviance)
-#%% std x, z, rho, eta, delta
+#%% std x, y, lateral, z, rho, eta, delta
 # precision: std of the localisations linked over consecutive frames (same molecule). The mean and median of the
 # per-molecule std underestimate the precision (molecules seen on 2-3 frames only); the pooled std
-# sqrt(sum((n-1) s^2) / sum(n-1)) uses all the frames of all the molecules and is unbiased (sensitive to wrong links)
+# sqrt(sum((n-1) s^2) / sum(n-1)) uses all the frames of all the molecules and is unbiased (sensitive to wrong links).
+# lateral precision: per axis, sqrt((std x^2 + std y^2)/2) for each molecule; the radial one (distance in xy to the mean
+# position) is sqrt(2) times larger
 if len(stdx) == 0 or len(nlink) != len(stdx):
     raise ValueError(str(len(stdx))+' linked molecules ('+str(len(nlink))+' in nlink): load the csv again and run '
                      'the "correction doublons" cell once (a second linking on already linked data finds almost nothing)')
-fig, ax = plt.subplots(2, 3, figsize=(15, 8))
+stdlat = np.sqrt((stdx**2 + stdy**2)/2)
+fig, ax = plt.subplots(2, 4, figsize=(20, 8))
 summary = []
-for a, values, label, unit in [(ax[0,0], stdx, 'std x', 'nm'), (ax[0,1], stdz, 'std z', 'nm'),
+for a, values, label, unit in [(ax[0,0], stdx, 'std x', 'nm'), (ax[0,1], stdy, 'std y', 'nm'),
+                               (ax[0,2], stdlat, 'std lateral', 'nm'), (ax[0,3], stdz, 'std z', 'nm'),
                                (ax[1,0], stdrho, 'std $\\rho$', 'deg'), (ax[1,1], stdeta, 'std $\\eta$', 'deg'),
                                (ax[1,2], stddelta, 'std $\\delta$', 'deg')]:
     mean_v, median_v = np.nanmean(values), np.nanmedian(values)
@@ -449,14 +578,14 @@ print(f'{len(stdx)} molecules seen on more than one frame (median {np.median(nli
 print(f"{'':16s} {'pooled':>8s} {'mean':>8s} {'median':>8s}")
 for name, unit, pooled_v, mean_v, median_v in summary:
     print(f'{name+" ("+unit+")":16s} {pooled_v:8.2f} {mean_v:8.2f} {median_v:8.2f}')
-ax[0,2].axis('off')
-ax[0,2].text(0, 0.95, f'{len(stdx)} molecules on > 1 frame\n\n{"":16s}{"pooled":>7s}{"mean":>7s}{"median":>7s}\n'
+ax[1,3].axis('off')
+ax[1,3].text(0, 0.95, f'{len(stdx)} molecules on > 1 frame\n\n{"":16s}{"pooled":>7s}{"mean":>7s}{"median":>7s}\n'
              + '\n'.join(f'{name+" ("+unit+")":16s}{pooled_v:7.1f}{mean_v:7.1f}{median_v:7.1f}' for name, unit, pooled_v, mean_v, median_v in summary),
              va='top', family='monospace', fontsize=11)
 plt.tight_layout()
 plt.show()
 #%% select new filter
-mask1 = (fit_quality<quality_thresh) & (z<800) & (z>300) & (delta<150) &  (delta>50) & (N_photons>50) & (N_photons<10000)
+mask1 = (fit_quality<quality_thresh) & (z<800) & (z>200) & (delta<150) &  (delta>50) & (N_photons>50) & (N_photons<10000)
 #%% select mask
 %matplotlib qt
 plt.rcParams['figure.figsize'] = [10,10]
@@ -480,8 +609,9 @@ def onselect(verts):
 
 lasso = LassoSelector(ax, onselect)
 plt.show()
+
 #%% SIZE OF THE SCATTER POINTS
-s = 0.05
+s = 0.01
 #%% plot of the localisations, white on black, no colour coding
 plt.rcParams.update({'font.size': 15})
 fig, ax = plt.subplots(figsize=(6, 6))
@@ -544,6 +674,101 @@ plt.tight_layout()
 plt.show()
 
 
+#%% animation (avi): widefield -> single molecules (white on black) -> rho colour coded, rotating wipes
+# The three images are drawn on the same grid, in the coordinates of the fit (x = col*0.12 um, y = -row*0.12 um of the
+# reconstructed frames). Each transition is a radius turning around the centre of the image that uncovers the new
+# image; it stops one wedge before the full turn, so that a wedge of the old image remains, at the top of the image,
+# centred: widefield just left of the vertical, then single molecules just right of it (the widefield wedge is kept)
+import cv2
+import tifffile
+wf_folder = '/mnt/d/Amaury/DATA/2026_09_23_test_marquage_RPE1_2/BSA1_triton_1h/wf/Calib_Polar_2026-09-23/images/RAW_DATA/reconstruction'
+wf_dx, wf_dy = 0., 0.         # shift of the widefield image (um), if it is not aligned with the localisations
+fps_anim = 20
+t_hold, t_wipe, t_pause, t_end = 2., 4., 2., 3. # durations (s)
+wedge = 25.                   # angle of the wedge of the old image that remains (deg)
+px_anim = 720                 # width of the video (pixels)
+s_anim = 2*s                  # size of the points of the single molecule images (s of the scatter cell, doubled)
+scalebar_um = 1.              # scale bar at the lower left corner (um)
+scalebar_up = 1.              # height of the scale bar above the lower margin of the field (um)
+
+wf_files = sorted([f for f in os.listdir(wf_folder) if f[:-4].isdigit() and f.endswith('.tif')], key=lambda f: int(f[:-4]))
+wf = np.sum([tifffile.imread(os.path.join(wf_folder, f)).astype(float).sum(0) for f in wf_files], axis=0) # frames and channels
+H_wf, W_wf = wf.shape
+extent_xy = (wf_dx, wf_dx + W_wf*0.12, wf_dy - H_wf*0.12, wf_dy) # left, right, bottom, top in um (fit coordinates)
+fig_w, fig_h = 6., 6.*H_wf/W_wf
+dpi_anim = px_anim/fig_w
+
+def render(draw):
+    # RGB image (H, W, 3) of what draw(ax) draws, on the field of the widefield, black background, no axes
+    fig_r = plt.figure(figsize=(fig_w, fig_h), dpi=dpi_anim, facecolor='black')
+    ax_r = fig_r.add_axes([0, 0, 1, 1]); ax_r.set_facecolor('black'); ax_r.set_axis_off()
+    draw(ax_r)
+    ax_r.set_xlim(extent_xy[0], extent_xy[1]); ax_r.set_ylim(extent_xy[2], extent_xy[3])
+    # scale bar, the same on the three images so that it stays in place during the wipes
+    margin = 0.04*(extent_xy[1] - extent_xy[0])
+    x0_sb, y0_sb = extent_xy[0] + margin, extent_xy[2] + margin + scalebar_up
+    ax_r.plot([x0_sb, x0_sb + scalebar_um], [y0_sb, y0_sb], color='white', lw=3, solid_capstyle='butt')
+    ax_r.text(x0_sb, y0_sb + 0.3*margin, f'{scalebar_um*1000:.0f} nm' if scalebar_um < 1 else f'{scalebar_um:g} $\\mu$m',
+              color='white', ha='left', va='bottom', fontsize=11) # left aligned with the bar: the bar is short next to the field (~1 % of its width)
+    fig_r.canvas.draw()
+    img = np.asarray(fig_r.canvas.buffer_rgba())[..., :3].copy()
+    plt.close(fig_r)
+    return img
+
+img_wf = render(lambda a: a.imshow(wf, cmap='gray', extent=extent_xy, origin='upper',
+                                   vmin=np.percentile(wf, 1), vmax=np.percentile(wf, 99.7)))
+img_sm = render(lambda a: a.scatter(x[mask]/1000, y[mask]/1000, color='white', s=s_anim, rasterized=True))
+img_rho = render(lambda a: a.scatter(x[mask]/1000, y[mask]/1000, c=rho[mask]/180, cmap='hsv', vmin=0, vmax=1, s=s_anim, rasterized=True))
+h_px, w_px = img_wf.shape[:2]
+h_px, w_px = h_px - h_px % 2, w_px - w_px % 2 # even size for the codec
+img_wf, img_sm, img_rho = img_wf[:h_px, :w_px], img_sm[:h_px, :w_px], img_rho[:h_px, :w_px]
+
+# angle of each pixel around the centre (deg, counterclockwise, 0 = right; image rows go down)
+yy_a, xx_a = np.mgrid[0:h_px, 0:w_px]
+cy, cx = h_px/2, w_px/2
+theta_px = np.degrees(np.arctan2(-(yy_a - cy), xx_a - cx)) % 360
+dir_wf = 90 + wedge/2   # direction of the widefield wedge that remains: just left of the vertical (top, centred)
+dir_sm = 90 - wedge/2   # single molecule wedge: just right of the vertical
+
+def wipe_mask(progress, direction):
+    # pixels already uncovered: the sweep starts just after the wedge kept around direction, turns counterclockwise
+    start = (direction + wedge/2) % 360
+    swept = progress*(360 - wedge)
+    return ((theta_px - start) % 360) < swept, (start + swept) % 360
+
+def with_line(frame, angle):
+    # white radius at the front of the sweep
+    a = np.radians(angle); r = np.hypot(cx, cy)
+    cv2.line(frame, (int(cx), int(cy)), (int(cx + r*np.cos(a)), int(cy - r*np.sin(a))), (255, 255, 255), 2, cv2.LINE_AA)
+    return frame
+
+ease = lambda u: (1 - np.cos(np.pi*u))/2
+frames_anim = []
+frames_anim += [img_wf]*int(t_hold*fps_anim)
+for u in np.linspace(0, 1, int(t_wipe*fps_anim)):                    # widefield -> single molecules
+    m, front = wipe_mask(ease(u), dir_wf)
+    frames_anim.append(with_line(np.where(m[..., None], img_sm, img_wf).copy(), front))
+keep_wf = ~wipe_mask(1., dir_wf)[0]                                # widefield wedge kept to the end
+after_1 = np.where(keep_wf[..., None], img_wf, img_sm)
+frames_anim += [after_1]*int(t_pause*fps_anim)
+for u in np.linspace(0, 1, int(t_wipe*fps_anim)):                    # single molecules -> rho
+    m, front = wipe_mask(ease(u), dir_sm)
+    m &= ~keep_wf
+    frames_anim.append(with_line(np.where(m[..., None], img_rho, after_1).copy(), front))
+final = np.where(keep_wf[..., None], img_wf, np.where(wipe_mask(1., dir_sm)[0][..., None], img_rho, img_sm))
+frames_anim += [final]*int(t_end*fps_anim)
+
+out_avi = os.path.join(os.path.dirname(path), 'animation_widefield_sm_rho.avi')
+writer_avi = cv2.VideoWriter(out_avi, cv2.VideoWriter_fourcc(*'MJPG'), fps_anim, (w_px, h_px))
+if not writer_avi.isOpened(): # e.g. the file is open in a video player (locked on Windows): OpenCV would write nothing
+    raise IOError(f'cannot write {out_avi}: close it if it is open in a player, then run the cell again')
+for fr_ in frames_anim:
+    writer_avi.write(cv2.cvtColor(np.ascontiguousarray(fr_), cv2.COLOR_RGB2BGR))
+writer_avi.release()
+print(f'{len(frames_anim)} frames ({len(frames_anim)/fps_anim:.1f} s) written in {out_avi}')
+plt.figure(figsize=(5, 5*h_px/w_px)); plt.imshow(final); plt.axis('off'); plt.title('last frame'); plt.show()
+
+
 #%% plot z
 %matplotlib qt
 plt.rcParams['figure.figsize'] = [7, 5]
@@ -560,6 +785,28 @@ plt.axis('equal')
 #plt.ylim((2200, 14000))
 ax.set_xlabel('x ($\\mu$m)')
 ax.set_ylabel('y ($\\mu$m)')
+plt.show()
+
+#%% histogram of z (mask)
+# each bar coloured by the rho of its localisations (axial mean, hsv as in the plot rho cell)
+z_bin = 20. # nm
+ok_z = np.isfinite(z[mask]) & np.isfinite(rho[mask])
+z_m, rho_zm = z[mask][ok_z], rho[mask][ok_z]
+plt.rcParams.update({'font.size': 15})
+fig, ax = plt.subplots(figsize=(7, 4))
+counts_z, edges_z, bars_z = ax.hist(z_m/1000, bins=np.arange(z_m.min(), z_m.max() + z_bin, z_bin)/1000)
+bin_z = np.clip(np.digitize(z_m/1000, edges_z) - 1, 0, len(bars_z) - 1)
+for k, b_ in enumerate(bars_z):
+    r_ = np.deg2rad(rho_zm[bin_z == k])
+    if len(r_):
+        b_.set_facecolor(plt.cm.hsv((np.rad2deg(np.arctan2(np.sum(np.sin(2*r_)), np.sum(np.cos(2*r_))))/2 % 180)/180))
+sm_rho = plt.cm.ScalarMappable(cmap='hsv', norm=plt.Normalize(0, 180))
+cbar = plt.colorbar(sm_rho, ax=ax, ticks=[0, 45, 90, 135, 180])
+cbar.set_label('$\\rho$ (°), mean of the bin')
+ax.set_xlabel('$z$ ($\\mu$m)')
+ax.set_ylabel('Occurences')
+ax.set_title(f'{len(z_m)} localisations, std {np.std(z_m):.0f} nm', fontsize=13)
+plt.tight_layout()
 plt.show()
 
 #%% Plot delta
@@ -626,60 +873,13 @@ plt.show()
 hls_colors = sns.color_palette("hls", 256)
 cmap = mcolors.ListedColormap(hls_colors)
 #%% plot eta
-plt.rcParams['figure.figsize'] = [8, 4]
+plt.rcParams['figure.figsize'] = [16, 8]
 plt.rcParams.update({'font.size': 15})
 fig, ax = plt.subplots(1,2)
 ax[0].set_facecolor('black')
 sc = ax[0].scatter(x[mask]/1000, y[mask]/1000,
                  c=eta[mask] / 180.0,
                  cmap=cmap, s=s, vmin=30/180, vmax=150/180, rasterized=True)
-# radial colorbar inset
-cax2 = fig.add_axes([0.35, 0.63, 0.16, 0.16], projection='polar')
-
-theta = np.linspace(np.deg2rad(30), np.deg2rad(150), 512)
-r = np.array([0.8, 1.0])
-
-Theta, R = np.meshgrid(theta, r)
-C = np.tile(np.linspace(30, 150, theta.size), (2, 1))
-cax2.set_facecolor('black')
-cax2.pcolormesh(
-    Theta,
-    R,
-    C,
-    cmap=cmap,
-    vmin=30,
-    vmax=150,
-    shading='auto',
-    edgecolors='none'
-)
-
-# orientation
-cax2.set_theta_zero_location('N')   # 0° at top
-cax2.set_theta_direction(-1)        # clockwise
-cax2.set_facecolor('white')
-cax2.spines['polar'].set_color('black')
-cax2.tick_params(axis='x', colors='black')
-cax2.tick_params(axis='y', colors='black')
-cax2.yaxis.label.set_color('black')
-# ticks
-ticks = np.arange(30, 151, 30)
-cax2.set_thetagrids(ticks, labels=[f'{t}°' for t in ticks])
-
-# cosmetics
-cax2.set_rticks([])
-cax2.grid(False)
-cax2.spines['polar'].set_visible(False)
-
-# label
-cax2.text(
-    np.deg2rad(90),
-    0.4,
-    r'$\eta$ (°)',
-    ha='center',
-    va='center',
-    fontsize=14, color='black'
-)
-
 ax[0].set_aspect('equal')
 ax[0].set_xlabel('x ($\\mu$m)')
 ax[0].set_ylabel('y ($\\mu$m)')
@@ -714,7 +914,7 @@ ax1 = fig.add_subplot(1, 2, 2, projection='polar')
 # White angular tick labels
 for label in ax1.get_xticklabels():
     label.set_color('black')
-hls_colors_bar = [cmap(c / np.pi) for c in centers_folded]
+hls_colors_bar = cmap(norm(np.rad2deg(centers_folded))) # same colours as the scatter (30-150, clipped)
 # White radial tick labels
 for label in ax1.get_yticklabels():
     label.set_color('black')
@@ -744,10 +944,21 @@ for label in ax1.get_yticklabels():
 # show only 0–360 but symmetric meaning is enforced
 ax1.set_thetagrids(
     np.arange(0, 360, 60),
-    labels=[f"{d}°" for d in np.arange(0, 360, 60)]
+    labels=[f"{d % 180}°" for d in np.arange(0, 360, 60)] # eta and eta + 180 are the same: labels modulo 180
 )
 
 ax1.set_ylabel("Count", labelpad=25)
+
+# colour scale of eta as the outer border of the histogram, as in the plot rho cell (eta and eta + 180 have the same
+# colour, below 30 and above 150 the colours of 30 and 150 as in the scatter)
+r_max = counts.max()*1.05
+ring = np.linspace(0, 2*np.pi, 1024)
+ax1.pcolormesh(*np.meshgrid(ring, [r_max, r_max*1.08]), np.tile(np.rad2deg(ring) % 180, (2, 1)),
+               cmap=cmap, norm=norm, shading='auto')
+ax1.set_ylim(0, r_max*1.08)
+ax1.set_rticks(np.round(np.linspace(0, counts.max(), 4)[1:], -int(np.floor(np.log10(counts.max()))) + 1)) # 3 count ticks, inside the border
+ax1.spines['polar'].set_visible(False)
+ax1.set_title(r'$\eta$')
 plt.show()
 
 #%% plot eta 2
@@ -955,6 +1166,56 @@ ax[1].set_ylim(-10, 10)
 ax[1].set_xlim(0, 180)
 ax[1].set_xticks(np.linspace(0, 180, 7), ['0', '30', '60', '90', '120', '150', '180'])
 ax[1].grid()
+plt.show()
+
+#%% harmonics of the rho bias and of delta vs rho_theory (bead): which calibration error
+# Delta rho(rho) and delta(rho) fitted with c0 + a2 cos 2rho + b2 sin 2rho + a4 cos 4rho + b4 sin 4rho (least squares,
+# |Delta rho| > 40 deg left out as in the boxes, uncertainties by bootstrap over the localisations). Signatures:
+#   constant term of Delta rho ............ common rotation (rho_offset)
+#   180 deg period (2 rho) of Delta rho ... x/y balance (normalisation, y gain): sin 2rho behind J1 (planes 0, 2),
+#                                            cos 2rho behind J2 (plane 1); in delta the other one (cos / sin)
+#   90 deg period (4 rho) ................. relative rotation of the J1 and J2 paths (rotation, rotation2) and/or a
+#                                            different contrast in J1 and J2 (depolarisation of plane 1)
+def harmonics(theta_deg, values, n_boot=300, seed=0):
+    t = np.deg2rad(theta_deg)
+    A = np.column_stack([np.ones_like(t), np.cos(2*t), np.sin(2*t), np.cos(4*t), np.sin(4*t)])
+    coef = np.linalg.lstsq(A, values, rcond=None)[0]
+    rng_h = np.random.default_rng(seed)
+    boot = np.array([np.linalg.lstsq(A[i], values[i], rcond=None)[0]
+                     for i in (rng_h.integers(0, len(t), len(t)) for _ in range(n_boot))])
+    return coef, boot.std(axis=0), A
+
+dr = (rho[new_zoom] - rho_th + 90) % 180 - 90
+keep_h = np.abs(dr) < 40
+harm = {'Delta rho': harmonics(rho_th[keep_h], dr[keep_h]),
+        'delta': harmonics(rho_th, delta[new_zoom])}
+names_h = ['constant', 'cos 2rho', 'sin 2rho', 'cos 4rho', 'sin 4rho']
+for name, (coef, err, _) in harm.items():
+    print(f'{name} vs rho_theory ({len(_)} localisations):')
+    for n_, c_, e_ in zip(names_h, coef, err):
+        print(f'   {n_:9s} {c_:+6.2f} +/- {e_:4.2f} deg' + ('   *' if abs(c_) > 2*e_ and n_ != 'constant' else ''))
+    for period, (ia, ib) in (('180 deg period (2 rho)', (1, 2)), ('90 deg period (4 rho)', (3, 4))):
+        amp = np.hypot(coef[ia], coef[ib]); n_harm = 2 if ia == 1 else 4
+        phase = np.rad2deg(np.arctan2(coef[ib], coef[ia]))/n_harm % (360/n_harm) # a cos(n rho) + b sin(n rho) maximum
+        print(f'   {period}: amplitude {amp:.2f} deg, maximum at rho = {phase:.0f} deg (+ k*{360//n_harm})')
+print('* : coefficient larger than twice its uncertainty')
+
+fig, ax = plt.subplots(2, 1, figsize=(8, 6), sharex=True, constrained_layout=True)
+th_fine = np.linspace(0, 180, 361)
+A_fine = np.column_stack([np.ones_like(th_fine), np.cos(np.deg2rad(2*th_fine)), np.sin(np.deg2rad(2*th_fine)),
+                          np.cos(np.deg2rad(4*th_fine)), np.sin(np.deg2rad(4*th_fine))])
+for a_, (name, theta_h, vals_h) in zip(ax, (('Delta rho', rho_th[keep_h], dr[keep_h]), ('delta', rho_th, delta[new_zoom]))):
+    coef = harm[name][0]
+    centres_h = np.arange(2.5, 180, 5)
+    med_h = [np.median(vals_h[np.abs(theta_h - c_) < 2.5]) if np.any(np.abs(theta_h - c_) < 2.5) else np.nan for c_ in centres_h]
+    a_.plot(centres_h, med_h, 'ko', ms=4, label='median per 5 deg')
+    a_.plot(th_fine, A_fine @ coef, 'r-', lw=2, label='fit (all terms)')
+    a_.plot(th_fine, coef[0] + A_fine[:, 1:3] @ coef[1:3], 'C0--', label='constant + 180 deg period')
+    a_.plot(th_fine, coef[0] + A_fine[:, 3:5] @ coef[3:5], 'C2--', label='constant + 90 deg period')
+    a_.set_ylabel(('$\\Delta\\rho$' if name == 'Delta rho' else '$\\delta$') + ' ($^\\circ$)'); a_.grid(alpha=0.4)
+ax[0].axhline(0, color='k', lw=0.8); ax[0].legend(fontsize=9, ncol=2)
+ax[1].set_xlabel(r'$\rho_{\mathrm{theory}}$ ($^\circ$)'); ax[1].set_xlim(0, 180)
+ax[1].set_xticks(np.linspace(0, 180, 7))
 plt.show()
 
 #%% check of the bead center: delta rho vs the full azimuth phi (0-360)
@@ -1409,9 +1670,187 @@ ax1.set_thetagrids(np.arange(0, 360, 60), labels=[f"{d}°" for d in np.arange(0,
 ax1.set_ylabel("Count", labelpad=25)
 
 plt.show()
-#%%
-############ interactive plots ######################
+#%% rho of the filament vs a threshold on the deviance, interactive (inside mask)
+# polar histogram of rho of the localisations of mask with a deviance below the threshold of the slider, with the rho
+# of the PCA axis (fixed, cell above) and the median / mean rho of the selection; right: precision (robust std of
+# rho - rho_PCA), consistency (median of rho - rho_PCA) and % of localisations kept vs the threshold.
+# mask_dev keeps the current selection for the next cells
+%matplotlib qt
+dev_in = fit_quality[mask]
+d_rho_all = wrap90(rho[mask] - rho_pca)
+thr_values = np.linspace(np.nanpercentile(dev_in, 1), np.nanpercentile(dev_in, 99.5), 60)
+def rho_stats(sel):
+    d = d_rho_all[sel]
+    return np.median(d), 1.4826*np.median(np.abs(d - np.median(d))), sel.mean()*100
+curves = np.array([rho_stats(dev_in < t) if np.sum(dev_in < t) > 10 else (np.nan,)*3 for t in thr_values])
 
+fig = plt.figure(figsize=(12, 6))
+ax_p = fig.add_subplot(1, 2, 1, projection='polar')
+ax_c = fig.add_subplot(1, 2, 2)
+fig.subplots_adjust(bottom=0.2, wspace=0.35)
+ax_slider = fig.add_axes([0.2, 0.06, 0.6, 0.04])
+
+# polar histogram (fixed bins, heights updated by the slider)
+edges_p = np.linspace(0, 2*np.pi, 201)
+centers_p = (edges_p[:-1] + edges_p[1:])/2
+bars_p = ax_p.bar(centers_p, np.zeros(len(centers_p)), width=edges_p[1] - edges_p[0], bottom=0,
+                  color=plt.cm.hsv((centers_p % np.pi)/np.pi), edgecolor='none', alpha=0.95)
+for a_ in (np.deg2rad(rho_pca), np.deg2rad(rho_pca) + np.pi):
+    ax_p.axvline(a_, color='red', lw=2, label='PCA' if a_ < np.pi else None)
+line_med = [ax_p.axvline(0, color='k', lw=2, label='$\\rho$ median'), ax_p.axvline(0, color='k', lw=2)]
+line_mean = [ax_p.axvline(0, color='k', lw=2, ls='--', label='$\\rho$ mean'), ax_p.axvline(0, color='k', lw=2, ls='--')]
+ax_p.set_theta_zero_location('E'); ax_p.set_theta_direction(1)
+ax_p.set_thetagrids(np.arange(0, 360, 60), labels=[f"{d}°" for d in np.arange(0, 360, 60)])
+ax_p.legend(loc='upper left', bbox_to_anchor=(-0.25, 1.15), fontsize=9)
+
+# curves vs the threshold
+ax_c.plot(thr_values, curves[:, 1], 'C0-', label='precision: robust std of $\\rho - \\rho_{PCA}$ (°)')
+ax_c.plot(thr_values, curves[:, 0], 'C1-', label='consistency: median of $\\rho - \\rho_{PCA}$ (°)')
+ax_c2 = ax_c.twinx()
+ax_c2.plot(thr_values, curves[:, 2], 'C2--', label='% kept')
+ax_c2.set_ylabel('% of the localisations of mask kept', color='C2')
+ax_c.axhline(0, color='k', lw=0.6)
+v_thr = ax_c.axvline(thr_values[-1], color='k', ls=':')
+ax_c.set_xlabel('maximum deviance'); ax_c.set_ylabel('deg'); ax_c.grid(alpha=0.4)
+ax_c.legend(loc='upper left', fontsize=8); ax_c2.legend(loc='lower right', fontsize=8)
+
+dev_slider = Slider(ax_slider, 'max deviance', thr_values[0], thr_values[-1], valinit=thr_values[-1])
+
+def update_dev(thr):
+    global mask_dev
+    sel = dev_in < thr
+    mask_dev = np.zeros(len(x), dtype=bool); mask_dev[np.where(mask)[0][sel]] = True
+    r_rad = np.deg2rad(rho[mask][sel])
+    counts_p, _ = np.histogram(np.concatenate([r_rad, r_rad + np.pi]), bins=edges_p)
+    for b_, c_ in zip(bars_p, counts_p):
+        b_.set_height(c_)
+    ax_p.set_ylim(0, max(counts_p.max(), 1)*1.05)
+    if sel.sum() > 1:
+        med, prec, kept = rho_stats(sel)
+        r_median = (rho_pca + med) % 180
+        r_mean = axial_mean(rho[mask][sel])[0]
+        for l_, a_ in zip(line_med, (r_median, r_median + 180)):
+            l_.set_xdata([np.deg2rad(a_)]*2)
+        for l_, a_ in zip(line_mean, (r_mean, r_mean + 180)):
+            l_.set_xdata([np.deg2rad(a_)]*2)
+        ax_p.set_title(f'deviance < {thr:.2f}: {sel.sum()} localisations ({kept:.0f} %)\n'
+                       f'$\\rho_{{PCA}}$ {rho_pca:.1f}°, median {r_median:.1f}°, mean {r_mean:.1f}°\n'
+                       f'consistency {med:+.2f}°, precision {prec:.2f}°', fontsize=10)
+    v_thr.set_xdata([thr, thr])
+    fig.canvas.draw_idle()
+
+dev_slider.on_changed(update_dev)
+update_dev(dev_slider.val)
+plt.show()
+#%% rho of the filament in a window of eta, interactive (inside mask)
+# polar histogram of rho of the localisations of mask with eta in a window of eta_bin degrees centred on the value
+# of the slider, with the rho of the PCA axis (fixed, cell above) and the median / mean rho of the selection; right:
+# precision (robust std of rho - rho_PCA), consistency (median of rho - rho_PCA) and % of localisations kept vs the centre of the window.
+# mask_eta_bin keeps the current selection for the next cells (mask_dev of the cell above is not changed)
+%matplotlib qt
+eta_bin = 10 # width of the window of eta in degrees
+eta_in = eta[mask]
+d_rho_all_e = wrap90(rho[mask] - rho_pca)
+thr_values_e = np.arange(eta_bin/2, 180 - eta_bin/2 + 1e-9, 2.5) # centres of the window
+in_eta_bin = lambda c: np.abs(eta_in - c) <= eta_bin/2
+def rho_stats_e(sel):
+    d = d_rho_all_e[sel]
+    return np.median(d), 1.4826*np.median(np.abs(d - np.median(d))), sel.mean()*100
+curves_e = np.array([rho_stats_e(in_eta_bin(t)) if np.sum(in_eta_bin(t)) > 10 else (np.nan,)*3 for t in thr_values_e])
+
+fig_e = plt.figure(figsize=(12, 6))
+ax_p_e = fig_e.add_subplot(1, 2, 1, projection='polar')
+ax_c_e = fig_e.add_subplot(1, 2, 2)
+fig_e.subplots_adjust(bottom=0.2, wspace=0.35)
+ax_slider_e = fig_e.add_axes([0.2, 0.06, 0.6, 0.04])
+
+# polar histogram (fixed bins, heights updated by the slider)
+edges_p_e = np.linspace(0, 2*np.pi, 201)
+centers_p_e = (edges_p_e[:-1] + edges_p_e[1:])/2
+bars_p_e = ax_p_e.bar(centers_p_e, np.zeros(len(centers_p_e)), width=edges_p_e[1] - edges_p_e[0], bottom=0,
+                  color=plt.cm.hsv((centers_p_e % np.pi)/np.pi), edgecolor='none', alpha=0.95)
+for a_ in (np.deg2rad(rho_pca), np.deg2rad(rho_pca) + np.pi):
+    ax_p_e.axvline(a_, color='red', lw=2, label='PCA' if a_ < np.pi else None)
+line_med_e = [ax_p_e.axvline(0, color='k', lw=2, label='$\\rho$ median'), ax_p_e.axvline(0, color='k', lw=2)]
+line_mean_e = [ax_p_e.axvline(0, color='k', lw=2, ls='--', label='$\\rho$ mean'), ax_p_e.axvline(0, color='k', lw=2, ls='--')]
+ax_p_e.set_theta_zero_location('E'); ax_p_e.set_theta_direction(1)
+ax_p_e.set_thetagrids(np.arange(0, 360, 60), labels=[f"{d}°" for d in np.arange(0, 360, 60)])
+ax_p_e.legend(loc='upper left', bbox_to_anchor=(-0.25, 1.15), fontsize=9)
+
+# curves vs the threshold
+ax_c_e.plot(thr_values_e, curves_e[:, 1], 'C0-', label='precision: robust std of $\\rho - \\rho_{PCA}$ (°)')
+ax_c_e.plot(thr_values_e, curves_e[:, 0], 'C1-', label='consistency: median of $\\rho - \\rho_{PCA}$ (°)')
+ax_c2_e = ax_c_e.twinx()
+ax_c2_e.plot(thr_values_e, curves_e[:, 2], 'C2--', label='% kept')
+ax_c2_e.set_ylabel('% of the localisations of mask kept', color='C2')
+ax_c_e.axhline(0, color='k', lw=0.6)
+v_thr_e = ax_c_e.axvline(90, color='k', ls=':')
+ax_c_e.set_xlabel(f'centre of the {eta_bin:g}° window of $\\eta$ (°)'); ax_c_e.set_ylabel('deg'); ax_c_e.grid(alpha=0.4)
+ax_c_e.legend(loc='upper left', fontsize=8); ax_c2_e.legend(loc='lower right', fontsize=8)
+
+eta_slider = Slider(ax_slider_e, 'eta centre', thr_values_e[0], thr_values_e[-1], valinit=90)
+
+def update_eta(thr):
+    global mask_eta_bin
+    sel = in_eta_bin(thr)
+    mask_eta_bin = np.zeros(len(x), dtype=bool); mask_eta_bin[np.where(mask)[0][sel]] = True
+    r_rad = np.deg2rad(rho[mask][sel])
+    counts_p, _ = np.histogram(np.concatenate([r_rad, r_rad + np.pi]), bins=edges_p_e)
+    for b_, c_ in zip(bars_p_e, counts_p):
+        b_.set_height(c_)
+    ax_p_e.set_ylim(0, max(counts_p.max(), 1)*1.05)
+    if sel.sum() > 1:
+        med, prec, kept = rho_stats_e(sel)
+        r_median = (rho_pca + med) % 180
+        r_mean = axial_mean(rho[mask][sel])[0]
+        for l_, a_ in zip(line_med_e, (r_median, r_median + 180)):
+            l_.set_xdata([np.deg2rad(a_)]*2)
+        for l_, a_ in zip(line_mean_e, (r_mean, r_mean + 180)):
+            l_.set_xdata([np.deg2rad(a_)]*2)
+        ax_p_e.set_title(f'eta in [{thr - eta_bin/2:.1f}, {thr + eta_bin/2:.1f}]°: {sel.sum()} localisations ({kept:.0f} %)\n'
+                       f'$\\rho_{{PCA}}$ {rho_pca:.1f}°, median {r_median:.1f}°, mean {r_mean:.1f}°\n'
+                       f'consistency {med:+.2f}°, precision {prec:.2f}°', fontsize=10)
+    v_thr_e.set_xdata([thr, thr])
+    fig_e.canvas.draw_idle()
+
+eta_slider.on_changed(update_eta)
+update_eta(eta_slider.val)
+plt.show()
+#%% examples of PSF (data, fit, residual) of the selection, in windows of rho
+# localisations of mask_dev (or mask) in each window of rho_windows, n_examples drawn at random per window, figures of
+# density_experimental.make_examples in <csv folder>/mask_examples/<window>/. The row index of the csv still points
+# to a real fit after the drift correction and the linking (a linked molecule is kept on one of its rows): the
+# frame, x, y of this row are read again from the csv and found in the npz of the run. The rho of the title is the
+# one of this frame, the rho of the selection (mean over the linked frames) is printed next to it
+import importlib
+from pathlib import Path as Path_lib # Path is the one of matplotlib (lasso)
+sys.path.insert(0, '/mnt/c/Users/Amaury/Documents/GitHub/4polarMFM_these')
+import density_experimental as DE
+importlib.reload(DE)
+rho_windows = {'rho_180': (180, 5), 'rho_150': (150, 5)} # name: (centre, half width) in degrees
+alt_rho = {'rho_180': {'rho': 150, 'eta': 90}} # name: extra row, the same fit with rho (and eta) replaced by these values
+n_examples = 6
+selection = mask_dev if 'mask_dev' in globals() else mask
+if not isinstance(path, str) or not path: # askopenfilename gives () when the dialog is cancelled
+    raise ValueError('path is not a csv file (file dialog cancelled?): set path = "<the fit csv loaded at the start>" '
+                     'and run this cell again')
+raw_csv = pd.read_csv(path, sep=';', comment='#') # x, y, frame of the session are drift corrected and linked
+rng = np.random.default_rng(0)
+groups = {}
+for name, (centre, half) in rho_windows.items():
+    rows = np.where(selection & (np.abs(wrap90(rho - centre)) <= half))[0]
+    picked = np.sort(rng.choice(rows, min(n_examples, len(rows)), replace=False))
+    groups[name] = [(k, int(raw_csv['frame'][r]), raw_csv['x'][r], raw_csv['y'][r]) for k, r in enumerate(picked)]
+    print(f'{name}: {len(rows)} localisations of the selection, examples:')
+    for k, r in enumerate(picked):
+        print(f'   {k:2d}: row {r}, frame {int(raw_csv["frame"][r])}, rho of the selection {rho[r]:.1f} '
+              f'(this frame {raw_csv["rho"][r]:.1f}), eta {eta[r]:.0f}, delta {delta[r]:.0f}, deviance {fit_quality[r]:.2f}')
+out_examples = Path_lib(path).parent / 'mask_examples'
+out_examples.mkdir(exist_ok=True)
+with plt.ioff(): # figures saved and closed, no window
+    DE.make_examples(Path_lib(path).parent, Path_lib(path).name, groups, out_examples, alt_rho)
+print('figures in', out_examples)
+#%% ############ interactive plots ######################
 plt.tight_layout()
 plt.show()
 print(90-np.mean(eta[mask]))
@@ -1472,8 +1911,12 @@ update_rho_window(rho_slider.val)
 plt.show()
 
 #%% gif of the rho window: all points, then the rho_theory dots of the bead fit, then the sliding rho window
-# needs the bead fit cell (params, th, line, rgb_colorsL) and the plot rho cell above (rho_window, in_rho_window)
+# needs the bead fit cell (params, th, line, rgb_colorsL)
 from matplotlib.animation import FuncAnimation, PillowWriter
+rho_window = 10 # width of the window in degrees, as in the plot rho cell above
+def in_rho_window(rho_values, centre):
+    # distance on the 180 degrees circle, so that a window around 0 also takes the points around 180
+    return np.abs((rho_values - centre + 90) % 180 - 90) <= rho_window/2
 gif_path = os.path.join(os.getcwd(), 'rho_window.gif')
 gif_fps = 10
 faded_alpha = 0.35  # opacity of the histogram bars outside the window. Not lower: too pale colors are merged with white in the 256-color palette of the gif

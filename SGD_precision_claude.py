@@ -20,7 +20,16 @@ Simulation (in photons):
     the truth is the central emitter
     reconstruction warp (optional, --warp calibration.npz): each channel is interpolated as by the cubic warp of
     reconstruction_juliette.py (noise added before, as on the camera); plane 1 x, the reference, is not interpolated
-Orientations: regular grid n_rho x n_eta, rho and eta at the centres of bins of [0, 180[ (20 x 20: 4.5, 13.5, ...,
+    model mismatch of the data (optional, the fit keeps the model of SGD_jax.py):
+        --data-n2: refractive index of the sample of the data (critical angle, Fresnel coefficients, defocus phase)
+        --data-saf-dz: the evanescent (SAF) part of the field of the data decays as for an emitter dz further from the
+            coverslip (dz < 0: closer, more SAF), the propagating part unchanged: too much / too little SAF only
+        --data-shift plane pol dx dy: the channel (plane 0-2, pol 0 x / 1 y / 2 both) of the data shifted laterally by
+            dx, dy nm, as a registration error of the reconstruction (repeatable)
+        --data-zshift table.npz: each channel of the data shifted laterally by an amount depending on the z of the
+            emitter (z_em (nz,) um, shift (3, 2, nz, 2) nm in the coordinates of the fit, planes and pol of SGD_jax.py),
+            e.g. the residual registration measured on bead z-stacks after the reconstruction
+Orientations: --rho-values / --eta-values (lists), or a regular grid n_rho x n_eta, rho and eta at the centres of bins of [0, 180[ (20 x 20: 4.5, 13.5, ...,
 175.5 deg), per_point PSF each (80 by default; the batches of the SGD, NPSF = 100, are filled with consecutive PSF), random x, y, z and noise.
 The losses given (poisson, lms, huber) are run on exactly the same simulated data, each in a fresh pipeline.
 
@@ -109,6 +118,15 @@ def parse_arguments(argv):
                    'channels go through its cubic warps (blur and noise smoothing of the reconstruction), see warp_maps')
     p.add_argument('--data-y-gain-J2', type=float, default=1., help='y channel of plane 1 of the simulated data x this '
                    'factor (real x/y intensity error, the fit keeps its own y_gain_J2)')
+    p.add_argument('--calibration', default=None, help='config.txt of a run: its J1, J2, rotation, rotation2, unitary_J, '
+                   'y_gain_J1/J2 for the data and the fit (rho_offset stays 0: rho of the model) instead of the ideal calibration')
+    p.add_argument('--rho-values', type=float, nargs='+', default=None, help='list of true rho (replaces the grid of n_rho)')
+    p.add_argument('--eta-values', type=float, nargs='+', default=None, help='list of true eta (replaces the grid of n_eta)')
+    p.add_argument('--data-n2', type=float, default=None, help='refractive index of the sample in the data (model: n2 of simu_PSF_polarMFM_JAX.py)')
+    p.add_argument('--data-saf-dz', type=float, default=0., help='SAF of the data as for an emitter dz um further from the coverslip')
+    p.add_argument('--data-shift', type=float, nargs=4, action='append', default=[], metavar=('PLANE', 'POL', 'DX', 'DY'),
+                   help='lateral shift (nm) of a channel of the data: plane 0-2, pol 0 (x), 1 (y) or 2 (both)')
+    p.add_argument('--data-zshift', default=None, help='npz table of a lateral shift of each channel vs the z of the emitter')
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--out', default='/mnt/d/Amaury/simu_precision_claude', help='folder of the results')
     p.add_argument('--tag', default='', help='added to the name of the result folder (default: the preset)')
@@ -120,6 +138,11 @@ def parse_arguments(argv):
             setattr(a, k, v)
     if not a.tag:
         a.tag = a.preset + ('_warp' if a.warp else '') + (f'_ygain{a.data_y_gain_J2:g}' if a.data_y_gain_J2 != 1 else '')
+        a.tag += (f'_n2{a.data_n2:g}' if a.data_n2 else '') + (f'_safdz{a.data_saf_dz:g}' if a.data_saf_dz else '')
+        a.tag += ''.join(f'_shift{int(p)}{"xyb"[int(q)]}{dx:g},{dy:g}' for p, q, dx, dy in a.data_shift)
+        a.tag += '_zshift' if a.data_zshift else ''
+    if (a.data_shift or a.data_zshift) and a.warp:
+        raise SystemExit('--data-shift / --data-zshift are not implemented with --warp')
     a.warps = load_warps(a.warp) if a.warp else None
     return a
 
@@ -233,22 +256,25 @@ def simulated_load_batch(ns, sim, builder, rng_noise, a):
 
 # ---------------------------------------------------------------- simulation
 
-def grid(n_rho, n_eta):
-    # regular grid: rho and eta at the centres of n_rho and n_eta bins of [0, 180[, one orientation per (rho, eta)
-    rho_bins = (np.arange(n_rho) + 0.5)*180/n_rho
-    eta_bins = (np.arange(n_eta) + 0.5)*180/n_eta
+def grid(n_rho, n_eta, rho_values=None, eta_values=None):
+    # regular grid: rho and eta at the centres of n_rho and n_eta bins of [0, 180[, one orientation per (rho, eta),
+    # or the lists of values given
+    rho_bins = np.array(rho_values, float) if rho_values else (np.arange(n_rho) + 0.5)*180/n_rho
+    eta_bins = np.array(eta_values, float) if eta_values else (np.arange(n_eta) + 0.5)*180/n_eta
     rho, eta = np.meshgrid(rho_bins, eta_bins, indexing='ij')
     return rho.ravel(), eta.ravel()
 
 
-def model_psf(ns, sl, p, half=6):
+def model_psf(ns, sl, p, half=6, fields=None):
     # expected photons of the 6 channels ((2 half + 1)^2 patch, 13 x 13 by default) for the parameters p[sl], model of
-    # SGD_jax.py
+    # SGD_jax.py; fields: pupil fields replacing the ones of ns (data with another sample index)
     import jax.numpy as jnp
     f32 = lambda v: jnp.array(v[sl], dtype=jnp.float32)
-    M = ns['compute_M_jax'](xp=f32(p['x']), yp=f32(p['y']), zp=f32(p['z']), d=ns['d_'], x=ns['xx'], y=ns['yy'],
-                            th1=ns['th1'], phi=ns['phi'], Ex0=ns['Ex0'], Ex1=ns['Ex1'], Ex2=ns['Ex2'], Ey0=ns['Ey0'],
-                            Ey1=ns['Ey1'], Ey2=ns['Ey2'], u=ns['u'], v=ns['v'], phase_maskx=ns['phase_mask'],
+    F = {k: ns[k] for k in ('xx', 'yy', 'th1', 'phi', 'Ex0', 'Ex1', 'Ex2', 'Ey0', 'Ey1', 'Ey2')}
+    F.update(fields or {})
+    M = ns['compute_M_jax'](xp=f32(p['x']), yp=f32(p['y']), zp=f32(p['z']), d=ns['d_'], x=F['xx'], y=F['yy'],
+                            th1=F['th1'], phi=F['phi'], Ex0=F['Ex0'], Ex1=F['Ex1'], Ex2=F['Ex2'], Ey0=F['Ey0'],
+                            Ey1=F['Ey1'], Ey2=F['Ey2'], u=ns['u'], v=ns['v'], phase_maskx=ns['phase_mask'],
                             phase_masky=ns['phase_mask'], zernike_base=ns['zernike_base'],
                             zernike_coefs_x=ns['zernike_coefs_x'], zernike_coefs_y=ns['zernike_coefs_y'],
                             second_plane=ns['second_plane'], polar_projections=ns['polar_projections'],
@@ -329,9 +355,74 @@ def warped_data(ns, a, rng, rng_warp, sl, truth, second, neighbour, A):
     return out
 
 
+class data_physics:
+    ''' context in which model_psf computes the data with the mismatch of --data-n2 / --data-saf-dz: the globals of
+    simu_PSF_polarMFM_JAX.py (n2, psi_z_jit) are changed and the compiled functions cleared, then restored (and
+    cleared again) for the fit. self.fields: pupil fields of the data, recomputed with the sample index of the data '''
+    def __init__(self, ns, a):
+        self.ns, self.a, self.fields = ns, a, None
+        self.active = a.data_n2 is not None or a.data_saf_dz != 0
+    def __enter__(self):
+        if not self.active:
+            return self
+        import jax, jax.numpy as jnp
+        import simu_PSF_polarMFM_JAX as SP
+        ns, a = self.ns, self.a
+        self.saved = (SP.n2, SP.psi_z_jit)
+        if a.data_n2 is not None:
+            SP.n2 = a.data_n2
+        if a.data_saf_dz:
+            dz = a.data_saf_dz
+            def psi_z_saf(theta, z, lambd=0.617, cos_th2=None):
+                sq = jnp.sqrt(1 - (SP.n1*jnp.sin(theta)/SP.n2)**2) # imaginary in the SAF region: exp(-k kappa z)
+                factor = 2*jnp.pi*SP.n2/lambd
+                out = jnp.einsum('a, bc -> abc', z, factor*sq)
+                return out + dz*factor*1j*jnp.imag(sq)[None] # evanescent part only, as at z + dz
+            SP.psi_z_jit = jax.jit(psi_z_saf)
+        jax.clear_caches()
+        if a.data_n2 is not None:
+            out = SP.vectorial_BFP_perfect_focus_jax(int(ns['N']), NA=ns['NA'], mag=ns['mag'], lambd_nm=ns['lambd'],
+                                                     f_tube_mm=ns['f_tube'], J_dichroic=ns['J_dichroic'], SAF=ns['SAF'])
+            xx, yy, th1, phi, (Ex0, Ex1, Ex2), (Ey0, Ey1, Ey2) = out[:6]
+            pad = lambda f: SP.pad_jax(f, ns['Npadding']).astype(jnp.complex64)
+            self.fields = dict(xx=pad(xx), yy=pad(yy), th1=pad(th1), phi=pad(phi), Ex0=pad(Ex0), Ex1=pad(Ex1),
+                               Ex2=pad(Ex2), Ey0=pad(Ey0), Ey1=pad(Ey1), Ey2=pad(Ey2))
+        return self
+    def __exit__(self, *exc):
+        if self.active:
+            import jax
+            import simu_PSF_polarMFM_JAX as SP
+            SP.n2, SP.psi_z_jit = self.saved
+            jax.clear_caches()
+        return False
+
+
+def data_psf(ns, sl, p, a, phys, half=6):
+    # model_psf for the data: mismatch of the sample (phys.fields) and lateral shift of channels (--data-shift)
+    h = model_psf(ns, sl, p, half, phys.fields)
+    for plane, pol, dx, dy in a.data_shift:
+        q = dict(p); q['x'] = p['x'] + dx/1000; q['y'] = p['y'] + dy/1000
+        hs = model_psf(ns, sl, q, half, phys.fields)
+        pols = (0, 1) if int(pol) == 2 else (int(pol),)
+        for k in pols:
+            h[:, int(plane), k] = hs[:, int(plane), k]
+    if a.data_zshift:
+        table = np.load(a.data_zshift)
+        for plane in range(3):
+            for pol in range(2):
+                sh = table['shift'][plane, pol]
+                if not np.any(sh):
+                    continue
+                q = dict(p); q['x'] = p['x'].copy(); q['y'] = p['y'].copy()
+                q['x'][sl] = p['x'][sl] + np.interp(p['z'][sl], table['z_em'], sh[:, 0])/1000
+                q['y'][sl] = p['y'][sl] + np.interp(p['z'][sl], table['z_em'], sh[:, 1])/1000
+                h[:, plane, pol] = model_psf(ns, sl, q, half, phys.fields)[:, plane, pol]
+    return h
+
+
 def simulate(ns, a, rng):
     NPSF = int(ns['NPSF'])
-    rho_list, eta_list = grid(a.n_rho, a.n_eta)
+    rho_list, eta_list = grid(a.n_rho, a.n_eta, a.rho_values, a.eta_values)
     point = np.repeat(np.arange(len(rho_list)), a.per_point)
     n_total = int(np.ceil(len(point)/NPSF))*NPSF # whole batches: the last PSF are repeated points
     point = np.concatenate([point, point[:n_total-len(point)]])
@@ -348,16 +439,17 @@ def simulate(ns, a, rng):
     data = []
     if a.warps is not None:
         A = pixels_per_um(ns, a); rng_warp = np.random.default_rng(a.seed + 2) # truth unchanged by the warp draws
-    for b in range(n_total//NPSF):
-        sl = slice(b*NPSF, (b+1)*NPSF)
-        if a.warps is not None:
-            data.append(warped_data(ns, a, rng, rng_warp, sl, truth, second, neighbour, A))
-            continue
-        h = model_psf(ns, sl, truth)
-        if neighbour[sl].any():
-            h = h + neighbour[sl][:, None, None, None, None]*model_psf(ns, sl, second)
-        h[:, 1, 1] *= a.data_y_gain_J2 # y of plane 1 (1: no change)
-        data.append(crazy_pixels(rng, camera(rng, h, a), a))
+    with data_physics(ns, a) as phys:
+        for b in range(n_total//NPSF):
+            sl = slice(b*NPSF, (b+1)*NPSF)
+            if a.warps is not None:
+                data.append(warped_data(ns, a, rng, rng_warp, sl, truth, second, neighbour, A))
+                continue
+            h = data_psf(ns, sl, truth, a, phys)
+            if neighbour[sl].any():
+                h = h + neighbour[sl][:, None, None, None, None]*data_psf(ns, sl, second, a, phys)
+            h[:, 1, 1] *= a.data_y_gain_J2 # y of plane 1 (1: no change)
+            data.append(crazy_pixels(rng, camera(rng, h, a), a))
     return dict(data=np.concatenate(data).astype(np.float32), point=point, rho_list=rho_list, eta_list=eta_list,
                 neighbour=neighbour, **{'true_'+k: v for k, v in truth.items()}, **{'second_'+k: v for k, v in second.items()})
 
@@ -495,6 +587,11 @@ def main(argv):
     extra = SGD_batch.parse_overrides(a.set)
     calibration = {'J1': 'np.eye(2)', 'J2': 'rot(45)', 'rotation': '0', 'rotation2': '0', 'rho_offset': '0',
                    'unitary_J': 'False', 'y_gain_J1': '1.', 'y_gain_J2': '1.'}
+    if a.calibration: # calibration of a real run (same for the data and the fit), rho of the model (no rho_offset)
+        from density_experimental import run_parameters
+        real = run_parameters(a.calibration)[0]
+        calibration.update({k: v for k, v in real.items() if k in ('J1', 'J2', 'rotation', 'rotation2', 'unitary_J', 'y_gain_J1', 'y_gain_J2')})
+        log('calibration of ' + a.calibration + ': ' + ', '.join(f'{k}={calibration[k]}' for k in ('rotation', 'rotation2', 'unitary_J', 'y_gain_J1', 'y_gain_J2')))
     rng = np.random.default_rng(a.seed)
     sim = None
     all_rows = {}
@@ -550,7 +647,10 @@ def summary(all_rows, run_folder):
     import pandas as pd
     pd.concat([pd.DataFrame(r).assign(loss=l) for l, r in all_rows.items()]).to_csv(run_folder / 'summary.csv', index=False)
     compare_losses(all_rows, run_folder)
-    case_figure(all_rows, run_folder, run_folder.name.split('_', 2)[-1] if run_folder.name.count('_') >= 2 else run_folder.name)
+    try: # polar maps: only for a regular grid with an even number of eta bins
+        case_figure(all_rows, run_folder, run_folder.name.split('_', 2)[-1] if run_folder.name.count('_') >= 2 else run_folder.name)
+    except ValueError as e:
+        log(f'no polar maps: {e}')
     log('summary per loss (median over the orientations): |bias| / precision, angles in deg, x and z in nm, N relative')
     for loss, rows in all_rows.items():
         log(f'  {loss:8s} {median_line(rows)}  (nan fits: {sum(r["n_failed"] for r in rows)})')
