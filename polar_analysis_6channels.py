@@ -130,7 +130,13 @@ phi_list = [
 #dephasage lame d'onde
 lbda = 620 #arrondi à l'unité
 phi_val = phi_list[lbda_list.index(lbda)]*2*np.pi
-def polar_analysis(I_, plot=False, verif_fit=False):
+def polar_analysis(I_, plot=False, verif_fit=False, offset=None):
+    '''
+    polarisation (alpha, epsilon) of the light from the intensities I_ after a rotating quarter wave plate (angles
+    omega, retardance phi_val) and a fixed polarizer. offset (rad): angle of the plate zero relative to the
+    polarizer; None: estimated from the 2 omega terms (see below), which needs elliptical light (S3 != 0): for nearly
+    linear light, measure it once with elliptical or circular light and give it here
+    '''
     P2 = np.ones(N)
     P4 = np.ones(N)
     Q2 = np.ones(N)
@@ -147,12 +153,15 @@ def polar_analysis(I_, plot=False, verif_fit=False):
     p_4 = (2/N)*sum(P4)
 
     #-------correction décalage lame/polariseur
-    p_2 = round(p_2, 5)
+    # an offset of the plate turns the sin(2 omega) term (S3) into cos(2 omega): p_2 = q_2 tan(2 offset).
+    # arctan (in ]-45, 45[ deg) and not arctan2: with arctan2 the offset came out at ~ +-90 deg when q_2 < 0, which
+    # turned omega by 90 deg, flipped sin(2 omega) and forced q_2 > 0: the handedness (sign of epsilon) was lost
     print(f'P2 = {p_2}')
     print(f'Q2 = {q_2}')
-    decalage_pola = 0.5*np.arctan2(p_2, q_2)
-    if np.abs(decalage_pola)> np.abs((decalage_pola-np.pi/2)):
-        decalage_pola = decalage_pola-np.pi/2
+    if offset is None:
+        decalage_pola = 0.5*np.arctan(p_2/q_2) if q_2 != 0 else 0.
+    else:
+        decalage_pola = offset
     #decalage_pola = np.radians(-6)
     #print('first measurements had a 90 error on the axis of the quarter')
     #decalage_pola-=np.pi/2 # first measurements had a 90 error on the axis of the quarter
@@ -182,6 +191,9 @@ def polar_analysis(I_, plot=False, verif_fit=False):
 
     #--------------dépolarisation
     #paramètres de stokes
+    # with the polarizer along y, plate = diag(1, exp(i phi)) rotated by omega, E = rot(alpha) (cos eps, i sin eps):
+    # q_2 = -S3 sin(phi) (checked by simulation: alpha, eps of both signs and the offset are found back). With the
+    # polarizer along x the sign of S3 changes: check once with light of known handedness
     S3 = -q_2 / np.sin(phi_val)
     S1 = 2*p_4 / (np.cos(phi_val)-1)
     S2 = 2*q_4 / (np.cos(phi_val)-1)
