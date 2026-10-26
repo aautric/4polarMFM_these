@@ -162,7 +162,7 @@ def camera(rng, expected, a):
         return np.asarray(noise_jax(key, expected, b=a.background, sigma_b=a.sigma_b, sigma_r=a.sigma_r), dtype=float)
     # sigma_r is given in photons: read noise in electrons at the output = sigma_r*QE*EM
     return np.asarray(emccd_jax(key, expected, QE=a.QE, EM=a.EM, b=a.background, sigma_b=a.sigma_b,
-                                sigma_read_e=a.sigma_r*a.QE*a.EM, sensitivity=3.9, cic=a.cic), dtype=float)
+                                sigma_read_e=a.sigma_r*a.QE*a.EM, sensitivity=4.4, cic=a.cic), dtype=float)
 
 
 def crazy_pixels(rng, data, a):

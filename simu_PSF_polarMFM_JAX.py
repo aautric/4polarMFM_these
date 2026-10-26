@@ -503,7 +503,7 @@ def noise_jax(key, PSF, QE=1.0, EM=1.0, b=0.0, sigma_b=0.0, sigma_r=0.0, bias=0.
     # Gaussian read noise, zero mean
     return poiss + sigma_r * random.normal(key_r, PSF.shape)
 
-def emccd_jax(key, PSF, QE=0.92, EM=200.0, b=0.0, sigma_b=0.0, sigma_read_e=0.0, sensitivity=3.9, cic=0.0):
+def emccd_jax(key, PSF, QE=0.92, EM=200.0, b=0.0, sigma_b=0.0, sigma_read_e=0.0, sensitivity=4.4, cic=0.0):
     """
     EMCCD camera noise on a PSF using JAX, physical chain in electrons, returned in photons (units of the pipeline).
     No camera baseline, as the data after the reconstruction.
@@ -514,8 +514,9 @@ def emccd_jax(key, PSF, QE=0.92, EM=200.0, b=0.0, sigma_b=0.0, sigma_read_e=0.0,
     EM           : EM gain
     b            : background mean (photons)
     sigma_b      : std of the background fluctuation per pixel and frame, before the Poisson noise (photons)
-    sigma_read_e : read noise std (electrons at the output amplifier, ~85 e- at 17 MHz pre-amp 3 on the Andor sheet)
-    sensitivity  : electrons per ADU (rounding of the analog to digital converter)
+    sigma_read_e : read noise std (electrons at the output amplifier, ~85 e- at 17 MHz pre-amp 3 on the Andor sheet;
+                   81 e- measured at 17 MHz pre-amp Gain 1, 18.5 ADU x 4.4 e-/ADU, 2026-10-22)
+    sensitivity  : electrons per ADU (rounding of the analog to digital converter), 4.4 measured 2026-10-22
     cic          : clock induced charge (electrons per pixel and frame, amplified as the photoelectrons)
 
     1. photoelectrons e ~ Poisson(QE*(PSF + background)) + Poisson(cic): Poisson thinning of the photons by the QE
