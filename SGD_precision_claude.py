@@ -26,6 +26,8 @@ Simulation (in photons):
             coverslip (dz < 0: closer, more SAF), the propagating part unchanged: too much / too little SAF only
         --data-shift plane pol dx dy: the channel (plane 0-2, pol 0 x / 1 y / 2 both) of the data shifted laterally by
             dx, dy nm, as a registration error of the reconstruction (repeatable)
+        --data-zernike file.npz: aberrations of the data (zx, zy: (3 planes, 15 Noll modes) in rad, for the x and y
+            channels), the fit keeps its own (none, or fitted in SGD2 with --set fit_zernike=True)
         --data-zshift table.npz: each channel of the data shifted laterally by an amount depending on the z of the
             emitter (z_em (nz,) um, shift (3, 2, nz, 2) nm in the coordinates of the fit, planes and pol of SGD_jax.py),
             e.g. the residual registration measured on bead z-stacks after the reconstruction
@@ -126,6 +128,7 @@ def parse_arguments(argv):
     p.add_argument('--data-saf-dz', type=float, default=0., help='SAF of the data as for an emitter dz um further from the coverslip')
     p.add_argument('--data-shift', type=float, nargs=4, action='append', default=[], metavar=('PLANE', 'POL', 'DX', 'DY'),
                    help='lateral shift (nm) of a channel of the data: plane 0-2, pol 0 (x), 1 (y) or 2 (both)')
+    p.add_argument('--data-zernike', default=None, help='npz (zx, zy (3, 15) rad): aberrations of the simulated data only')
     p.add_argument('--data-zshift', default=None, help='npz table of a lateral shift of each channel vs the z of the emitter')
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--out', default='/mnt/d/Amaury/simu_precision_claude', help='folder of the results')
@@ -141,6 +144,7 @@ def parse_arguments(argv):
         a.tag += (f'_n2{a.data_n2:g}' if a.data_n2 else '') + (f'_safdz{a.data_saf_dz:g}' if a.data_saf_dz else '')
         a.tag += ''.join(f'_shift{int(p)}{"xyb"[int(q)]}{dx:g},{dy:g}' for p, q, dx, dy in a.data_shift)
         a.tag += '_zshift' if a.data_zshift else ''
+        a.tag += '_zernike' if a.data_zernike else ''
     if (a.data_shift or a.data_zshift) and a.warp:
         raise SystemExit('--data-shift / --data-zshift are not implemented with --warp')
     a.warps = load_warps(a.warp) if a.warp else None
@@ -265,7 +269,7 @@ def grid(n_rho, n_eta, rho_values=None, eta_values=None):
     return rho.ravel(), eta.ravel()
 
 
-def model_psf(ns, sl, p, half=6, fields=None):
+def model_psf(ns, sl, p, half=6, fields=None, zernike=None):
     # expected photons of the 6 channels ((2 half + 1)^2 patch, 13 x 13 by default) for the parameters p[sl], model of
     # SGD_jax.py; fields: pupil fields replacing the ones of ns (data with another sample index)
     import jax.numpy as jnp
@@ -276,7 +280,8 @@ def model_psf(ns, sl, p, half=6, fields=None):
                             th1=F['th1'], phi=F['phi'], Ex0=F['Ex0'], Ex1=F['Ex1'], Ex2=F['Ex2'], Ey0=F['Ey0'],
                             Ey1=F['Ey1'], Ey2=F['Ey2'], u=ns['u'], v=ns['v'], phase_maskx=ns['phase_mask'],
                             phase_masky=ns['phase_mask'], zernike_base=ns['zernike_base'],
-                            zernike_coefs_x=ns['zernike_coefs_x'], zernike_coefs_y=ns['zernike_coefs_y'],
+                            zernike_coefs_x=ns['zernike_coefs_x'] if zernike is None else zernike[0],
+                            zernike_coefs_y=ns['zernike_coefs_y'] if zernike is None else zernike[1],
                             second_plane=ns['second_plane'], polar_projections=ns['polar_projections'],
                             lambd=ns['lambd'], f_tube=ns['f_tube'])
     h = ns['PSF_jax'](rho=f32(p['rho']), eta=f32(p['eta']), delta=f32(p['delta']), M=M, N_photons=f32(p['N']))
@@ -398,11 +403,17 @@ class data_physics:
 
 
 def data_psf(ns, sl, p, a, phys, half=6):
-    # model_psf for the data: mismatch of the sample (phys.fields) and lateral shift of channels (--data-shift)
-    h = model_psf(ns, sl, p, half, phys.fields)
+    # model_psf for the data: mismatch of the sample (phys.fields), aberrations (--data-zernike) and lateral shift of
+    # channels (--data-shift, --data-zshift)
+    zern = None
+    if a.data_zernike:
+        import jax.numpy as jnp
+        zf = np.load(a.data_zernike)
+        zern = (jnp.array(zf['zx'], dtype=jnp.complex64), jnp.array(zf['zy'], dtype=jnp.complex64))
+    h = model_psf(ns, sl, p, half, phys.fields, zern)
     for plane, pol, dx, dy in a.data_shift:
         q = dict(p); q['x'] = p['x'] + dx/1000; q['y'] = p['y'] + dy/1000
-        hs = model_psf(ns, sl, q, half, phys.fields)
+        hs = model_psf(ns, sl, q, half, phys.fields, zern)
         pols = (0, 1) if int(pol) == 2 else (int(pol),)
         for k in pols:
             h[:, int(plane), k] = hs[:, int(plane), k]
@@ -416,7 +427,7 @@ def data_psf(ns, sl, p, a, phys, half=6):
                 q = dict(p); q['x'] = p['x'].copy(); q['y'] = p['y'].copy()
                 q['x'][sl] = p['x'][sl] + np.interp(p['z'][sl], table['z_em'], sh[:, 0])/1000
                 q['y'][sl] = p['y'][sl] + np.interp(p['z'][sl], table['z_em'], sh[:, 1])/1000
-                h[:, plane, pol] = model_psf(ns, sl, q, half, phys.fields)[:, plane, pol]
+                h[:, plane, pol] = model_psf(ns, sl, q, half, phys.fields, zern)[:, plane, pol]
     return h
 
 
