@@ -36,10 +36,12 @@ Orientations: --rho-values / --eta-values (lists), or a regular grid n_rho x n_e
 The losses given (poisson, lms, huber) are run on exactly the same simulated data, each in a fresh pipeline.
 
 Presets (--preset; any option given explicitly replaces the value of the preset). Values measured on the real runs
-(median N, background above the offset, offset, in photons):
+(median N, background above the offset, offset, in photons). N = photons of the whole molecule (3 planes): the
+values measured before 2026-10-28 were per plane (PSF_jax normalised each plane) and are multiplied by 3 here:
     poisson      Poisson noise only, N and background of actin (no EM excess, no read noise, no offset, no fluctuation)
-    slb          SLB 02-02: N 390, background 3.4, offset 3.5
-    actin        RPE1 actin 09-18 / 09-23: N 1190 / 655, background 20 / 35, offset 3.8 / 4.3 -> N 1000, background 25
+    slb          SLB 02-02: N 1170 (390 per plane), background 3.4, offset 3.5
+    actin        RPE1 actin 09-18 / 09-23: N 3570 / 1965 (1190 / 655 per plane), background 20 / 35, offset 3.8 / 4.3
+                 -> N 3000, background 25
     actin_dense  actin + 3 % crazy pixels + a second emitter on 20 % of the PSF
 
 usage (python of the environment, e.g. /home/amaury/exit/envs/env_linux/bin/python):
@@ -79,13 +81,13 @@ log = SGD_batch.log
 # ---------------------------------------------------------------- parameters
 
 PRESETS = {
-    'poisson':     dict(camera='poisson', N=1000., background=25., sigma_b=0., sigma_r=0.,
+    'poisson':     dict(camera='poisson', N=3000., background=25., sigma_b=0., sigma_r=0.,
                         crazy_fraction=0., two_emitter_fraction=0.),
-    'slb':         dict(camera='emccd', N=390., background=3.4, sigma_b=0.5, sigma_r=0.4,
+    'slb':         dict(camera='emccd', N=1170., background=3.4, sigma_b=0.5, sigma_r=0.4,
                         crazy_fraction=0., two_emitter_fraction=0.),
-    'actin':       dict(camera='emccd', N=1000., background=25., sigma_b=3., sigma_r=0.4,
+    'actin':       dict(camera='emccd', N=3000., background=25., sigma_b=3., sigma_r=0.4,
                         crazy_fraction=0., two_emitter_fraction=0.),
-    'actin_dense': dict(camera='emccd', N=1000., background=25., sigma_b=3., sigma_r=0.4,
+    'actin_dense': dict(camera='emccd', N=3000., background=25., sigma_b=3., sigma_r=0.4,
                         crazy_fraction=0.03, two_emitter_fraction=0.2),
 }
 
@@ -100,7 +102,7 @@ def parse_arguments(argv):
     p.add_argument('--delta', type=float, default=90., help='true wobbling cone (deg)')
     # None: value of the preset
     p.add_argument('--camera', default=None, choices=['emccd', 'poisson'], help='emccd: Poisson + EM excess + read noise + offset; poisson: Poisson noise only')
-    p.add_argument('--N', type=float, default=None, help='photons of each PSF')
+    p.add_argument('--N', type=float, default=None, help='photons of each PSF (whole molecule, 3 planes)')
     p.add_argument('--background', type=float, default=None, help='background b (photons/pixel)')
     p.add_argument('--sigma-b', type=float, default=None, help='fluctuation of the background per pixel and frame (photons)')
     p.add_argument('--sigma-r', type=float, default=None, help='read noise (photons)')

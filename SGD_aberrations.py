@@ -213,7 +213,7 @@ J_dichroic = np.array([np.eye(2), np.eye(2), np.eye(2)])
 
 
 # %% SGD PARANETERS TO DEFINE
-Nphotons_speed1 = jax.device_put(200000)
+Nphotons_speed1 = jax.device_put(3*200000) # x3: N of the whole molecule since 2026-10-28 (PSF_jax normalised each plane before)
 background_speed = jax.device_put(300)
 d_speed = jax.device_put(3)
 z_speed=jax.device_put(1)
@@ -223,7 +223,7 @@ num_epochs_max1 = 600
 
 num_epochs_max2 = 1000
 LR2 = jax.device_put(1e-1)
-nphotons_speed2 = jax.device_put(10e4)
+nphotons_speed2 = jax.device_put(3*10e4) # x3: N of the whole molecule
 rad_speed2 = jax.device_put(10e-6)
 xy_speed2 = jax.device_put(10e-6)
 z_speed2=jax.device_put(10e-6)
@@ -286,7 +286,7 @@ z_exp =  jax.device_put(0.5).astype(jnp.float32)
 rho_start = jnp.array([45. for k in range(NPSF)]).astype(jnp.float32)
 eta_start = jnp.array([90. for k in range(NPSF)]).astype(jnp.float32)
 delta_start = jnp.array([180. for k in range(NPSF)]).astype(jnp.float32)
-Nstart_test = jnp.array(100000).astype(jnp.float32)
+Nstart_test = jnp.array(3*100000).astype(jnp.float32) # x3: N of the whole molecule
 bck_test = jnp.array(300*jnp.ones((NPSF,3,2))).astype(jnp.float32)
 
 Mtest = compute_M_jax(xp=x_start*jnp.array([1 for i in range(nstack)]), yp=y_start*jnp.array([1 for i in range(nstack)]), zp=z_exp*jnp.array([1 for i in range(nstack)]), d=d_+signe_stack*jnp.linspace(-0.03*(nstack//2)//2,0.03*(nstack//2),nstack), x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2

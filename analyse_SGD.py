@@ -161,7 +161,8 @@ else:
 # %% TO BE MODIFIED
 # threshold on fit_quality: deviance per pixel (~1 for a good fit), or the final loss for files without deviance
 quality_thresh = 1.5 if deviance is not None else 1500
-mask1 = (fit_quality<quality_thresh) & (delta<150) & (delta>50) & (N_photons>50) & (N_photons<10000) & (z<1800) & (z>0) #& (eta>30) & (eta<150)
+# N_photon = photons of the whole molecule (3 planes) since 2026-10-28; the thresholds were 50 and 10000 per plane
+mask1 = (fit_quality<quality_thresh) & (delta<150) & (delta>50) & (N_photons>3*50) & (N_photons<3*10000) & (z<1800) & (z>0) #& (eta>30) & (eta<150)
 #mask1 = (delta<150) & (delta>60)
 #%% mask selection
 %matplotlib widget
@@ -349,7 +350,7 @@ correct_z = False
 plt.rcParams['figure.figsize'] = [5,5]
 fig = plt.figure()
 ax = fig.add_subplot()
-sc = ax.scatter(x , y, c=N_photons , cmap='coolwarm', s=0.1, vmax=10000)
+sc = ax.scatter(x , y, c=N_photons , cmap='coolwarm', s=0.1, vmax=3*10000)
 ax.set_title("Select the zone of the fiducial")
 ax.axis('equal')
 cb = plt.colorbar(sc)

@@ -139,7 +139,7 @@ def plot_results(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern
     z = np.array(params['z'] * z_speed2)
     background_arr = np.array(jnp.reshape(background, (h.shape[0],3,2)))
     for nb in range(data.shape[0]):
-        if N_photons[nb]>6000:
+        if N_photons[nb]>3*6000: # N of the whole molecule since 2026-10-28 (x3, PSF_jax normalised each plane before)
             fig, ax = plt.subplots(3, 2)
             ax[0,0].imshow(data[nb,0,0], cmap='gray')
             ax[0,0].scatter(x_fine[nb]/0.120+6, y_fine[nb]/0.120+6, s=10, c='r', marker='x')
@@ -250,7 +250,7 @@ J_dichroic = np.array([rot(-rotation)@J1@rot(rotation), rot(-rotation)@J2@rot(ro
 
 
 # %% SGD PARANETERS TO DEFINE
-Nphotons_speed1 = jax.device_put(15000)
+Nphotons_speed1 = jax.device_put(3*15000) # x3: N of the whole molecule
 background_speed = jax.device_put(100)
 LR1 = jax.device_put(0.03)
 num_epochs_max1 = 80
@@ -258,7 +258,7 @@ num_epochs_max1 = 80
 num_epochs_max2 = 120
 LR2 = jax.device_put(1.)
 delta_speed = jax.device_put(1.)
-nphotons_speed2 = jax.device_put(100)
+nphotons_speed2 = jax.device_put(3*100) # x3: N of the whole molecule
 xy_speed2 = jax.device_put(1/70)
 z_speed2=jax.device_put(1/20)
 
@@ -335,7 +335,7 @@ z_exp =  jax.device_put(jnp.array([float(d[1])*0.8 for k in range(NPSF)])).astyp
 rho_start = jnp.array([45. for k in range(NPSF)]).astype(jnp.float32)
 eta_start = jnp.array([90. for k in range(NPSF)]).astype(jnp.float32)
 delta_start = jnp.array([80. for k in range(NPSF)]).astype(jnp.float32)
-Nstart_test = jnp.array([3000. for k in range(NPSF)]).astype(jnp.float32)
+Nstart_test = jnp.array([3*3000. for k in range(NPSF)]).astype(jnp.float32)
 
 Mtest = compute_M_jax(xp=x_start, yp=y_start, zp=z_exp, d=d_, x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2
                 , Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, zernike_base=zernike_base
@@ -436,7 +436,7 @@ def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result):
     result['x'] = jnp.array(x)
     result['y'] = jnp.array(y)
     result['rho_start'] = jnp.array(rho)
-    result['Nstart'] = jnp.array([5000. for i in range(NPSF)]).astype(jnp.float32)#jnp.array(jnp.sum(Nstart_by_plane, axis=1)).astype(jnp.float32)
+    result['Nstart'] = jnp.array([3*5000. for i in range(NPSF)]).astype(jnp.float32) # x3: N of the whole molecule#jnp.array(jnp.sum(Nstart_by_plane, axis=1)).astype(jnp.float32)
     result['background_array'] = jnp.array(background*jnp.ones((NPSF,3,2))).astype(jnp.float32)
     result['sigma'] = jnp.array(sigma)
     result['frame'] = index_frame

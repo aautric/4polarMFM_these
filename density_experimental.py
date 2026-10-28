@@ -59,6 +59,7 @@ def parse_arguments():
                    'density_analysis/outliers_per_patch.npz exists')
     p.add_argument('--min-box', type=int, default=15, help='minimum number of localisations for a box of the box plot')
     p.add_argument('--examples', action='store_true', help='figures of data and fit for each box (needs the npz of the fit)')
+    p.add_argument('--fit', default=None, help='name of the fit_*.csv to use (default: the last one of the folder)')
     return p.parse_args()
 
 
@@ -118,8 +119,9 @@ def run_parameters(config_file):
         if '=' in line and not line.startswith('#'):
             k, _, v = line.partition('=')
             cfg[k.strip()] = v.strip()
+    # sensitivity: the photons of the run (the default of SGD_jax.py changed from 3.9 to 4.4 on 2026-10-26)
     overrides = {k: cfg[k] for k in ('middle_plane', 'rotation', 'rotation2', 'rho_offset', 'unitary_J', 'y_gain_J1',
-                                     'y_gain_J2', 'loss2') if k in cfg}
+                                     'y_gain_J2', 'loss2', 'sensitivity') if k in cfg}
     for k in ('J1', 'J2'):
         if k in cfg:
             overrides[k] = 'np.array(' + cfg[k] + ')'
@@ -321,6 +323,8 @@ def main():
 
     # ------------------------------------------------------------- 2. fit quality vs density
     fits = sorted(glob.glob(str(data / 'fit_*.csv')))
+    if a.fit:
+        fits = [str(data / a.fit)]
     if fits:
         fit = pd.read_csv(fits[-1], comment='#', sep=';', usecols=['frame', 'x', 'y', 'eta', 'deviance', 'N_photon'])
         fit = fit[np.isfinite(fit.deviance)].reset_index(drop=True)

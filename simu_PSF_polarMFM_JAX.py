@@ -470,8 +470,9 @@ def PSF_jax(rho, eta, delta, M, N_photons=1000):
 
     psf = jax.vmap(psf_projection)(M, R, lam_exp)
 
-    # Normalize each PSF
-    norm = jnp.sum(psf, axis=(2, 3, 4), keepdims=True)
+    # Normalize each PSF: N_photons = photons of the whole molecule (3 planes x 2 polarisations), as PSF() of the torch
+    # version. Until 2026-10-28 the sum was over axis=(2, 3, 4), each PLANE normalised to N_photons (3 N per molecule)
+    norm = jnp.sum(psf, axis=(1, 2, 3, 4), keepdims=True)
     psf = psf * N_photons[:,None,None,None,None] / norm
 
     return psf
