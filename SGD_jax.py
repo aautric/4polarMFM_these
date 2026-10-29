@@ -27,6 +27,15 @@ from concurrent.futures import ThreadPoolExecutor
 import ast
 import tifffile
 import re
+
+# début modif omar
+import time  # timers for the speed comparison
+from cnn_first_guess import cnn_first_guess  # CNN first guess, needs first_guess_net_jax.pt next to this file
+import stream_fit  # per-PSF fit from the CNN start (use_cnn = True)
+# fin modif omar
+
+
+
 # %% PARAMETERS TO BE DEFINED
 
 total_n_frame = 100000
@@ -39,7 +48,7 @@ EM = 200
 #sensitivity = 15.4
 sensitivity = 3.9
 
-look_up_folder = '/mnt/d/Amaury/DATA'
+look_up_folder = '/mnt/c/Users/Omar/Desktop/SLB'
 save_folder = Path(filedialog.askdirectory(initialdir=look_up_folder, title="Select the directory containing the tiff files"))
 path=(save_folder / "reconstruction")
 save_folder=(save_folder / f"NPZ_{datetime.now():%Y-%m-%d_%Hh%M}")
@@ -302,7 +311,7 @@ baseline_adu = measure_baseline(path.parent)
 #%% defining useful variables
 
 lambda_emission = jax.device_put(620) # nm
-middle_plane = jax.device_put(1.)
+middle_plane = jax.device_put(1.4)
 d = jnp.array([middle_plane-interplane, middle_plane, middle_plane+interplane])
 
 
@@ -371,6 +380,15 @@ zern_start_epoch2 = 50 # the aberrations stay at zern_x/zern_y during the first 
 # of tens of photons (cells). The Poisson likelihood has no such bias
 loss2 = 'poisson'
 
+
+# début modif omar
+use_cnn = True  # True: CNN start, each PSF fitted until it converges, optimizer chosen by optim; False: original loop, fixed starts
+optim = 'adam'  # use_cnn only. 'adam': one Adam fit of position, photons, orientation and background; 'lm': Levenberg-Marquardt
+batches_per_pool = 20  # use_cnn only. Batches loaded together, the GPU slots are refilled inside a pool
+# fin modif omar
+
+
+
 # extraction parameters
 Nframe= 20 # nb of frame per batch of extraction
 last_frame_processed=2000 #starting point 
@@ -384,7 +402,7 @@ batch_nb = 30000
 first_batch = 0 # index of the first npz file written
 n_psf_to_skip = 0 # PSF of the first frame that were already saved by the resumed run
 config_name = 'config.txt'
-dimensions = [215,160] # the dimension of the channels can slightly vary depending on the reconstruction file
+dimensions = [216,160] # the dimension of the channels can slightly vary depending on the reconstruction file
 
 # microscope parameters
 polar_projections = jax.device_put(jnp.array([0, 45, 0]))
@@ -527,6 +545,11 @@ config = {
     # resume, 0 for a new run
     'first_batch': first_batch,
     'n_psf_to_skip': n_psf_to_skip,
+    # début modif omar
+    'use_cnn': use_cnn,
+    'optim': optim,
+    'batches_per_pool': batches_per_pool,
+    # fin modif omar
 }
 
 with open(save_folder / config_name, 'w') as f:
@@ -717,10 +740,108 @@ buffer = (np.array([]), np.array([]), np.array([]), np.empty((0, 3, 3, 2))) # x,
 psf_buffer = np.empty((0, 3, 2, 13, 13))  # adjust shape to match your PSF dimensions
 first_loop_of_the_launch = True
 print('Starting at batch '+str(first_batch)+' after frame '+str(last_frame_processed)+', saving in '+str(save_folder))
-for batch in range(first_batch, batch_nb):
 
+
+# début modif omar
+# use_cnn: batches_per_pool batches are loaded together, each PSF starts from the CNN and is fitted until it converges
+# (its GPU slot then takes the next PSF); the npz of each batch are saved as in the loop below, with the steps of
+# each PSF and the durations of its pool
+if use_cnn:
+    correction_dft = 0.9952298
+    zero_zern = jnp.zeros((3, 15))
+    if optim == 'lm':
+        def model_lm(t7, bg):
+            # expected image (no aberration) from x, y, z (um), N, rho, eta, delta (deg) and the flat background
+            Mj = compute_M_jax(xp=t7[:, 0], yp=t7[:, 1], zp=t7[:, 2], d=d_, x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2,
+                               Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, phase_maskx=phase_mask, phase_masky=phase_mask,
+                               zernike_base=zernike_base, zernike_coefs_x=zero_zern, zernike_coefs_y=zero_zern,
+                               second_plane=second_plane, polar_projections=polar_projections, lambd=lambd, f_tube=f_tube)
+            h = PSF_jax(rho=t7[:, 4], eta=t7[:, 5], delta=t7[:, 6], M=Mj, N_photons=t7[:, 3])[:, :, :, dim_simu-6:dim_simu+7, dim_simu-6:dim_simu+7]
+            return h + jnp.reshape(bg, (h.shape[0], 3, 2))[:, :, :, None, None]
+        fit_pool = stream_fit.make_fit_lm(model_lm, NPSF)
+    else:  # Adam with the loss of SGD2, its speeds and LR2, background offsets with a speed of 0.1 photon/pixel
+        speeds = dict(delta_speed=delta_speed, nphotons_speed2=nphotons_speed2, xy_speed2=xy_speed2, z_speed2=z_speed2)
+        fit_pool = stream_fit.make_fit_adam(
+            lambda p, data, bg, noise: loss_angle_with_M(p, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern_x, zern_y, 0*zern_speed2_x, 0*zern_speed2_y, data, bg, noise, dim_simu, d_),
+            speeds, float(LR2), 0.1, NPSF)
+
+    for group in range(first_batch, batch_nb, batches_per_pool):
+        group_batches = list(range(group, min(group + batches_per_pool, batch_nb)))
+        first_of_launch = first_loop_of_the_launch  # the first pool of a launch includes the JAX compilation
+        first_loop_of_the_launch = False
+        wall_start = time.time()
+        t0 = time.perf_counter()
+        loaded = []
+        for batch in group_batches:
+            current = {}
+            load_batch(last_frame_processed, buffer, psf_buffer, NPSF, current, n_skip=n_psf_to_skip)
+            n_psf_to_skip = 0
+            buffer, psf_buffer, last_frame_processed = current['buffer'], current['psf_buffer'], current['last_frame_processed']
+            loaded.append(current)
+        t_load = time.perf_counter() - t0  # reading the frames of the whole pool
+        n_pool = NPSF * len(loaded)
+        cat = lambda key: jnp.concatenate([c[key] for c in loaded])
+
+        t0 = time.perf_counter()
+        x0, y0, z0, N0, rho0, eta0, delta0 = cnn_first_guess(cat('noisy_psf'))  # um, um, um, photons per plane, deg, deg, deg
+        x0.block_until_ready()
+        t_cnn = time.perf_counter() - t0
+
+        pool = dict(data=cat('noisy_psf'), noise=cat('noise'), background=cat('background_array').reshape(n_pool, 6),
+                    x0=x0, y0=y0, z0=z0, N0=N0, rho0=rho0, eta0=eta0, delta0=delta0)
+        pool = {key: jnp.asarray(value, jnp.float32) for key, value in pool.items()}
+        t0 = time.perf_counter()
+        res = fit_pool(pool)
+        t_fit = time.perf_counter() - t0  # fit of the whole pool
+
+        t0 = time.perf_counter()
+        scores = []
+        for i in range(len(loaded)):
+            r = {key: value[i*NPSF:(i+1)*NPSF] for key, value in res.items()}
+            scores.append(eval_batch(jnp.asarray(r['x']), jnp.asarray(r['y']), jnp.asarray(r['z']), zero_zern, zero_zern,
+                                     jnp.asarray(r['rho'] % 360), jnp.asarray(r['eta'] % 180), jnp.asarray(r['delta']),
+                                     jnp.asarray(r['N']), loaded[i]['noisy_psf'], jnp.asarray(r['background'].reshape(-1)),
+                                     loaded[i]['noise'], dim_simu))
+        jax.block_until_ready(scores)
+        t_eval = time.perf_counter() - t0
+
+        for i, batch in enumerate(group_batches):
+            current = loaded[i]
+            r = {key: value[i*NPSF:(i+1)*NPSF] for key, value in res.items()}
+            score, deviance = scores[i]
+            rho_found = r['rho'] % 360 + rho_offset
+            eta_found = r['eta'] % 180
+            mask = (rho_found > 180)
+            eta_found[mask] = (180-eta_found[mask]) % 180
+            rho_found = rho_found % 180
+            x, y = np.array(current['x']), np.array(current['y'])
+            x_ = (x/120).astype(int)*120 + 1000*r['x']/correction_dft
+            y_ = (y/120).astype(int)*120 + 1000*r['y']/correction_dft
+            np.savez_compressed(str(save_folder)+'/'+str(int(batch))+'.npz',
+                                frame=current['frame'], x=np.array(x_), y=np.array(y_), z=1000*r['z'], N_photons=r['N'],
+                                rho=rho_found, eta=eta_found, delta=r['delta'], score=np.array(score), deviance=np.array(deviance),
+                                x_start=x, y_start=y, z_start=np.nan, rho_start=np.nan, delta_start=np.nan,
+                                background_array_found=r['background'].reshape(-1),
+                                zernx_found=np.zeros((3, 15)), zerny_found=np.zeros((3, 15)),
+                                noise_gain=np.array(current['noise'][:, 0]), noise_shift=np.array(current['noise'][:, 1]),
+                                steps=r['steps'], use_cnn=use_cnn, optim=optim,  # steps (Adam) or iterations (LM) of each PSF
+                                group=group, n_pool=n_pool, first_of_launch=first_of_launch, wall_start=wall_start,
+                                t_load=t_load, t_cnn=t_cnn, t_fit=t_fit, t_eval=t_eval)  # durations of the whole pool (s)
+        print(f'pool {group}-{group_batches[-1]}: {n_pool} PSF, fit {t_fit:.0f} s, load {t_load:.0f} s, steps {res["steps"].mean():.1f}')
+# fin modif omar
+# début modif omar
+for batch in range(first_batch, first_batch if use_cnn else batch_nb):  # original loop, fixed starts (use_cnn = False)
+# fin modif omar
+
+    # début modif omar
+    first_of_launch = first_loop_of_the_launch  # True for the first batch of a launch: includes JAX compilation
+    wall_start = time.time()  # clock time at the start of the batch
+    t_batch0 = time.perf_counter()  # timer of the whole batch
     current = {}
+    t0 = time.perf_counter()
     load_batch(last_frame_processed, buffer, psf_buffer, NPSF, current, n_skip=n_psf_to_skip)
+    t_load = time.perf_counter() - t0  # reading the frames and cutting the patches
+    # fin modif omar
     n_psf_to_skip = 0 # only the first batch of a resumed run skips PSF
     buffer = current.get('buffer', buffer)
     psf_buffer = current.get('psf_buffer', psf_buffer)
@@ -732,13 +853,25 @@ for batch in range(first_batch, batch_nb):
     x = current['x']  
     y = current['y']  
     frame = current['frame'] 
+
+    # début modif omar
+    x0, y0, z0, N0 = x_start, y_start, z_exp, current['Nstart']  # original fixed starts of SGD1
+    rho1 = jnp.full(NPSF, 45., dtype=jnp.float32)  # original SGD1 orientation (angle_rd2)
+    eta1 = jnp.full(NPSF, 45., dtype=jnp.float32)  # original SGD1 orientation (angle_rd2)
+    delta1 = jnp.full(NPSF, 180., dtype=jnp.float32)  # original SGD1 wobble (angle_rd1)
+    rho0, eta0, delta0 = rho_start, eta_start, delta_start  # original fixed starts of SGD2
+    t_cnn = 0.  # no CNN in this loop
+
+
     params = {
-        'xp': x_start,
-        'yp': y_start,
-        'zp': z_exp,
-        'N_photons': current['Nstart'] / Nphotons_speed1,
-        'background': current['background_array'].flatten() / background_speed
+        'xp': x0,  # starting x (um)
+        'yp': y0,  # starting y (um)
+        'zp': z0,  # starting z (um)
+        'N_photons': N0 / Nphotons_speed1,  # starting photons per plane, scaled as before
+        'background': current['background_array'].flatten() / background_speed  # unchanged
     }
+
+    # fin modif omar
 
     angle_rd1 = jnp.array([180. for k in range(NPSF)]).astype(jnp.float32)
     angle_rd2 = jnp.array([45. for k in range(NPSF)]).astype(jnp.float32)
@@ -750,14 +883,22 @@ for batch in range(first_batch, batch_nb):
     N__ = []
     x__ =[]
     bck = []
-    
+
+    # début modif omar
+    t0 = time.perf_counter()  # timer of SGD1
+    # fin modif omar
     for i in tqdm(range(num_epochs_max1)):
-        params, opt_state, loss = step1(params, opt_state, Nphotons_speed1, background_speed, angle_rd2, angle_rd2, angle_rd1, noisy_psf, second_plane, noise, dim_simu, d_)
+        # début modif omar
+        params, opt_state, loss = step1(params, opt_state, Nphotons_speed1, background_speed, rho1, eta1, delta1, noisy_psf, second_plane, noise, dim_simu, d_)  # orientation from rho1, eta1, delta1 instead of angle_rd2, angle_rd2, angle_rd1
+        # fin modif omar
         loss_.append(float(loss))
         z__.append(np.array(params['zp']))
         N__.append(np.array(params['N_photons'] * Nphotons_speed1))
         x__.append(np.array(params['xp']))
         bck.append(np.array(params['background'] * background_speed))
+    # début modif omar
+    t_sgd1 = time.perf_counter() - t0  # SGD1 steps, plots excluded (float(loss) already waits for the GPU at each step)
+    # fin modif omar
     if batch<30:
         fig, ax = plt.subplots(2,3)
         ax[0,0].plot(loss_)
@@ -786,11 +927,11 @@ for batch in range(first_batch, batch_nb):
     
 
 ################################ second SGD on orientation #########################################################################################
-    
+    # début modif omar
     params = {
-    'rho': rho_start,
-    'eta': eta_start,
-    'delta': delta_start/delta_speed,
+    'rho': rho0,  # starting rho (deg)
+    'eta': eta0,  # starting eta (deg)
+    'delta': delta0/delta_speed,  # starting wobble (deg), scaled as before
     'N_photons': N_found/nphotons_speed2,
     'x': x_found/xy_speed2,
     'y': y_found/xy_speed2,
@@ -798,6 +939,8 @@ for batch in range(first_batch, batch_nb):
     'zern_x': jnp.zeros(3*15),
     'zern_y': jnp.zeros(3*15)
     }
+    # fin modif omar
+  
     optimizer = optax.adam(learning_rate=LR2)
     opt_state = optimizer.init(params)
     
@@ -810,11 +953,19 @@ for batch in range(first_batch, batch_nb):
     Np_ = []
     zx_ = []
     zy_ = []
-    
+
+    # début modif omar
+    t0 = time.perf_counter()  # timer of SGD2
+    # fin modif omar
     for i in tqdm(range(num_epochs_max2)):
         # a speed of 0 gives a gradient of 0: the aberrations do not move before zern_start_epoch2
         zern_on = float(i >= zern_start_epoch2)
         params, opt_state, loss = step2(params, opt_state, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern_x, zern_y, zern_speed2_x*zern_on, zern_speed2_y*zern_on, noisy_psf, background_array_found, noise, dim_simu, d_)
+        # début modif omar
+        params['delta'] = jnp.maximum(params['delta'], 2./delta_speed)  # wobble >= 2 deg: near 0 deg PSF_jax gives 0/0 and the penalty overflows (NaN)
+        if not fit_zernike:
+            params['zern_x'], params['zern_y'] = jnp.zeros(3*15), jnp.zeros(3*15)  # unused, reset so one NaN PSF cannot spread to the whole batch
+        # fin modif omar
         loss_.append(float(loss))
         rho_.append(np.array(params['rho']))
         eta_.append(np.array(params['eta']))
@@ -825,6 +976,9 @@ for batch in range(first_batch, batch_nb):
         zx_.append(np.array(zern_x + params['zern_x'] * zern_speed2_x) * 1000/(2*np.pi)) # rad to milli-waves
         zy_.append(np.array(zern_y + params['zern_y'] * zern_speed2_y) * 1000/(2*np.pi))
     #jax.debug.print("rho_found: {}", np.array(params['rho']))
+    # début modif omar
+    t_sgd2 = time.perf_counter() - t0  # SGD2 steps, plots excluded
+    # fin modif omar
     if batch<30:
         fig, ax = plt.subplots(4,2, figsize=(12,14))
         ax[0,0].plot(loss_)
@@ -904,8 +1058,13 @@ for batch in range(first_batch, batch_nb):
     zerny = jnp.reshape(zern_y + params['zern_y']*zern_speed2_y, (3,15))
     del(params, loss)
     
+    # début modif omar
+    t0 = time.perf_counter()
     score, deviance = eval_batch(x_found, y_found, z_found, zernx, zerny, rho_found, eta_found, delta_found, N_found2, noisy_psf, background_array_found, noise, dim_simu)
-    
+    score.block_until_ready()  # wait for the GPU before reading the timer
+    t_eval = time.perf_counter() - t0  # final score and deviance
+    # fin modif omar
+
     rho_found = np.array(rho_found)+rho_offset
     eta_found = np.array(eta_found)
     x_found = np.array(x_found)
@@ -930,7 +1089,13 @@ for batch in range(first_batch, batch_nb):
                         rho_start=np.nan, delta_start=np.nan, 
                         background_array_found=np.array(background_array_found),
                         zernx_found=np.array(zernx), zerny_found=np.array(zerny),
-                        noise_gain=np.array(noise[:, 0]), noise_shift=np.array(noise[:, 1]))
+                        noise_gain=np.array(noise[:, 0]), noise_shift=np.array(noise[:, 1]),
+                        # début modif omar
+                        t_load=t_load, t_cnn=t_cnn, t_sgd1=t_sgd1, t_sgd2=t_sgd2, t_eval=t_eval,  # durations in s
+                        t_batch=time.perf_counter() - t_batch0, wall_start=wall_start,  # whole batch, start time
+                        first_of_launch=first_of_launch, use_cnn=use_cnn,  # first batch of a launch (compilation), start used
+                        epochs1=num_epochs_max1, epochs2=num_epochs_max2)  # steps of SGD1 and SGD2
+                        # fin modif omar
 
 # %%
  

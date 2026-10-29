@@ -1,0 +1,196 @@
+"""Per-PSF fits started from the CNN, with a convergence stop and slot refill.
+
+A fixed number of slots (one per PSF on the GPU) runs in parallel; a PSF stops when its parameters move
+less than a tolerance for `patience` steps in a row, its slot then takes the next PSF of the pool.
+Two optimizers fitting position, photons, orientation and one background offset per plane together:
+Adam (one step count per slot) or Levenberg-Marquardt.
+"""
+import numpy as np
+import jax
+import jax.numpy as jnp
+
+
+def _bcast(mask, a):
+    return mask.reshape((-1,) + (1,) * (a.ndim - 1))
+
+
+def make_refill(init):
+    """Jitted refill: slots where mask is True restart from init(ids, pool)."""
+    return jax.jit(lambda s, i, m, p: jax.tree_util.tree_map(lambda a, b: jnp.where(_bcast(m, a), b, a), s, init(i, p)))
+
+
+def stream(n, slots, init, refill, step, watch, move, extract, pool, cap, patience):
+    """Runs `step` on `slots` PSF at a time until each of the n PSF of the pool has converged.
+
+    init(ids, pool) -> state, step(state, ids, pool) -> state: pytrees with a leading slot axis, refill = make_refill(init).
+    watch(state) -> (slots, k) numpy, move(prev, cur) -> (slots,) movement / tolerance.
+    extract(state) -> dict of (slots, ...) numpy. Returns dict of (n, ...) arrays and the steps of each PSF.
+    """
+    ids = np.minimum(np.arange(slots), n - 1)
+    alive = np.arange(slots) < n
+    nxt = slots
+    state = init(jnp.asarray(ids), pool)
+    calm, age = np.zeros(slots, int), np.zeros(slots, int)
+    steps, out = np.zeros(n, int), None
+    prev = watch(state)
+    while alive.any():
+        state = step(state, jnp.asarray(ids), pool)
+        age += 1
+        cur = watch(state)
+        calm = np.where(move(prev, cur) < 1, calm + 1, 0)
+        done = alive & ((calm >= patience) | (age >= cap))
+        if done.any():
+            vals = extract(state)
+            if out is None:
+                out = {k: np.zeros((n,) + v.shape[1:], v.dtype) for k, v in vals.items()}
+            for k, v in vals.items():
+                out[k][ids[done]] = v[done]
+            steps[ids[done]] = age[done]
+            new = np.zeros(slots, bool)
+            for s in np.where(done)[0]:
+                if nxt < n:
+                    ids[s], nxt, new[s] = nxt, nxt + 1, True
+                else:
+                    alive[s] = False
+            if new.any():
+                state = refill(state, jnp.asarray(ids), jnp.asarray(new), pool)
+                calm[new], age[new] = 0, 0
+                cur = watch(state)
+        prev = cur
+    return out, steps
+
+
+def adam_slots(params, grads, m, v, t, lr, b1=0.9, b2=0.999, eps=1e-8):
+    """Adam with one step count per slot (t, (slots,)), same update as optax.adam for each slot."""
+    t1 = t + 1
+
+    def upd(p, g, m_, v_):
+        m_ = b1 * m_ + (1 - b1) * g
+        v_ = b2 * v_ + (1 - b2) * g ** 2
+        c1 = _bcast(t1, p).astype(p.dtype)
+        mh, vh = m_ / (1 - b1 ** c1), v_ / (1 - b2 ** c1)
+        return p - lr * mh / (jnp.sqrt(vh) + eps), m_, v_
+
+    res = {k: upd(params[k], grads[k], m[k], v[k]) for k in params}
+    return {k: r[0] for k, r in res.items()}, {k: r[1] for k, r in res.items()}, {k: r[2] for k, r in res.items()}, t1
+
+
+def _axis(rho, eta):
+    r, e = np.radians(rho), np.radians(eta)
+    return np.stack([np.sin(e) * np.cos(r), np.sin(e) * np.sin(r), np.cos(e)], -1)
+
+
+def move_orient(prev, cur, tol_deg=0.2, tol_nm=2.):
+    """prev, cur: (slots, 6) x, y, z (um), rho, eta, delta (deg). Largest of axis angle, delta, position steps."""
+    a = np.degrees(np.arccos(np.clip(np.abs(np.sum(_axis(cur[:, 3], cur[:, 4]) * _axis(prev[:, 3], prev[:, 4]), -1)), 0, 1)))
+    return np.maximum.reduce([a / tol_deg, np.abs(cur[:, 5] - prev[:, 5]) / tol_deg,
+                              np.abs(cur[:, :3] - prev[:, :3]).max(1) * 1e3 / tol_nm])
+
+
+def move_orient_bg(prev, cur, tol_bg=0.01):
+    """As move_orient, with 3 more columns (background offsets, photons/pixel) and their tolerance."""
+    return np.maximum(move_orient(prev[:, :6], cur[:, :6]), np.abs(cur[:, 6:] - prev[:, 6:]).max(1) / tol_bg)
+
+
+def make_fit_adam(loss2, sp, lr, bg_speed, slots, cap=400, patience=10):
+    """Builds fit(pool), compiled once: one Adam fit of orientation, N, x, y, z and one background offset per plane
+    (added to the starting background of both polarisations), with the loss of SGD2.
+
+    pool: dict of device arrays: data, noise, background (n, 6) start, x0, y0, z0, N0, rho0, eta0, delta0.
+    loss2(params, data, background_flat, noise): summed loss of SGD2. sp: speeds of SGD2 (delta_speed,
+    nphotons_speed2, xy_speed2, z_speed2). bg_speed: speed of the background offsets (photons/pixel).
+    fit(pool) returns dict of (n,) arrays (x, y, z, N, rho, eta, delta, background (n, 6), steps).
+    """
+    zeros = lambda p: jax.tree_util.tree_map(jnp.zeros_like, p)
+    bg_of = lambda prm, bg0: (bg0.reshape(-1, 3, 2) + prm['bgo'][:, :, None] * bg_speed).reshape(-1)
+
+    def init(ids, p):
+        prm = {'rho': p['rho0'][ids], 'eta': p['eta0'][ids], 'delta': p['delta0'][ids] / sp['delta_speed'],
+               'N_photons': p['N0'][ids] / sp['nphotons_speed2'], 'x': p['x0'][ids] / sp['xy_speed2'],
+               'y': p['y0'][ids] / sp['xy_speed2'], 'z': p['z0'][ids] / sp['z_speed2'], 'bgo': jnp.zeros((ids.shape[0], 3))}
+        return prm, zeros(prm), zeros(prm), jnp.zeros(ids.shape[0], jnp.int32)
+
+    @jax.jit
+    def step(state, ids, p):
+        prm, m, v, t = state
+        bg0 = p['background'][ids]
+        lf = lambda q: loss2(dict({k: q[k] for k in q if k != 'bgo'}, zern_x=jnp.zeros(45), zern_y=jnp.zeros(45)),
+                             p['data'][ids], bg_of(q, bg0), p['noise'][ids])
+        prm, m, v, t = adam_slots(prm, jax.grad(lf)(prm), m, v, t, lr)
+        prm['delta'] = jnp.maximum(prm['delta'], 2. / sp['delta_speed'])  # wobble >= 2 deg (0/0 in PSF_jax near 0)
+        return prm, m, v, t
+
+    wj = jax.jit(lambda s: jnp.concatenate([jnp.stack([s[0]['x'] * sp['xy_speed2'], s[0]['y'] * sp['xy_speed2'], s[0]['z'] * sp['z_speed2'],
+                                                       s[0]['rho'], s[0]['eta'], s[0]['delta'] * sp['delta_speed']], 1),
+                                            s[0]['bgo'] * bg_speed], 1))
+    w = lambda s: np.asarray(wj(s))  # one transfer per step
+
+    def ex(s):
+        q = s[0]
+        return {'x': np.array(q['x']) * float(sp['xy_speed2']), 'y': np.array(q['y']) * float(sp['xy_speed2']),
+                'z': np.array(q['z']) * float(sp['z_speed2']), 'rho': np.array(q['rho']), 'eta': np.array(q['eta']),
+                'delta': np.array(q['delta']) * float(sp['delta_speed']), 'N': np.array(q['N_photons']) * float(sp['nphotons_speed2']),
+                'bgo': np.array(q['bgo']) * bg_speed}
+    refill = make_refill(init)
+
+    def fit(pool):
+        n = pool['data'].shape[0]
+        r, steps = stream(n, slots, init, refill, step, w, move_orient_bg, ex, pool, cap, patience)
+        bg = (np.array(pool['background']).reshape(-1, 3, 2) + r.pop('bgo')[:, :, None]).reshape(-1, 6)
+        return dict(r, background=bg, steps=steps)
+    return fit
+
+
+def make_fit_lm(model, slots, cap=100, patience=3):
+    """Builds fit(pool), compiled once: Levenberg-Marquardt fit of x, y, z, N, rho, eta, delta and one background
+    offset per plane (added to the starting background of both polarisations), Poisson loss with the noise model.
+
+    pool: dict of device arrays: data, noise, background (n, 6) start, x0, y0, z0, N0, rho0, eta0, delta0.
+    model(th7, background_flat) -> expected image (slots, 3, 2, 13, 13), th7 = x, y, z (um), N, rho, eta, delta (deg).
+    fit(pool) returns dict of (n,) arrays (x, y, z, N, rho, eta, delta, background (n, 6), steps = iterations).
+    """
+
+    def full(th, bg0):
+        return th[:, :7], (bg0.reshape(-1, 3, 2) + th[:, 7:, None]).reshape(-1)
+
+    def nll(th, bg0, data, noise):
+        t7, bg = full(th, bg0)
+        g, s = noise[:, 0, :, :, None, None], noise[:, 1, :, :, None, None]
+        mu = model(t7, bg)
+        return jnp.sum((mu - (data + s) * jnp.log(jnp.maximum(mu + s, 1e-3))) / g, axis=(1, 2, 3, 4))
+
+    def init(ids, p):
+        th = jnp.stack([p[k][ids] for k in ('x0', 'y0', 'z0', 'N0', 'rho0', 'eta0', 'delta0')], 1)
+        return jnp.concatenate([th, jnp.zeros((ids.shape[0], 3))], 1), jnp.full(ids.shape[0], 1e-2)
+
+    @jax.jit
+    def step(state, ids, p):
+        th, lam = state
+        data, noise, bg0 = p['data'][ids], p['noise'][ids], p['background'][ids]
+        f = lambda t7: model(t7, full(th, bg0)[1])
+        mu = f(th[:, :7])
+        jp = jnp.stack([jax.jvp(f, (th[:, :7],), (jnp.zeros_like(th[:, :7]).at[:, k].set(1.),))[1] for k in range(7)], 1)
+        jb = jnp.broadcast_to(jnp.eye(3).reshape(1, 3, 3, 1, 1, 1), (th.shape[0], 3, 3, 2) + mu.shape[-2:])
+        J = jnp.concatenate([jp, jb], 1)
+        g, s = noise[:, 0, :, :, None, None], noise[:, 1, :, :, None, None]
+        m = jnp.maximum(mu + s, 1e-3)
+        grad = jnp.sum(J * ((1. - (data + s) / m) / g)[:, None], axis=(2, 3, 4, 5))
+        F = jnp.einsum('nkabcd,nlabcd->nkl', J * (1. / (g * m))[:, None], J)  # Fisher information of each PSF
+        A = F + lam[:, None, None] * jnp.eye(10)[None] * jnp.diagonal(F, axis1=1, axis2=2)[:, :, None]
+        cand = th + jnp.linalg.solve(A, -grad[..., None])[..., 0]
+        cand = cand.at[:, 6].set(jnp.clip(cand[:, 6], 2., 179.)).at[:, 3].set(jnp.maximum(cand[:, 3], 1.)).at[:, 2].set(jnp.maximum(cand[:, 2], 0.))
+        ok = nll(cand, bg0, data, noise) < nll(th, bg0, data, noise)  # False for NaN
+        return jnp.where(ok[:, None], cand, th), jnp.where(ok, lam / 3., lam * 4.)
+
+    w = lambda s: np.asarray(s[0])[:, [0, 1, 2, 4, 5, 6]]
+    ex = lambda s: {'th': np.array(s[0])}
+    refill = make_refill(init)
+
+    def fit(pool):
+        n = pool['data'].shape[0]
+        r, steps = stream(n, slots, init, refill, step, w, move_orient, ex, pool, cap, patience)
+        th = r['th']
+        bg = (np.array(pool['background']).reshape(-1, 3, 2) + th[:, 7:, None]).reshape(-1, 6)
+        out = {k: th[:, j] for j, k in enumerate(('x', 'y', 'z', 'N', 'rho', 'eta', 'delta'))}
+        return dict(out, background=bg, steps=steps)
+    return fit
