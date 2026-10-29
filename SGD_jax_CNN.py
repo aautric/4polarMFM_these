@@ -33,7 +33,7 @@ import ast
 import tifffile
 import re
 import time  # timers of the pools
-from cnn_first_guess import cnn_first_guess, TRAIN_MIDDLE_PLANE, TRAIN_Z_RANGE  # CNN first guess, needs first_guess_net_jax.pt next to this file
+from cnn_first_guess import cnn_first_guess, training_settings  # CNN first guess, needs first_guess_net_jax.pt next to this file
 import stream_fit  # per-PSF fit from the CNN start
 # %% PARAMETERS TO BE DEFINED
 
@@ -983,7 +983,7 @@ if optim == 'lm':
     zernike_grad = jax.jit(jax.grad(lambda off, prm, data, bg, noise: loss_angle_with_M(
         dict(prm, zern_x=off[0], zern_y=off[1]), delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern_x, zern_y,
         zern_speed2_x, zern_speed2_y, data, bg, noise, dim_simu, d_)))
-else:  # Adam with the loss of SGD2 (loss2), its speeds and LR2, background offsets with a speed of 0.1 photon/pixel
+else:  # Adam with the loss of SGD2 (loss2), its speeds and LR2, offsets of the 6 backgrounds with a speed of 0.1 photon/pixel
     speeds = dict(delta_speed=delta_speed, nphotons_speed2=nphotons_speed2, xy_speed2=xy_speed2, z_speed2=z_speed2)
     fit_pool = stream_fit.make_fit_adam(
         lambda p, data, bg, noise: loss_angle_with_M(p, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern_x, zern_y, 0*zern_speed2_x, 0*zern_speed2_y, data, bg, noise, dim_simu, d_),
@@ -1016,10 +1016,14 @@ def cnn_z_equivalence(middle_plane_run, middle_plane_cnn, z_run=np.arange(0., 3.
     c0, c1, c2 = cost[i, j-1], cost[i, j], cost[i, j+1]
     z_eq = z_cnn[j] + (z_cnn[1] - z_cnn[0])*0.5*(c0 - c2)/np.maximum(c0 - 2*c1 + c2, 1e-30)  # parabola through the 3 best
     return z_run, np.maximum.accumulate(z_eq)
-cnn_z_table = cnn_z_equivalence(float(middle_plane), TRAIN_MIDDLE_PLANE)
-print(f'CNN trained at middle_plane {TRAIN_MIDDLE_PLANE}, run at {float(middle_plane):g}: z of the CNN - z = '
+cnn_training = training_settings()  # settings of the training data of the CNN (middle_plane, z_um, ...)
+cnn_z_table = cnn_z_equivalence(float(middle_plane), cnn_training['middle_plane'])
+print(f"CNN trained at middle_plane {cnn_training['middle_plane']}, run at {float(middle_plane):g}: z of the CNN - z = "
       + ', '.join(f'{1000*(np.interp(zz, *cnn_z_table) - zz):+.0f} nm at {zz:g} um' for zz in (0.25, 0.75, 1.25, 1.75))
-      + '; start reliable for z in [%.2f, %.2f] um (z of the training %g-%g um)' % (*np.interp(TRAIN_Z_RANGE, cnn_z_table[1], cnn_z_table[0]), *TRAIN_Z_RANGE))
+      + '; start reliable for z in [%.2f, %.2f] um (z of the training %g-%g um)' % (*np.interp(cnn_training['z_um'], cnn_z_table[1], cnn_z_table[0]), *cnn_training['z_um']))
+for key in ('n_photons_molecule', 'background'):
+    if key in cnn_training:
+        print(f'CNN trained with {key} in {cnn_training[key]}')
 
 for group in range(first_batch, batch_nb, batches_per_pool):
     group_batches = list(range(group, min(group + batches_per_pool, batch_nb)))
@@ -1038,14 +1042,17 @@ for group in range(first_batch, batch_nb, batches_per_pool):
     n_pool = NPSF * len(loaded)
     cat = lambda key: jnp.concatenate([c[key] for c in loaded])
 
-    # starting point of the fit: the CNN instead of the fixed starts and SGD1 of the loop below (no SGD1: the
-    # background is fitted with the other parameters, one offset per plane)
+    # starting point of the fit: the CNN instead of the fixed starts and SGD1 of SGD_jax.py (no SGD1: the background
+    # of the 6 channels is fitted with the other parameters, from the mean background level given by the CNN)
     t0 = time.perf_counter()
-    x0, y0, z0, N0, rho0, eta0, delta0 = cnn_first_guess(cat('noisy_psf'), z_table=cnn_z_table)  # um, um, um (middle plane of the run), photons of the whole molecule, deg, deg, deg
+    x0, y0, z0, N0, rho0, eta0, delta0, bg0 = cnn_first_guess(cat('noisy_psf'), z_table=cnn_z_table)  # um, um, um (middle plane of the run), photons of the whole molecule, deg, deg, deg, photons/pixel
     x0.block_until_ready()
     t_cnn = time.perf_counter() - t0
+    # start of the 6 backgrounds of each PSF: the CNN level in all the channels (a checkpoint without the background
+    # output: the levels of load_batch)
+    background0 = cat('background_array').reshape(n_pool, 6) if bg0 is None else jnp.repeat(bg0[:, None], 6, axis=1)
 
-    pool = dict(data=cat('noisy_psf'), noise=cat('noise'), background=cat('background_array').reshape(n_pool, 6),
+    pool = dict(data=cat('noisy_psf'), noise=cat('noise'), background=background0,
                 x0=x0, y0=y0, z0=z0, N0=N0, rho0=rho0, eta0=eta0, delta0=delta0)
     pool = {key: jnp.asarray(value, jnp.float32) for key, value in pool.items()}
     zern_offset = (jnp.zeros(3*15), jnp.zeros(3*15))
@@ -1101,6 +1108,7 @@ for group in range(first_batch, batch_nb, batches_per_pool):
                             rho=rho_found, eta=eta_found, delta=r['delta'], score=np.array(score), deviance=np.array(deviance),
                             x_start=x, y_start=y, z_start=np.nan, rho_start=np.nan, delta_start=np.nan,
                             background_array_found=r['background'].reshape(-1),
+                            background_start=np.array(background0[i*NPSF:(i+1)*NPSF]),  # (NPSF, 6) start of the 6 backgrounds (CNN)
                             zernx_found=np.array(zernx_cnn), zerny_found=np.array(zerny_cnn),
                             noise_gain=np.array(current['noise'][:, 0]), noise_shift=np.array(current['noise'][:, 1]),
                             steps=r['steps'], use_cnn=True, optim=optim,  # steps (Adam) or iterations (LM) of each PSF

@@ -3,3 +3,6 @@ MC.svg
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+
+# dataset of the unit PSFs of train_cnn_jax.py (~850 MB)
+dataset_jax*.npz

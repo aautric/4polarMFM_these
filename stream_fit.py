@@ -2,8 +2,8 @@
 
 A fixed number of slots (one per PSF on the GPU) runs in parallel; a PSF stops when its parameters move
 less than a tolerance for `patience` steps in a row, its slot then takes the next PSF of the pool.
-Two optimizers fitting position, photons, orientation and one background offset per plane together:
-Adam (one step count per slot) or Levenberg-Marquardt.
+Two optimizers fitting position, photons, orientation and the background of the 6 channels (3 planes x 2
+polarisations) together: Adam (one step count per slot) or Levenberg-Marquardt.
 """
 import numpy as np
 import jax
@@ -88,13 +88,13 @@ def move_orient(prev, cur, tol_deg=0.2, tol_nm=2.):
 
 
 def move_orient_bg(prev, cur, tol_bg=0.01):
-    """As move_orient, with 3 more columns (background offsets, photons/pixel) and their tolerance."""
+    """As move_orient, with more columns (background offsets, photons/pixel) and their tolerance."""
     return np.maximum(move_orient(prev[:, :6], cur[:, :6]), np.abs(cur[:, 6:] - prev[:, 6:]).max(1) / tol_bg)
 
 
 def make_fit_adam(loss2, sp, lr, bg_speed, slots, cap=400, patience=10):
-    """Builds fit(pool), compiled once: one Adam fit of orientation, N, x, y, z and one background offset per plane
-    (added to the starting background of both polarisations), with the loss of SGD2.
+    """Builds fit(pool), compiled once: one Adam fit of orientation, N, x, y, z and the background of the 6 channels
+    (offsets added to the starting background of each channel), with the loss of SGD2.
 
     pool: dict of device arrays: data, noise, background (n, 6) start, x0, y0, z0, N0, rho0, eta0, delta0.
     loss2(params, data, background_flat, noise): summed loss of SGD2. sp: speeds of SGD2 (delta_speed,
@@ -102,12 +102,12 @@ def make_fit_adam(loss2, sp, lr, bg_speed, slots, cap=400, patience=10):
     fit(pool) returns dict of (n,) arrays (x, y, z, N, rho, eta, delta, background (n, 6), steps).
     """
     zeros = lambda p: jax.tree_util.tree_map(jnp.zeros_like, p)
-    bg_of = lambda prm, bg0: (bg0.reshape(-1, 3, 2) + prm['bgo'][:, :, None] * bg_speed).reshape(-1)
+    bg_of = lambda prm, bg0: (bg0 + prm['bgo'] * bg_speed).reshape(-1)
 
     def init(ids, p):
         prm = {'rho': p['rho0'][ids], 'eta': p['eta0'][ids], 'delta': p['delta0'][ids] / sp['delta_speed'],
                'N_photons': p['N0'][ids] / sp['nphotons_speed2'], 'x': p['x0'][ids] / sp['xy_speed2'],
-               'y': p['y0'][ids] / sp['xy_speed2'], 'z': p['z0'][ids] / sp['z_speed2'], 'bgo': jnp.zeros((ids.shape[0], 3))}
+               'y': p['y0'][ids] / sp['xy_speed2'], 'z': p['z0'][ids] / sp['z_speed2'], 'bgo': jnp.zeros((ids.shape[0], 6))}
         return prm, zeros(prm), zeros(prm), jnp.zeros(ids.shape[0], jnp.int32)
 
     @jax.jit
@@ -136,14 +136,14 @@ def make_fit_adam(loss2, sp, lr, bg_speed, slots, cap=400, patience=10):
     def fit(pool):
         n = pool['data'].shape[0]
         r, steps = stream(n, slots, init, refill, step, w, move_orient_bg, ex, pool, cap, patience)
-        bg = (np.array(pool['background']).reshape(-1, 3, 2) + r.pop('bgo')[:, :, None]).reshape(-1, 6)
+        bg = np.array(pool['background']) + r.pop('bgo')
         return dict(r, background=bg, steps=steps)
     return fit
 
 
 def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=100, patience=3):
-    """Builds fit(pool), compiled once: Levenberg-Marquardt fit of x, y, z, N, rho, eta, delta and one background
-    offset per plane (added to the starting background of both polarisations), with the loss of the pixels given.
+    """Builds fit(pool), compiled once: Levenberg-Marquardt fit of x, y, z, N, rho, eta, delta and the background of
+    the 6 channels (offsets added to the starting background of each channel), with the loss of the pixels given.
 
     pool: dict of device arrays: data, noise, background (n, 6) start, x0, y0, z0, N0, rho0, eta0, delta0, and the
     parameters shared by the pool that model reads (e.g. the aberrations: they can change between two calls of fit
@@ -155,7 +155,7 @@ def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=100, patience=3):
     """
 
     def full(th, bg0):
-        return th[:, :7], (bg0.reshape(-1, 3, 2) + th[:, 7:, None]).reshape(-1)
+        return th[:, :7], (bg0 + th[:, 7:]).reshape(-1)
 
     def nll(th, bg0, data, noise, p):
         t7, bg = full(th, bg0)
@@ -163,7 +163,7 @@ def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=100, patience=3):
 
     def init(ids, p):
         th = jnp.stack([p[k][ids] for k in ('x0', 'y0', 'z0', 'N0', 'rho0', 'eta0', 'delta0')], 1)
-        return jnp.concatenate([th, jnp.zeros((ids.shape[0], 3))], 1), jnp.full(ids.shape[0], 1e-2)
+        return jnp.concatenate([th, jnp.zeros((ids.shape[0], 6))], 1), jnp.full(ids.shape[0], 1e-2)
 
     @jax.jit
     def step(state, ids, p):
@@ -172,12 +172,12 @@ def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=100, patience=3):
         f = lambda t7: model(t7, full(th, bg0)[1], p)
         mu = f(th[:, :7])
         jp = jnp.stack([jax.jvp(f, (th[:, :7],), (jnp.zeros_like(th[:, :7]).at[:, k].set(1.),))[1] for k in range(7)], 1)
-        jb = jnp.broadcast_to(jnp.eye(3).reshape(1, 3, 3, 1, 1, 1), (th.shape[0], 3, 3, 2) + mu.shape[-2:])
+        jb = jnp.broadcast_to(jnp.eye(6).reshape(1, 6, 3, 2, 1, 1), (th.shape[0], 6, 3, 2) + mu.shape[-2:])  # background of each channel
         J = jnp.concatenate([jp, jb], 1)
         dl = jax.grad(lambda m: jnp.sum(pixel_loss(m, data, noise)))(mu)  # derivative of the loss of each pixel vs mu
         grad = jnp.sum(J * dl[:, None], axis=(2, 3, 4, 5))
         F = jnp.einsum('nkabcd,nlabcd->nkl', J * pixel_weight(mu, data, noise)[:, None], J)  # Gauss-Newton matrix of each PSF
-        A = F + lam[:, None, None] * jnp.eye(10)[None] * jnp.diagonal(F, axis1=1, axis2=2)[:, :, None]
+        A = F + lam[:, None, None] * jnp.eye(13)[None] * jnp.diagonal(F, axis1=1, axis2=2)[:, :, None]
         cand = th + jnp.linalg.solve(A, -grad[..., None])[..., 0]
         cand = cand.at[:, 6].set(jnp.clip(cand[:, 6], 2., 179.)).at[:, 3].set(jnp.maximum(cand[:, 3], 1.)).at[:, 2].set(jnp.maximum(cand[:, 2], 0.))
         ok = nll(cand, bg0, data, noise, p) < nll(th, bg0, data, noise, p)  # False for NaN
@@ -191,7 +191,7 @@ def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=100, patience=3):
         n = pool['data'].shape[0]
         r, steps = stream(n, slots, init, refill, step, w, move_orient, ex, pool, cap, patience)
         th = r['th']
-        bg = (np.array(pool['background']).reshape(-1, 3, 2) + th[:, 7:, None]).reshape(-1, 6)
+        bg = np.array(pool['background']) + th[:, 7:]
         out = {k: th[:, j] for j, k in enumerate(('x', 'y', 'z', 'N', 'rho', 'eta', 'delta'))}
         return dict(out, background=bg, steps=steps)
     return fit
