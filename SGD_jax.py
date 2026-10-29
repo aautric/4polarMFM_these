@@ -472,14 +472,14 @@ zern_speed2_y = jax.device_put(0.007*zern_fitted)
 # False: no aberration in SGD2, all the Zernike coefficients stay at 0 whatever zern_x/zern_y and the speeds
 fit_zernike = False
 zern_start_epoch2 = 50 # the aberrations stay at zern_x/zern_y during the first epochs of SGD2, then are fitted
-# loss of SGD2: 'poisson' = Poisson likelihood (default), 'lms' = least squares normalised by the variance of
-# each pixel estimated from the data. Both use the noise model of noise_model. The saved score (eval_batch) is
-# this loss for each PSF. The cells defining step2 and eval_batch must be run again after a change (jit).
+# loss of SGD2: 'huber' (default, see below), 'poisson' = Poisson likelihood, 'lms' = least squares normalised by the
+# variance of each pixel estimated from the data. All use the noise model of noise_model. The saved score (eval_batch)
+# is this loss for each PSF. The cells defining step2 and eval_batch must be run again after a change (jit).
 # 'lms' is biased at low photon numbers: a pixel that fluctuates low gets a small variance, so a large weight,
 # and pulls the model down (about -1 photon per pixel for a background of a few photons, N_photons went to
 # -3000 on the SLB data of 2026_02_02 with a background of ~3 photons above the baseline). Fine for backgrounds
 # of tens of photons (cells). The Poisson likelihood has no such bias
-loss2 = 'poisson'
+loss2 = 'huber'
 # loss2 = 'huber': Poisson likelihood with the pull of each pixel capped beyond huber_c (in noise units, deviance
 # residual). huber_c = 2: pixels within 2 noise units (~98 % of the pixels of a well fitted PSF) are treated as with
 # 'poisson'; brighter pixels count no more than a pixel at 2. huber_positive_only: only the pixels brighter than the

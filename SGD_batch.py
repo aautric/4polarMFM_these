@@ -8,15 +8,17 @@ same code as an interactive run. The parameters given on the command line replac
 assignments of SGD_jax.py before it is executed (so that what depends on them, e.g. J_dichroic on rotation, follows).
 
 usage (with the python of the environment, e.g. /home/amaury/exit/envs/env_linux/bin/python):
-    python SGD_batch.py run <RAW_DATA folder> [name=value ...] [--no-figures] [--post-process]
+    python SGD_batch.py run <RAW_DATA folder> [name=value ...] [--no-figures] [--post-process] [--cnn]
         one run on the data of the folder (the one that contains 'reconstruction'), with the parameters of
         SGD_jax.py changed as given, e.g. loss2=poisson rotation=5 rho_offset=-6 batch_nb=500
     python SGD_batch.py resume <NPZ folder> [--no-figures] [--post-process]
-        continues a run that stopped, with the parameters of its config.txt (as the resume cell of SGD_jax.py)
-    python SGD_batch.py queue <jobs file> [--no-figures] [--post-process] [--dry-run]
+        continues a run that stopped, with the parameters of its config.txt (as the resume cell of SGD_jax.py), and
+        with the script of the run (SGD_jax_CNN.py if its config.txt has use_cnn = True, else SGD_jax.py)
+    python SGD_batch.py queue <jobs file> [--no-figures] [--post-process] [--dry-run] [--cnn]
         runs the jobs of the file one after the other, each in its own process, a log file per job. All the jobs
         are checked before the first one starts; a job that fails is reported and the queue goes on.
         --dry-run only checks the jobs.
+    --cnn: SGD_jax_CNN.py (CNN start and per-PSF fit) instead of SGD_jax.py, for all the new runs (run, queue)
 
 jobs file: one job per line, empty lines and lines starting with '#' are ignored
     <RAW_DATA folder> name=value name=value ...
@@ -40,7 +42,8 @@ from pathlib import Path
 from datetime import datetime
 
 HERE = Path(__file__).resolve().parent
-SGD_SCRIPT = HERE / 'SGD_jax.py'
+SGD_SCRIPT = HERE / 'SGD_jax.py'  # SGD_jax_CNN.py with --cnn (see main)
+CNN_SCRIPT = HERE / 'SGD_jax_CNN.py'
 POST_PROCESS_SCRIPT = HERE / 'post_process_SGD.py'
 CELL_HEADER = re.compile(r'^# ?%%', re.M)
 
@@ -311,13 +314,24 @@ def run_queue(jobs_file, flags, dry_run=False):
 
 # ---------------------------------------------------------------- command line
 
+def run_of_cnn(npz_folder):
+    # True if the run of the folder was made by SGD_jax_CNN.py (its config.txt has use_cnn = True)
+    return re.search(r'^use_cnn\s*=\s*True', (Path(npz_folder) / 'config.txt').read_text(encoding='utf-8'), re.M) is not None
+
+
 def main(arguments):
+    global SGD_SCRIPT
     flags = [a for a in arguments if a.startswith('--')]
     words = [a for a in arguments if not a.startswith('--')]
-    unknown = set(flags) - {'--no-figures', '--post-process', '--dry-run'}
+    unknown = set(flags) - {'--no-figures', '--post-process', '--dry-run', '--cnn'}
     if len(words) < 2 or words[0] not in ('run', 'resume', 'queue') or unknown:
         raise SystemExit(__doc__)
     save_figures, post_process = '--no-figures' not in flags, '--post-process' in flags
+    if '--cnn' in flags:
+        SGD_SCRIPT = CNN_SCRIPT
+    if words[0] == 'resume' and len(words) == 2:
+        SGD_SCRIPT = CNN_SCRIPT if run_of_cnn(words[1]) else HERE / 'SGD_jax.py'  # the script of the run
+    log(f'script: {SGD_SCRIPT.name}')
     if words[0] == 'run':
         run_sgd(words[1], parse_overrides(words[2:]), save_figures=save_figures, post_process=post_process)
     elif words[0] == 'resume':

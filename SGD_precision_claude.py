@@ -51,6 +51,7 @@ options: see python SGD_precision_claude.py --help
     python SGD_precision_claude.py --recompute <result folder> [...]: statistics, figures and summary of finished runs
     again from their simulation.npz and results_<loss>.npz (no fit)
 --set name=value changes a parameter of SGD_jax.py (as in SGD_batch.py), e.g. --set huber_c=1.5 num_epochs_max2=150
+--cnn runs the pipeline of SGD_jax_CNN.py (CNN start and per-PSF fit) instead of SGD_jax.py (its --set parameters)
 
 outputs in <out>/<date>_<tag>/:
     simulation.npz          simulated data and true parameters
@@ -137,6 +138,7 @@ def parse_arguments(argv):
     p.add_argument('--tag', default='', help='added to the name of the result folder (default: the preset)')
     p.add_argument('--save-figures', action='store_true', help='also save the figures of the pipeline (first batches)')
     p.add_argument('--set', nargs='*', default=[], help='name=value parameters of SGD_jax.py')
+    p.add_argument('--cnn', action='store_true', help='pipeline of SGD_jax_CNN.py (CNN start and per-PSF fit) instead of SGD_jax.py')
     a = p.parse_args(argv)
     for k, v in PRESETS[a.preset].items():
         if getattr(a, k) is None:
@@ -592,7 +594,10 @@ def compare_losses(all_rows, folder):
 # ---------------------------------------------------------------- main
 
 def main(argv):
+    global SGD_SCRIPT
     a = parse_arguments(argv)
+    if a.cnn:
+        SGD_SCRIPT = HERE / 'SGD_jax_CNN.py'
     run_folder = Path(a.out) / (f'{datetime.now():%Y-%m-%d_%Hh%M}' + (f'_{a.tag}' if a.tag else ''))
     run_folder.mkdir(parents=True, exist_ok=True)
     log(f'results in {run_folder}')
