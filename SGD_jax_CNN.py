@@ -381,7 +381,7 @@ reloaded = ['QE', 'EM', 'sensitivity',
             'zern_speed2_x', 'zern_speed2_y', 'zern_start_epoch2', 'fit_zernike', 'loss2', 'huber_c', 'huber_positive_only', 'y_gain_J1', 'y_gain_J2', 'unitary_J', 'registration_z',
             'Nframe', 'last_frame_processed', 'NPSF', 'n_photons_filtering', 'batch_nb', 'dimensions',
             'optim', 'batches_per_pool', 'lm_slots', 'lm_lambda0', 'lm_delta_step', 'lm_delta_hold', 'lm_cap',
-            'lm_max_rejects', 'cnn_zernike_rounds', 'cnn_zernike_steps']
+            'lm_max_rejects', 'lm_lambda_down', 'lm_patience', 'lm_tol_deg', 'lm_tol_nm', 'cnn_zernike_rounds', 'cnn_zernike_steps']
 
 def reload_config(config_file):
     # overwrites the parameters of the script with the ones stored in a config.txt, returns the whole config
@@ -540,6 +540,13 @@ lm_delta_step = 20.  # optim 'lm': largest change of delta in one step (deg)
 lm_delta_hold = 5  # optim 'lm': delta fixed at the CNN start for the first steps (the axis turns first)
 lm_cap = 200  # optim 'lm': most steps of a PSF
 lm_max_rejects = 8  # optim 'lm': rejected steps in a row that stop a PSF (a rejected step no longer counts as converged)
+lm_lambda_down = 3.  # optim 'lm': damping divided by it after an accepted step (x 4 after a rejected one)
+lm_patience = 2  # optim 'lm': accepted steps in a row moving less than the tolerance that stop a PSF
+lm_tol_deg = 1.  # optim 'lm': tolerance on rho, eta, delta (deg)
+lm_tol_nm = 10.  # optim 'lm': tolerance on x, y, z (nm)
+# patience 2 and 1 deg / 10 nm since 2026-10-30 (were 3 and 0.2 deg / 2 nm): 13 LM steps per PSF instead of 20, same
+# precision and outliers (actin and in-plane slb simulations; a shorter delta hold or max_rejects < 8 gave more
+# delta -> 179 fits on in-plane dipoles; lm_lambda0 0.01-3, lm_delta_step 10-1000, lm_slots 50: no change)
 cnn_zernike_rounds = 2  # optim 'lm', aberrations fitted only: rounds of cnn_zernike_steps Adam steps on the
 cnn_zernike_steps = 30  # aberrations of the pool between the LM fits (1 + cnn_zernike_rounds LM fits)
 
@@ -725,6 +732,10 @@ config = {
     'lm_delta_hold': lm_delta_hold,
     'lm_cap': lm_cap,
     'lm_max_rejects': lm_max_rejects,
+    'lm_lambda_down': lm_lambda_down,
+    'lm_patience': lm_patience,
+    'lm_tol_deg': lm_tol_deg,
+    'lm_tol_nm': lm_tol_nm,
     'cnn_zernike_rounds': cnn_zernike_rounds,
     'cnn_zernike_steps': cnn_zernike_steps,
 }
@@ -972,6 +983,12 @@ if fit_zernike_cnn and optim != 'lm':
     print("WARNING optim 'adam': the aberrations are not fitted, they stay at zern_x/zern_y")
 print('CNN loop: optimizer '+optim+', loss '+loss2+', aberrations '
       +('none' if not fit_zernike else 'fitted' if fit_zernike_cnn and optim == 'lm' else 'fixed at zern_x/zern_y'))
+def wait_one_by_one(tree):
+    # waits for the arrays one after the other: jax.block_until_ready(tree) (or a jit call on many arrays not ready yet)
+    # makes XLA create CUDA streams on several threads at once, and cuStreamCreate of the WSL driver then sometimes
+    # never returns (hang of 2026-10-30: main thread waiting, one thread at 100 % CPU in cuStreamCreate, GPU idle)
+    for leaf in jax.tree_util.tree_leaves(tree):
+        leaf.block_until_ready()
 noise_px = lambda noise: (noise[:, 0, :, :, None, None], noise[:, 1, :, :, None, None]) # gain, shift of each pixel
 def zernike_of(offset_x, offset_y):
     # aberrations (3, 15) of the model: start + fitted offset, as in loss_angle_with_M
@@ -991,7 +1008,8 @@ if optim == 'lm':
     fit_pool = stream_fit.make_fit_lm(model_lm, lambda mu, data, noise: pixel_loss(mu, data, *noise_px(noise)),
                                       lambda mu, data, noise: pixel_weight(mu, data, *noise_px(noise)), min(int(lm_slots), NPSF),
                                       cap=int(lm_cap), max_rejects=int(lm_max_rejects), lam0=float(lm_lambda0),
-                                      delta_step=float(lm_delta_step), delta_hold=int(lm_delta_hold))
+                                      delta_step=float(lm_delta_step), delta_hold=int(lm_delta_hold), lam_down=float(lm_lambda_down),
+                                      patience=int(lm_patience), tol_deg=float(lm_tol_deg), tol_nm=float(lm_tol_nm))
     # gradient of loss2 vs the offsets of the aberrations for one batch of NPSF PSF, their parameters fixed
     zernike_grad = jax.jit(jax.grad(lambda off, prm, data, bg, noise: loss_angle_with_M(
         dict(prm, zern_x=off[0], zern_y=off[1]), delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern_x, zern_y,
@@ -1068,6 +1086,7 @@ for group in range(first_batch, batch_nb, batches_per_pool):
     pool = dict(data=cat('noisy_psf'), noise=cat('noise'), background=background0,
                 x0=x0, y0=y0, z0=z0, N0=N0, rho0=rho0, eta0=eta0, delta0=delta0)
     pool = {key: jnp.asarray(value, jnp.float32) for key, value in pool.items()}
+    wait_one_by_one(pool)
     zern_offset = (jnp.zeros(3*15), jnp.zeros(3*15))
     t0 = time.perf_counter()
     if optim == 'lm':
@@ -1104,7 +1123,7 @@ for group in range(first_batch, batch_nb, batches_per_pool):
                                  jnp.asarray(r['rho'] % 360), jnp.asarray(r['eta'] % 180), jnp.asarray(r['delta']),
                                  jnp.asarray(r['N']), loaded[i]['noisy_psf'], jnp.asarray(r['background'].reshape(-1)),
                                  loaded[i]['noise'], dim_simu))
-    jax.block_until_ready(scores)
+    wait_one_by_one(scores)
     t_eval = time.perf_counter() - t0
 
     for i, batch in enumerate(group_batches):

@@ -148,14 +148,16 @@ def make_fit_adam(loss2, sp, lr, bg_speed, slots, cap=400, patience=10):
     return fit
 
 
-def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=200, patience=3, max_rejects=8, lam0=1., delta_step=20., delta_hold=5):
+def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=200, patience=2, max_rejects=8, lam0=1., delta_step=20., delta_hold=5,
+                lam_down=3., tol_deg=1., tol_nm=10.):
     """Builds fit(pool), compiled once: Levenberg-Marquardt fit of x, y, z, N, rho, eta, delta and the background of
     the 6 channels (offsets added to the starting background of each channel), with the loss of the pixels given.
-    lam0: starting damping (Marquardt, relative to the diagonal of J^T W J; x 1/3 after an accepted step, x 4 after a
+    lam0: starting damping (Marquardt, relative to the diagonal of J^T W J; / lam_down after an accepted step, x 4 after a
     rejected one). delta_step: largest change of delta in one step (deg), the whole step is shortened to it.
     delta_hold: delta fixed at its start for the first steps (the axis turns first; a free delta from a start far
     from the axis ran to the 179 deg clip, almost isotropic, where rho and eta have no derivative left).
-    Stop: patience accepted steps in a row moving less than the tolerance, or max_rejects rejected steps in a row.
+    Stop: patience accepted steps in a row moving less than the tolerance (tol_deg on rho, eta, delta, tol_nm on x, y, z),
+    or max_rejects rejected steps in a row.
 
     pool: dict of device arrays: data, noise, background (n, 6) start, x0, y0, z0, N0, rho0, eta0, delta0, and the
     parameters shared by the pool that model reads (e.g. the aberrations: they can change between two calls of fit
@@ -198,7 +200,7 @@ def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=200, patience=3, max
         cand = th + dth
         cand = cand.at[:, 6].set(jnp.clip(cand[:, 6], 2., 179.)).at[:, 3].set(jnp.maximum(cand[:, 3], 1.)).at[:, 2].set(jnp.maximum(cand[:, 2], 0.))
         ok = nll(cand, bg0, data, noise, p) < nll(th, bg0, data, noise, p)  # False for NaN
-        return jnp.where(ok[:, None], cand, th), jnp.where(ok, lam / 3., lam * 4.), k + 1, ok
+        return jnp.where(ok[:, None], cand, th), jnp.where(ok, lam / lam_down, lam * 4.), k + 1, ok
 
     w = lambda s: np.asarray(s[0])[:, [0, 1, 2, 4, 5, 6]]
     ex = lambda s: {'th': np.array(s[0])}
@@ -206,7 +208,7 @@ def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=200, patience=3, max
 
     def fit(pool):
         n = pool['data'].shape[0]
-        r, steps = stream(n, slots, init, refill, step, w, move_orient, ex, pool, cap, patience,
+        r, steps = stream(n, slots, init, refill, step, w, lambda a, b: move_orient(a, b, tol_deg, tol_nm), ex, pool, cap, patience,
                           accepted=lambda s: np.asarray(s[3]), max_rejects=max_rejects, hold=delta_hold)
         th = r['th']
         bg = np.array(pool['background']) + th[:, 7:]
