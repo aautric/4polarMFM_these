@@ -380,7 +380,8 @@ reloaded = ['QE', 'EM', 'sensitivity',
             'LR2', 'num_epochs_max2', 'delta_speed', 'nphotons_speed2', 'xy_speed2', 'z_speed2',
             'zern_speed2_x', 'zern_speed2_y', 'zern_start_epoch2', 'fit_zernike', 'loss2', 'huber_c', 'huber_positive_only', 'y_gain_J1', 'y_gain_J2', 'unitary_J', 'registration_z',
             'Nframe', 'last_frame_processed', 'NPSF', 'n_photons_filtering', 'batch_nb', 'dimensions',
-            'optim', 'batches_per_pool', 'lm_slots', 'cnn_zernike_rounds', 'cnn_zernike_steps']
+            'optim', 'batches_per_pool', 'lm_slots', 'lm_lambda0', 'lm_delta_step', 'lm_delta_hold', 'lm_cap',
+            'lm_max_rejects', 'cnn_zernike_rounds', 'cnn_zernike_steps']
 
 def reload_config(config_file):
     # overwrites the parameters of the script with the ones stored in a config.txt, returns the whole config
@@ -534,6 +535,11 @@ huber_positive_only = True
 optim = 'lm'  # 'lm': Levenberg-Marquardt of each PSF (loss2); 'adam': one Adam fit of each PSF with the loss of SGD2 (loss2), its speeds and LR2, aberrations fixed
 batches_per_pool = 20  # batches loaded together and given to the CNN at once, the GPU slots are refilled inside a pool
 lm_slots = 25  # optim 'lm': PSF fitted together on the GPU (<= NPSF): the Jacobian of 100 PSF needs ~15 GB
+lm_lambda0 = 1.  # optim 'lm': starting damping (1e-2 until 2026-10-30: first steps too long, see stream_fit.make_fit_lm)
+lm_delta_step = 20.  # optim 'lm': largest change of delta in one step (deg)
+lm_delta_hold = 5  # optim 'lm': delta fixed at the CNN start for the first steps (the axis turns first)
+lm_cap = 200  # optim 'lm': most steps of a PSF
+lm_max_rejects = 8  # optim 'lm': rejected steps in a row that stop a PSF (a rejected step no longer counts as converged)
 cnn_zernike_rounds = 2  # optim 'lm', aberrations fitted only: rounds of cnn_zernike_steps Adam steps on the
 cnn_zernike_steps = 30  # aberrations of the pool between the LM fits (1 + cnn_zernike_rounds LM fits)
 
@@ -714,6 +720,11 @@ config = {
     'optim': optim,
     'batches_per_pool': batches_per_pool,
     'lm_slots': lm_slots,
+    'lm_lambda0': lm_lambda0,
+    'lm_delta_step': lm_delta_step,
+    'lm_delta_hold': lm_delta_hold,
+    'lm_cap': lm_cap,
+    'lm_max_rejects': lm_max_rejects,
     'cnn_zernike_rounds': cnn_zernike_rounds,
     'cnn_zernike_steps': cnn_zernike_steps,
 }
@@ -978,7 +989,9 @@ if optim == 'lm':
         h = h * channel_gain()[None, :, :, None, None] # x/y gain correction of the channels, see y_gain_J1/J2
         return h + jnp.reshape(bg, (h.shape[0], 3, 2))[:, :, :, None, None]
     fit_pool = stream_fit.make_fit_lm(model_lm, lambda mu, data, noise: pixel_loss(mu, data, *noise_px(noise)),
-                                      lambda mu, data, noise: pixel_weight(mu, data, *noise_px(noise)), min(int(lm_slots), NPSF))
+                                      lambda mu, data, noise: pixel_weight(mu, data, *noise_px(noise)), min(int(lm_slots), NPSF),
+                                      cap=int(lm_cap), max_rejects=int(lm_max_rejects), lam0=float(lm_lambda0),
+                                      delta_step=float(lm_delta_step), delta_hold=int(lm_delta_hold))
     # gradient of loss2 vs the offsets of the aberrations for one batch of NPSF PSF, their parameters fixed
     zernike_grad = jax.jit(jax.grad(lambda off, prm, data, bg, noise: loss_angle_with_M(
         dict(prm, zern_x=off[0], zern_y=off[1]), delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern_x, zern_y,

@@ -1,7 +1,8 @@
 """Per-PSF fits started from the CNN, with a convergence stop and slot refill.
 
 A fixed number of slots (one per PSF on the GPU) runs in parallel; a PSF stops when its parameters move
-less than a tolerance for `patience` steps in a row, its slot then takes the next PSF of the pool.
+less than a tolerance for `patience` accepted steps in a row (or after `max_rejects` rejected steps in a row, or
+`cap` steps), its slot then takes the next PSF of the pool.
 Two optimizers fitting position, photons, orientation and the background of the 6 channels (3 planes x 2
 polarisations) together: Adam (one step count per slot) or Levenberg-Marquardt.
 """
@@ -19,26 +20,32 @@ def make_refill(init):
     return jax.jit(lambda s, i, m, p: jax.tree_util.tree_map(lambda a, b: jnp.where(_bcast(m, a), b, a), s, init(i, p)))
 
 
-def stream(n, slots, init, refill, step, watch, move, extract, pool, cap, patience):
+def stream(n, slots, init, refill, step, watch, move, extract, pool, cap, patience, accepted=None, max_rejects=None, hold=0):
     """Runs `step` on `slots` PSF at a time until each of the n PSF of the pool has converged.
 
     init(ids, pool) -> state, step(state, ids, pool) -> state: pytrees with a leading slot axis, refill = make_refill(init).
     watch(state) -> (slots, k) numpy, move(prev, cur) -> (slots,) movement / tolerance.
     extract(state) -> dict of (slots, ...) numpy. Returns dict of (n, ...) arrays and the steps of each PSF.
+    accepted(state) -> (slots,) numpy bool, was the last step accepted (None: always). A rejected step does not move
+    the parameters: it neither counts as calm nor resets the calm count; max_rejects rejected steps in a row stop the
+    PSF (converged: no smaller step lowers the loss). No stop during the first `hold` steps.
     """
     ids = np.minimum(np.arange(slots), n - 1)
     alive = np.arange(slots) < n
     nxt = slots
     state = init(jnp.asarray(ids), pool)
-    calm, age = np.zeros(slots, int), np.zeros(slots, int)
+    calm, age, rej = np.zeros(slots, int), np.zeros(slots, int), np.zeros(slots, int)
     steps, out = np.zeros(n, int), None
     prev = watch(state)
     while alive.any():
         state = step(state, jnp.asarray(ids), pool)
         age += 1
         cur = watch(state)
-        calm = np.where(move(prev, cur) < 1, calm + 1, 0)
-        done = alive & ((calm >= patience) | (age >= cap))
+        acc = np.ones(slots, bool) if accepted is None else accepted(state)
+        calm = np.where(age <= hold, 0, np.where(acc, np.where(move(prev, cur) < 1, calm + 1, 0), calm))
+        rej = np.where(acc, 0, rej + 1)
+        stop = (calm >= patience) if max_rejects is None else (calm >= patience) | (rej >= max_rejects)
+        done = alive & ((stop & (age > hold)) | (age >= cap))  # calm counted from the end of the hold
         if done.any():
             vals = extract(state)
             if out is None:
@@ -54,7 +61,7 @@ def stream(n, slots, init, refill, step, watch, move, extract, pool, cap, patien
                     alive[s] = False
             if new.any():
                 state = refill(state, jnp.asarray(ids), jnp.asarray(new), pool)
-                calm[new], age[new] = 0, 0
+                calm[new], age[new], rej[new] = 0, 0, 0
                 cur = watch(state)
         prev = cur
     return out, steps
@@ -141,9 +148,14 @@ def make_fit_adam(loss2, sp, lr, bg_speed, slots, cap=400, patience=10):
     return fit
 
 
-def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=100, patience=3):
+def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=200, patience=3, max_rejects=8, lam0=1., delta_step=20., delta_hold=5):
     """Builds fit(pool), compiled once: Levenberg-Marquardt fit of x, y, z, N, rho, eta, delta and the background of
     the 6 channels (offsets added to the starting background of each channel), with the loss of the pixels given.
+    lam0: starting damping (Marquardt, relative to the diagonal of J^T W J; x 1/3 after an accepted step, x 4 after a
+    rejected one). delta_step: largest change of delta in one step (deg), the whole step is shortened to it.
+    delta_hold: delta fixed at its start for the first steps (the axis turns first; a free delta from a start far
+    from the axis ran to the 179 deg clip, almost isotropic, where rho and eta have no derivative left).
+    Stop: patience accepted steps in a row moving less than the tolerance, or max_rejects rejected steps in a row.
 
     pool: dict of device arrays: data, noise, background (n, 6) start, x0, y0, z0, N0, rho0, eta0, delta0, and the
     parameters shared by the pool that model reads (e.g. the aberrations: they can change between two calls of fit
@@ -163,25 +175,30 @@ def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=100, patience=3):
 
     def init(ids, p):
         th = jnp.stack([p[k][ids] for k in ('x0', 'y0', 'z0', 'N0', 'rho0', 'eta0', 'delta0')], 1)
-        return jnp.concatenate([th, jnp.zeros((ids.shape[0], 6))], 1), jnp.full(ids.shape[0], 1e-2)
+        n = ids.shape[0]
+        return jnp.concatenate([th, jnp.zeros((n, 6))], 1), jnp.full(n, lam0), jnp.zeros(n, jnp.int32), jnp.ones(n, bool)
 
     @jax.jit
     def step(state, ids, p):
-        th, lam = state
+        th, lam, k, _ = state
         data, noise, bg0 = p['data'][ids], p['noise'][ids], p['background'][ids]
         f = lambda t7: model(t7, full(th, bg0)[1], p)
         mu = f(th[:, :7])
         jp = jnp.stack([jax.jvp(f, (th[:, :7],), (jnp.zeros_like(th[:, :7]).at[:, k].set(1.),))[1] for k in range(7)], 1)
         jb = jnp.broadcast_to(jnp.eye(6).reshape(1, 6, 3, 2, 1, 1), (th.shape[0], 6, 3, 2) + mu.shape[-2:])  # background of each channel
-        J = jnp.concatenate([jp, jb], 1)
+        free = (k >= delta_hold).astype(mu.dtype)  # 0: delta held
+        J = jnp.concatenate([jp, jb], 1).at[:, 6].multiply(free[:, None, None, None, None])
         dl = jax.grad(lambda m: jnp.sum(pixel_loss(m, data, noise)))(mu)  # derivative of the loss of each pixel vs mu
         grad = jnp.sum(J * dl[:, None], axis=(2, 3, 4, 5))
         F = jnp.einsum('nkabcd,nlabcd->nkl', J * pixel_weight(mu, data, noise)[:, None], J)  # Gauss-Newton matrix of each PSF
         A = F + lam[:, None, None] * jnp.eye(13)[None] * jnp.diagonal(F, axis1=1, axis2=2)[:, :, None]
-        cand = th + jnp.linalg.solve(A, -grad[..., None])[..., 0]
+        A = A.at[:, 6, 6].add(1. - free)  # held delta: row and column 0, 1 on the diagonal -> no step
+        dth = jnp.linalg.solve(A, -grad[..., None])[..., 0]
+        dth = dth * jnp.minimum(1., delta_step / jnp.maximum(jnp.abs(dth[:, 6]), 1e-12))[:, None]
+        cand = th + dth
         cand = cand.at[:, 6].set(jnp.clip(cand[:, 6], 2., 179.)).at[:, 3].set(jnp.maximum(cand[:, 3], 1.)).at[:, 2].set(jnp.maximum(cand[:, 2], 0.))
         ok = nll(cand, bg0, data, noise, p) < nll(th, bg0, data, noise, p)  # False for NaN
-        return jnp.where(ok[:, None], cand, th), jnp.where(ok, lam / 3., lam * 4.)
+        return jnp.where(ok[:, None], cand, th), jnp.where(ok, lam / 3., lam * 4.), k + 1, ok
 
     w = lambda s: np.asarray(s[0])[:, [0, 1, 2, 4, 5, 6]]
     ex = lambda s: {'th': np.array(s[0])}
@@ -189,7 +206,8 @@ def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=100, patience=3):
 
     def fit(pool):
         n = pool['data'].shape[0]
-        r, steps = stream(n, slots, init, refill, step, w, move_orient, ex, pool, cap, patience)
+        r, steps = stream(n, slots, init, refill, step, w, move_orient, ex, pool, cap, patience,
+                          accepted=lambda s: np.asarray(s[3]), max_rejects=max_rejects, hold=delta_hold)
         th = r['th']
         bg = np.array(pool['background']) + th[:, 7:]
         out = {k: th[:, j] for j, k in enumerate(('x', 'y', 'z', 'N', 'rho', 'eta', 'delta'))}
