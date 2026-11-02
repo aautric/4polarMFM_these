@@ -969,6 +969,7 @@ raw = np.zeros((Nframe,6,dimensions[0],dimensions[1]))
 buffer = (np.array([]), np.array([]), np.array([]), np.empty((0, 3, 3, 2))) # x, y, frame, noise (gain, shift, level) of each PSF
 psf_buffer = np.empty((0, 3, 2, 13, 13))  # adjust shape to match your PSF dimensions
 first_loop_of_the_launch = True
+end_of_data = None  # the missing frame met while loading a pool: its batches already read are fitted, then the run stops
 print('Starting at batch '+str(first_batch)+' after frame '+str(last_frame_processed)+', saving in '+str(save_folder))
 # batches_per_pool batches are loaded together, each PSF starts from the CNN and is fitted until it converges (its GPU
 # slot then takes the next PSF); the npz of each batch are saved as by SGD_jax.py, with the steps of each PSF and the
@@ -1065,11 +1066,19 @@ for group in range(first_batch, batch_nb, batches_per_pool):
     loaded = []
     for batch in group_batches:
         current = {}
-        load_batch(last_frame_processed, buffer, psf_buffer, NPSF, current, n_skip=n_psf_to_skip)
+        try:
+            load_batch(last_frame_processed, buffer, psf_buffer, NPSF, current, n_skip=n_psf_to_skip)
+        except FileNotFoundError as error:
+            # end of the data inside the pool (2026-10-30: the last 12 batches of the SLB were lost)
+            if not loaded:
+                raise
+            end_of_data = error
+            break
         n_psf_to_skip = 0
         buffer, psf_buffer, last_frame_processed = current['buffer'], current['psf_buffer'], current['last_frame_processed']
         loaded.append(current)
     t_load = time.perf_counter() - t0  # reading the frames of the whole pool
+    group_batches = group_batches[:len(loaded)]
     n_pool = NPSF * len(loaded)
     cat = lambda key: jnp.concatenate([c[key] for c in loaded])
 
@@ -1147,6 +1156,8 @@ for group in range(first_batch, batch_nb, batches_per_pool):
                             group=group, n_pool=n_pool, first_of_launch=first_of_launch, wall_start=wall_start,
                             t_load=t_load, t_cnn=t_cnn, t_fit=t_fit, t_eval=t_eval)  # durations of the whole pool (s)
     print(f'pool {group}-{group_batches[-1]}: {n_pool} PSF, fit {t_fit:.0f} s, load {t_load:.0f} s, steps {res["steps"].mean():.1f}')
+    if end_of_data is not None:
+        raise end_of_data  # same end as SGD_jax.py (SGD_batch.py logs it as the end of the data)
 
 # %%
  
