@@ -161,8 +161,7 @@ else:
 # %% TO BE MODIFIED
 # threshold on fit_quality: deviance per pixel (~1 for a good fit), or the final loss for files without deviance
 quality_thresh = 1.5 if deviance is not None else 1500
-# N_photon = photons of the whole molecule (3 planes) since 2026-10-28; the thresholds were 50 and 10000 per plane
-mask1 = (fit_quality<quality_thresh) & (delta<150) & (delta>50) & (N_photons>3*50) & (N_photons<3*10000) & (z<1800) & (z>0) #& (eta>30) & (eta<150)
+mask1 = (fit_quality<quality_thresh) & (delta<150) & (delta>50) & (N_photons>50) & (N_photons<10000) & (z<1800) & (z>0) #& (eta>30) & (eta<150)
 #mask1 = (delta<150) & (delta>60)
 #%% mask selection
 %matplotlib widget
@@ -350,7 +349,7 @@ correct_z = False
 plt.rcParams['figure.figsize'] = [5,5]
 fig = plt.figure()
 ax = fig.add_subplot()
-sc = ax.scatter(x , y, c=N_photons , cmap='coolwarm', s=0.1, vmax=3*10000)
+sc = ax.scatter(x , y, c=N_photons , cmap='coolwarm', s=0.1, vmax=10000)
 ax.set_title("Select the zone of the fiducial")
 ax.axis('equal')
 cb = plt.colorbar(sc)
@@ -586,7 +585,7 @@ ax[1,3].text(0, 0.95, f'{len(stdx)} molecules on > 1 frame\n\n{"":16s}{"pooled":
 plt.tight_layout()
 plt.show()
 #%% select new filter
-mask1 = (fit_quality<quality_thresh) & (z<800) & (z>200) & (delta<150) &  (delta>50) & (N_photons>50) & (N_photons<10000)
+mask1 = (fit_quality<quality_thresh) & (z<1300) & (z>500) & (delta<150) &  (delta>50) & (N_photons>50) & (N_photons<10000)
 #%% select mask
 %matplotlib qt
 plt.rcParams['figure.figsize'] = [10,10]
@@ -611,8 +610,9 @@ def onselect(verts):
 lasso = LassoSelector(ax, onselect)
 plt.show()
 
+
 #%% SIZE OF THE SCATTER POINTS
-s = 0.01
+s = 1
 #%% plot of the localisations, white on black, no colour coding
 plt.rcParams.update({'font.size': 15})
 fig, ax = plt.subplots(figsize=(6, 6))
@@ -874,7 +874,7 @@ plt.show()
 hls_colors = sns.color_palette("hls", 256)
 cmap = mcolors.ListedColormap(hls_colors)
 #%% plot eta
-plt.rcParams['figure.figsize'] = [16, 8]
+plt.rcParams['figure.figsize'] = [8, 4]
 plt.rcParams.update({'font.size': 15})
 fig, ax = plt.subplots(1,2)
 ax[0].set_facecolor('black')
@@ -1342,6 +1342,7 @@ ax[1].set_xticks(np.linspace(0, 180, 7), ['0', '30', '60', '90', '120', '150', '
 ax[1].grid()
 plt.show()
 # %%function for the pca
+
 from scipy import stats
 def pca_xy(x, y, z):
     """

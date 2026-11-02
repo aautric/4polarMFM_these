@@ -149,7 +149,7 @@ def make_fit_adam(loss2, sp, lr, bg_speed, slots, cap=400, patience=10):
 
 
 def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=200, patience=2, max_rejects=8, lam0=1., delta_step=20., delta_hold=5,
-                lam_down=3., tol_deg=1., tol_nm=10.):
+                lam_down=3., tol_deg=1., tol_nm=10., xy_max=0.78, z_range=(0., 3.)):
     """Builds fit(pool), compiled once: Levenberg-Marquardt fit of x, y, z, N, rho, eta, delta and the background of
     the 6 channels (offsets added to the starting background of each channel), with the loss of the pixels given.
     lam0: starting damping (Marquardt, relative to the diagonal of J^T W J; / lam_down after an accepted step, x 4 after a
@@ -158,6 +158,10 @@ def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=200, patience=2, max
     from the axis ran to the 179 deg clip, almost isotropic, where rho and eta have no derivative left).
     Stop: patience accepted steps in a row moving less than the tolerance (tol_deg on rho, eta, delta, tol_nm on x, y, z),
     or max_rejects rejected steps in a row.
+    Bounds: delta 2-179 deg, N >= 1, |x|, |y| <= xy_max (um, 0.78 = half of the 13 pixel patch of 120 nm), z in z_range
+    (um). Without them, a patch the model cannot explain sent N to 1, then x, y, z moved by metres: with no signal
+    their curvature, so their damping, is ~0, and the steps were accepted as the background lowered the loss (SLB
+    2026-10-30: 2 PSF at z ~ 4e7 nm).
 
     pool: dict of device arrays: data, noise, background (n, 6) start, x0, y0, z0, N0, rho0, eta0, delta0, and the
     parameters shared by the pool that model reads (e.g. the aberrations: they can change between two calls of fit
@@ -198,7 +202,8 @@ def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=200, patience=2, max
         dth = jnp.linalg.solve(A, -grad[..., None])[..., 0]
         dth = dth * jnp.minimum(1., delta_step / jnp.maximum(jnp.abs(dth[:, 6]), 1e-12))[:, None]
         cand = th + dth
-        cand = cand.at[:, 6].set(jnp.clip(cand[:, 6], 2., 179.)).at[:, 3].set(jnp.maximum(cand[:, 3], 1.)).at[:, 2].set(jnp.maximum(cand[:, 2], 0.))
+        cand = cand.at[:, 6].set(jnp.clip(cand[:, 6], 2., 179.)).at[:, 3].set(jnp.maximum(cand[:, 3], 1.))
+        cand = cand.at[:, :2].set(jnp.clip(cand[:, :2], -xy_max, xy_max)).at[:, 2].set(jnp.clip(cand[:, 2], *z_range))
         ok = nll(cand, bg0, data, noise, p) < nll(th, bg0, data, noise, p)  # False for NaN
         return jnp.where(ok[:, None], cand, th), jnp.where(ok, lam / lam_down, lam * 4.), k + 1, ok
 
