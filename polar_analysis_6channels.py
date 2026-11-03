@@ -15,7 +15,11 @@ from PIL import Image
 import tifffile
 import tkinter as tk
 N = 9
-omega = np.linspace(0, 2*np.pi, N+1)[:-1]
+# the plate turns CLOCKWISE (x -> -y) when its scale goes 0, 40, ... 320 deg, fast axis along x at 0 (Amaury,
+# 2026-11-03): physical angle = PLATE_SENSE x scale. With +1 (the former convention) alpha and epsilon came out
+# with the wrong sign (S2, S3 flipped; S1 and the degree of polarisation were right)
+PLATE_SENSE = -1
+omega = PLATE_SENSE*np.linspace(0, 2*np.pi, N+1)[:-1]
 
 def rotation(angle):
     return np.array([[np.cos(angle), -np.sin(angle)],
@@ -167,7 +171,7 @@ def polar_analysis(I_, plot=False, verif_fit=False, offset=None):
     #decalage_pola-=np.pi/2 # first measurements had a 90 error on the axis of the quarter
     print(f'decalage du polariseur : {np.degrees(decalage_pola):.2f}')
 
-    omega_corr = np.linspace(0, 2*np.pi, N+1)[:-1] + decalage_pola
+    omega_corr = omega + decalage_pola
     #calcul des coefs de Fourier expérimentaux
     P2 = np.ones(N)
     P4 = np.ones(N)
@@ -246,8 +250,8 @@ def polar_analysis(I_, plot=False, verif_fit=False, offset=None):
             plt.show()
     if verif_fit:
         N_ = 1000
-        omega__ = np.linspace(0, 2*np.pi, N_+1)[:-1] + decalage_pola
-        omega_exp = np.linspace(0, 2*np.pi, 9+1)[:-1]  + decalage_pola
+        omega__ = PLATE_SENSE*np.linspace(0, 2*np.pi, N_+1)[:-1] + decalage_pola
+        omega_exp = omega + decalage_pola
         # "mesures" d'intensité en sortie du montage
 
         I__ = np.ones(N_)
