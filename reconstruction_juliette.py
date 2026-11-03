@@ -373,7 +373,53 @@ def save_calibration(deformation, X, Y, vecteurs, normalisation, deltaz, fichier
     )
     print(f"Calibration sauvegardée : {save_path}")
 
+def calibration_fingerprint(calibration_file):
+    # sha256 of the calibration.npz: written in registration_z.npz and in calibration_used.txt of each reconstruction,
+    # so that SGD_jax.py uses a registration_z measured with the calibration that reconstructed the data
+    import hashlib
+    return hashlib.sha256(Path(calibration_file).read_bytes()).hexdigest()
+
+last_calibration_file = None # set by load_calibration, written in calibration_used.txt by reconstruction_stack
+
+def registration_for_reconstruction(value, reconstruction_path):
+    '''
+    registration_z file for SGD_jax.py / SGD_jax_CNN.py. value: None (no correction), a path (used as given), or 'auto':
+    calibr/registration_z.npz of the data set (folder of the reconstruction), only if it was measured with the
+    calibration that reconstructed the data: its calibration_sha256 must be the one of calibration_used.txt of the
+    reconstruction, or, for reconstructions made before this record (2026-11-03), of calibr/calibration.npz (assumed to
+    be the calibration of the reconstruction). Otherwise a warning and no correction. Returns the path or None
+    '''
+    if value is None or str(value) in ('None', ''):
+        return None
+    data = Path(reconstruction_path).parent
+    used = Path(reconstruction_path) / 'calibration_used.txt'
+    if used.exists():
+        lines = used.read_text().split('\n')
+        data_sha, source = lines[1].strip(), f'{used} ({lines[0].strip()})'
+    elif (data / 'calibr' / 'calibration.npz').exists():
+        data_sha, source = calibration_fingerprint(data / 'calibr' / 'calibration.npz'), f"{data / 'calibr' / 'calibration.npz'} (assumed: the reconstruction does not record its calibration)"
+    else:
+        data_sha, source = None, 'unknown'
+    reg = Path(data / 'calibr' / 'registration_z.npz') if str(value) == 'auto' else Path(str(value))
+    if not reg.exists():
+        print(f'WARNING registration_z: {reg} not found, NO correction of the lateral shift of the planes vs z')
+        return None if str(value) == 'auto' else str(value)
+    with np.load(reg) as r:
+        reg_sha = str(r['calibration_sha256']) if 'calibration_sha256' in r.files else None
+    match = reg_sha is not None and reg_sha == data_sha
+    if str(value) != 'auto': # explicit choice: used, with a warning if it does not belong to the calibration of the data
+        if not match:
+            print(f'WARNING registration_z: {reg} used as requested, but its calibration does not match the one of the data ({source})')
+        return str(reg)
+    if match:
+        print(f'registration_z (auto): {reg}, measured with the calibration of the data ({source})')
+        return str(reg)
+    print(f'WARNING registration_z (auto): {reg} ' + ('has no calibration fingerprint' if reg_sha is None else 'was measured with another calibration')
+          + f' than the data ({source}): NO correction of the lateral shift of the planes vs z')
+    return None
+
 def load_calibration(cwd):
+    global last_calibration_file
     root = tk.Tk()
     root.withdraw()
     root.call('wm', 'attributes', '.', '-topmost', True)
@@ -382,6 +428,7 @@ def load_calibration(cwd):
         filetypes=[("Calibration", "*.npz"), ("Tous", "*.*")], initialdir=cwd
     )
     cal = np.load(save_path, allow_pickle=True)
+    last_calibration_file = save_path
     X, Y, vecteurs, normalisation, deltaz = cal["X"], cal["Y"], cal["vecteurs"].tolist(), cal["normalisation"], cal["deltaz"]
     n = len([k for k in cal.files if k.startswith('M_')])
     deformation = [cal[f"M_{i}"] for i in range(n)]
@@ -556,7 +603,9 @@ def measure_registration_z(calibration_file, bead_files, dz_step=100., bin_nm=10
             v = offset[i, :, a]; ok = np.isfinite(v)
             if ok.any():
                 offset[i, :, a] = np.interp(dz, dz[ok], v[ok])
-    result = dict(dz=dz, offset=offset, n_beads=n_beads, focus_dz=np.median(np.array(focus), axis=0), beads=rows)
+    result = dict(dz=dz, offset=offset, n_beads=n_beads, focus_dz=np.median(np.array(focus), axis=0), beads=rows,
+                  calibration_file=str(calibration_file), calibration_sha256=calibration_fingerprint(calibration_file),
+                  bead_files=np.array([str(f) for f in bead_files]))
     if save:
         folder = Path(calibration_file).parent
         np.savez(folder / 'registration_z.npz', **result)
@@ -800,6 +849,9 @@ def reconstruction_stack(cwd):
         i += 1
     
     output_dir.mkdir()
+    # calibration of this reconstruction (path and sha256): SGD_jax.py (registration_z = 'auto') checks that the
+    # registration_z.npz it uses was measured with the same calibration
+    (output_dir / 'calibration_used.txt').write_text(f'{last_calibration_file}\n{calibration_fingerprint(last_calibration_file)}\n')
     count = 0
     dark_variances = []
     for jj, input_file in enumerate(input_files):

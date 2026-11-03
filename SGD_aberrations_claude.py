@@ -11,6 +11,7 @@ channel is rounder than the model, see the bead fit of 2026-10-27), options of t
     - isotropic emission: delta = 180 (always)
     - conv: gaussian blur of the image of each channel, sigma free (size of the bead, residual vibrations, ...)
     - na: effective numerical aperture, soft edge of the pupil (light of the high angles lost in the relays/grating)
+    - na6: as na, one NA_eff per plane and polarisation channel (instead of na, not with it)
     - leak: fraction of the light of the other polarisation in each channel, per plane
     - xyframe: lateral position free in each frame (drift of the stage during the stack)
     - regz: lateral offset of each plane and channel vs the stage z measured on the beads (registration_z.npz, as
@@ -67,17 +68,26 @@ maxiter1, maxiter2 = 300, 1500
 
 def parse(argv):
     p = argparse.ArgumentParser()
-    p.add_argument('--options', nargs='*', default=options, choices=['conv', 'na', 'leak', 'xyframe', 'regz'])
+    p.add_argument('--options', nargs='*', default=options, choices=['conv', 'na', 'na6', 'leak', 'xyframe', 'regz'])
     p.add_argument('--noll', nargs='*', type=int, default=noll)
     p.add_argument('--n2', type=float, default=n2_beads)
     p.add_argument('--n-beads', type=int, default=n_beads)
     p.add_argument('--frames-around', type=int, default=frames_around)
+    p.add_argument('--isolation', type=float, default=isolation, help='px, no other bead closer than this')
+    # bead detection on the max projection of plane 1: brighter than the 99.5 percentile (default), or than the median
+    # + threshold_sigma x robust std of the image (more beads, the faint ones too); margin: px from the image edges
+    p.add_argument('--threshold-sigma', type=float, default=None)
+    p.add_argument('--margin', type=int, default=half + 4)
+    p.add_argument('--bead-z', type=float, default=bead_z, help='um, emitter (centre of the bead) above the coverslip')
+    p.add_argument('--model-na', type=float, default=None, help='NA of the pupil of the model (None: NA of SGD_jax.py, 1.4)')
     p.add_argument('--tag', default='')
     return p.parse_args(argv)
 a = parse(sys.argv[1:] if __name__ == '__main__' else [])
 
 #%% model of SGD_jax.py with the calibration of the run
 ov, interplane, _ = run_parameters(run_config)
+if a.model_na is not None: # pupil of the model open to this NA (the light above 1.4 is cut in SGD_jax.py)
+    ov = dict(ov, NA=f'jax.device_put(jnp.array({a.model_na}))')
 ns, _, _ = S.build_pipeline(dict(ov, loss2='huber'), out_folder + '/sgd_tmp', 'huber', False,
                             S.parse_arguments(['--interplane', str(interplane)]))
 if a.n2 is not None: # pupil fields and SAF recomputed with the index of the beads
@@ -116,12 +126,16 @@ def load_beads():
         v = dark_variance(raw) * interpolation_factor(M, rec.shape[2:]) / np.asarray(norm)**2 * conv**2
         V.append(v)
         mp = ndimage.gaussian_filter(rec[:, 1].max(0), 1)
-        pk = (mp == ndimage.maximum_filter(mp, 11)) & (mp > np.percentile(mp, 99.5))
+        if a.threshold_sigma is None:
+            thr = np.percentile(mp, 99.5)
+        else:
+            med = np.median(mp); thr = med + a.threshold_sigma*1.4826*np.median(np.abs(mp - med))
+        pk = (mp == ndimage.maximum_filter(mp, 11)) & (mp > thr)
         by, bx = np.nonzero(pk)
-        m = half + 4
+        m = max(a.margin, half)
         keep = (bx > m) & (bx < mp.shape[1] - m) & (by > m) & (by < mp.shape[0] - m)
         for b in np.nonzero(keep)[0]:
-            if np.min(np.hypot(np.delete(bx, b) - bx[b], np.delete(by, b) - by[b]), initial=99) <= isolation:
+            if np.min(np.hypot(np.delete(bx, b) - bx[b], np.delete(by, b) - by[b]), initial=99) <= a.isolation:
                 continue
             A = rec[:, 1, by[b]-1:by[b]+2, bx[b]-1:bx[b]+2].sum((1, 2))
             k = int(np.argmax(A))
@@ -156,13 +170,17 @@ def psf_stack(p, dz, shift=None):
         mask = jax.nn.sigmoid((p['na'] - sin_th) / 0.01)
     mask = jnp.where(inside, mask, 0.).astype(jnp.complex64)
     mask = jnp.stack([mask]*3)
+    maskx = masky = mask
+    if 'na6' in a.options: # one NA_eff per plane and polarisation channel, p['na'] (3, 2)
+        soft = lambda na_: jnp.where(inside, jax.nn.sigmoid((na_[:, None, None] - sin_th) / 0.01), 0.).astype(jnp.complex64)
+        maskx, masky = soft(p['na'][:, 0]), soft(p['na'][:, 1])
     zx = jnp.zeros((3, 15)).at[:, modes].set(p['zern'][:, 0]).astype(jnp.complex64)
     zy = jnp.zeros((3, 15)).at[:, modes].set(p['zern'][:, 1]).astype(jnp.complex64)
     F = fields
-    M = ns['compute_M_jax'](xp=p['x'] + p['dxy'][:, 0], yp=p['y'] + p['dxy'][:, 1], zp=jnp.full(n, bead_z),
+    M = ns['compute_M_jax'](xp=p['x'] + p['dxy'][:, 0], yp=p['y'] + p['dxy'][:, 1], zp=jnp.full(n, a.bead_z),
                             d=p['d0'] + p['dz_scale']*dz, x=F['xx'], y=F['yy'], th1=F['th1'], phi=F['phi'],
                             Ex0=F['Ex0'], Ex1=F['Ex1'], Ex2=F['Ex2'], Ey0=F['Ey0'], Ey1=F['Ey1'], Ey2=F['Ey2'],
-                            u=ns['u'], v=ns['v'], phase_maskx=mask, phase_masky=mask, zernike_base=ns['zernike_base'],
+                            u=ns['u'], v=ns['v'], phase_maskx=maskx, phase_masky=masky, zernike_base=ns['zernike_base'],
                             zernike_coefs_x=zx, zernike_coefs_y=zy, second_plane=ns['second_plane'],
                             polar_projections=ns['polar_projections'], lambd=ns['lambd'], f_tube=ns['f_tube'],
                             plane_shift=shift)
@@ -193,7 +211,8 @@ def start_params(data):
     N = np.maximum(data.sum((1, 2, 3, 4)) - bg.sum((1, 2))*(2*half+1)**2, 1e3)
     return dict(x=jnp.float32(0.), y=jnp.float32(0.), d0=jnp.float32(0.), dz_scale=jnp.float32(1.),
                 logN=jnp.array(np.log(N), jnp.float32), bg=jnp.array(bg, jnp.float32),
-                dxy=jnp.zeros((n, 2), jnp.float32), sigma=jnp.float32(0.5), na=jnp.float32(float(ns['NA'])), leak=jnp.zeros(3, jnp.float32),
+                dxy=jnp.zeros((n, 2), jnp.float32), sigma=jnp.float32(0.5),
+                na=jnp.full((3, 2), float(ns['NA']), jnp.float32) if 'na6' in a.options else jnp.float32(float(ns['NA'])), leak=jnp.zeros(3, jnp.float32),
                 zern=jnp.zeros((3, 2, len(a.noll)), jnp.float32))
 
 # scales of the parameters for L-BFGS (one unit of the optimiser ~ a meaningful change)
@@ -233,6 +252,8 @@ def fit_bead(bead, V):
     c1, _, _ = chi2(p, data, dz, Vj, shift)
     # step 2: bead model and aberrations
     free = ['x', 'y', 'd0', 'dz_scale', 'logN', 'bg'] + [k for k, o in (('sigma', 'conv'), ('na', 'na'), ('leak', 'leak'), ('dxy', 'xyframe')) if o in a.options]
+    if 'na6' in a.options and 'na' not in free:
+        free.append('na')
     if a.noll:
         free.append('zern')
     p = fit(p, free, data, dz, Vj, maxiter2, shift)
@@ -257,6 +278,7 @@ if __name__ == '__main__':
               f'{c1:.2f} -> {c2:.2f}  d0 {p["d0"]:.3f} dz_scale {p["dz_scale"]:.3f}'
               + (f'  sigma {p["sigma"]:.2f} px' if 'conv' in a.options else '')
               + (f'  NA_eff {p["na"]:.3f}' if 'na' in a.options else '')
+              + (f'  NA_eff (plane, x/y) {np.round(p["na"], 3).tolist()}' if 'na6' in a.options else '')
               + (f'  leak {np.round(p["leak"], 3).tolist()}' if 'leak' in a.options else '')
               + f'  [{time.time()-t0:.0f} s]', flush=True)
         if a.noll:
@@ -276,6 +298,9 @@ if __name__ == '__main__':
                      f'spread {np.std([r["p"]["sigma"] for r in results]):.3f}')
     if 'na' in a.options:
         lines.append(f'NA_eff: median {np.median([r["p"]["na"] for r in results]):.3f}, spread {np.std([r["p"]["na"] for r in results]):.3f}')
+    if 'na6' in a.options:
+        nn = np.array([r['p']['na'] for r in results])
+        lines.append('NA_eff per plane / channel (x, y): median ' + str(np.median(nn, 0).round(3).tolist()) + ', spread ' + str(np.std(nn, 0).round(3).tolist()))
     if 'leak' in a.options:
         lines.append(f'leak per plane: median {np.median([r["p"]["leak"] for r in results], 0).round(3).tolist()}')
     lines.append(f'dz_scale median {np.median([r["p"]["dz_scale"] for r in results]):.3f}')

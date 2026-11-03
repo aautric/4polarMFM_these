@@ -581,8 +581,11 @@ SAF = True
 # vs the stage z). The image of each plane of the model is shifted laterally by the offset measured at the z of the
 # emitter (see plane_shift_of_z in the gradient descent cell). The 2D warps of the reconstruction cannot correct it: it
 # depends on z. With the actin2 calibration the outer planes move by 35-70 nm per um of z, which the fit reads as a
-# tilt of the dipole (eta biased by up to ~3 deg). None: no correction, the same position in the 3 planes
-registration_z = None
+# tilt of the dipole (eta biased by up to ~3 deg). None: no correction, the same position in the 3 planes.
+# 'auto' (default since 2026-11-03): calibr/registration_z.npz of the data set if it was measured with the calibration
+# that reconstructed the data (fingerprint, see registration_for_reconstruction in reconstruction_juliette.py), else no
+# correction with a warning. A path: that file (warning if its calibration is not the one of the data)
+registration_z = 'auto'
 
 # aberrations, 0 everywhere means a perfect system. zernike_coefs_x/y are used by the
 # first SGD, zern_x/zern_y by the second one (starting point of the aberration fit), in rad
@@ -652,6 +655,11 @@ print('Resuming in '+str(save_folder)+' at batch '+str(first_batch)+', frame '+s
 
 #%%   #################### saving the configuration of the run ##################
 
+# registration_z: 'auto' -> the file of the data set (or None), checked against the calibration of the reconstruction;
+# the config saves the file actually used (a resumed run reloads it); another name than registration_z: SGD_batch.py
+# replaces every top-level "registration_z = ..." by its value
+from reconstruction_juliette import registration_for_reconstruction
+registration_z_file = registration_for_reconstruction(registration_z, path)
 
 config = {
     'date': f'{datetime.now():%Y-%m-%d %H:%M:%S}',
@@ -684,7 +692,7 @@ config = {
     'f_tube': f_tube,
     'MAG': MAG,
     'SAF': SAF,
-    'registration_z': str(registration_z), # file of the residual registration of the planes vs z, None: no correction
+    'registration_z': str(registration_z_file), # file of the residual registration of the planes vs z, None: no correction
     # aberrations
     'zernike_coefs_x': zernike_coefs_x,
     'zernike_coefs_y': zernike_coefs_y,
@@ -816,8 +824,8 @@ dim_simu = int(htest.shape[-1]//2)
 #   (x, y) of the fit = (col, -row) of the image. The two channels of a plane are corrected separately: they move
 #   together with z but differ by ~10 nm, and with their mean only the eta bias went from 2.3 to 1.8 deg rms (simulation)
 plane_shift_of_z = lambda z: None
-if registration_z not in (None, 'None', ''):
-    reg = np.load(registration_z)
+if registration_z_file is not None:
+    reg = np.load(registration_z_file)
     z_scan = jnp.linspace(0.05, 1.5, NPSF).astype(jnp.float32)
     M_scan = compute_M_jax(xp=x_start, yp=y_start, zp=z_scan, d=d_, x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2,
                            Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, zernike_base=zernike_base, zernike_coefs_x=zernike_coefs_x,
@@ -841,8 +849,9 @@ if registration_z not in (None, 'None', ''):
         sx = jnp.stack([jnp.stack([jnp.interp(z, reg_z, reg_sx[k, c]) for c in (0, 1)], -1) for k in range(3)], 1)
         sy = jnp.stack([jnp.stack([jnp.interp(z, reg_z, reg_sy[k, c]) for c in (0, 1)], -1) for k in range(3)], 1)
         return sx, sy
-    print('Residual registration of the planes vs z from '+str(registration_z)+': model planes in focus at z = '
-          +str(np.round(z_focus_model, 3))+' um, z_emitter = '+f'{intercept:.3f} + {slope*1000:.3f}*dz_stage (um)')
+    print('Residual registration of the planes vs z from '+str(registration_z_file)+': model planes in focus at z = '
+          +str(np.round(z_focus_model, 3))+' um, z_emitter = '+f'{intercept:.3f} + {slope*1000:.3f}*dz_stage (um)'
+          +f'; measured for z = {z_grid.min():.2f} to {z_grid.max():.2f} um (outside: offset of the nearest end)')
     for P in range(3):
         for c in (0, 1):
             print(f'   plane {P} channel {c}: offset (x, y) nm at z = ' + ', '.join(f'{zz:.2f}: ({1000*np.interp(zz, z_grid[order], reg_sx[P, c]):+.0f}, '
