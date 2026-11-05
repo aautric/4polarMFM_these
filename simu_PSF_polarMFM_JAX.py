@@ -250,13 +250,15 @@ def psi_z_jax(theta, z, lambd=0.617, cos_th2=None):
 
 def psi_f_jax(theta, d, lambd=0.617):
     """
-    JAX version of psi_f (Yan et al. corrected)
-    Computes the phase term along the focal region for vectorial PSF simulations.
+    JAX version of psi_f: phase of the defocus for vectorial PSF simulations.
+    defocus d (um) = displacement of the objective, i.e. of the oil layer (Gibson-Lanni): phase n1 cos(theta1) d
+    on both sides of the coverslip (the glass has the index of the oil). The index of the sample (n2, theta2) enters
+    through psi_z only. Before 2026-11-05 ("version Yan et al. corrected"): n2 cos(theta1) d for d > 0, i.e. the index
+    of the sample with the angle in the oil, which is the phase of no real ray (in 4polarMFM d > 0 = focus below the
+    coverslip, reached by the bead z-stacks only; the planes of the SMLM fits are at d < 0 and do not change)
     """
     print("Compiling psi_f_jax")
-    # Refractive index depending on sign of d
-    n = n1 + (n2 - n1) * (1 + jnp.sign(d)) / 2
-    return jnp.einsum('a, bc -> abc', d*n , 2 * jnp.pi * jnp.cos(theta) / lambd)
+    return jnp.einsum('a, bc -> abc', d*n1, 2 * jnp.pi * jnp.cos(theta) / lambd)
 
 psi_f_jit = jax.jit(psi_f_jax)
 psi_z_jit = jax.jit(psi_z_jax)

@@ -156,9 +156,13 @@ def psi_z(theta, z, lambd=0.617, costh2=None):
             return 2*np.pi*n2*z*np.sqrt(1-(n1*np.sin(theta)/n2)**2)/lambd
     
 def psi_f(theta, d, lambd=0.617):
-    ''' version Yan et al. corrected'''
+    '''defocus d (um) = displacement of the objective, i.e. of the oil layer (Gibson-Lanni): phase n1 cos(theta1) d
+    on both sides of the coverslip (the glass has the index of the oil). The index of the sample (n2, theta2) enters
+    through psi_z only. Before 2026-11-05 ("version Yan et al. corrected"): n2 cos(theta1) d for d > 0, i.e. the index
+    of the sample with the angle in the oil, which is the phase of no real ray (in 4polarMFM d > 0 = focus below the
+    coverslip, reached by the bead z-stacks only; the planes of the SMLM fits are at d < 0 and do not change)'''
     if isinstance(d, torch.Tensor):
-        n = n1 + (n2-n1)*(1+torch.sign(d))/2
+        n = n1 # oil index on both sides of the coverslip (docstring)
         if len(d.shape)==0:
             ''' if one PSF '''
             return 2*torch.pi*n*torch.cos(theta)*d/lambd
@@ -167,10 +171,7 @@ def psi_f(theta, d, lambd=0.617):
             return torch.reshape(2*torch.pi*torch.outer(d*n, torch.sqrt(1-(torch.sin(theta.flatten()))**2))/lambd, torch.Size(d.shape + theta.shape))
     else:
         ''' numpy '''
-        if d<0:
-            return 2*np.pi*n1*np.cos(theta)*d/lambd
-        else:
-            return 2*np.pi*n2*np.cos(theta)*d/lambd
+        return 2*np.pi*n1*np.cos(theta)*d/lambd
 
 def generate_zernike_base(r_cut, N, zernike_order=4, device='cpu', skip_indices = {0, 1, 2, 4}):
     cart = RZern(zernike_order)        
