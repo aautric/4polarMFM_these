@@ -6,3 +6,11 @@ __pycache__/
 
 # dataset of the unit PSFs of train_cnn_jax.py (~850 MB)
 dataset_jax*.npz
+
+# kept on disk but not in git (2026-11-10)
+*.gif
+SGD_jax_with_louise_pre_process.py
+SGD_aberrations.py
+SGD_aberrations_claude.py
+aberrations_beads.py
+notebooks_experimental_SLB_1um_janvier_2026/aberrations.ipynb

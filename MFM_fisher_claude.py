@@ -4,11 +4,11 @@
 """
 Copy of MFM_fisher.ipynb (2026-10-28) as a script with cells. Only change: the Cramer-Rao bound is the mean over the
 PSF of the inverse of each PSF's Fisher matrix, instead of the inverse of the mean Fisher matrix.
-2026-10-28: uses fisher_4pMFM_claude.py (d gamma/d delta fixed: pi sin(delta/2) instead of 2 pi sin(delta)).
+2026-10-28: d gamma/d delta fixed in fisher_4pMFM.py (pi sin(delta/2) instead of 2 pi sin(delta)).
 """
 #%%
 from simu_PSF_polarMFM import *
-from fisher_4pMFM_claude import * # copy of fisher_4pMFM.py with d gamma/d delta fixed
+from fisher_4pMFM import *
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 import re
@@ -267,7 +267,7 @@ for name, c in conditions.items():
     # one file per condition (key = hash of its parameters)
     crb_params = dict(conditions={name: c}, delta_crb=delta_crb, eta_crb=eta_crb.tolist(), NPSF=NPSF, window=11,
                       geometry=dict(xy=0.2, z=(0.2, 1.2), planes=planes_sim.tolist(), SAF=True),
-                      fisher='fisher_4pMFM_claude.py (d gamma/d delta fixed, normalisation term, gain/dark_var)')
+                      fisher='fisher_4pMFM.py (d gamma/d delta fixed, normalisation term, gain/dark_var)')
     crb_key = hashlib.md5(json.dumps(crb_params, sort_keys=True).encode()).hexdigest()[:8]
     crb_file = os.path.join(out_folder, f'crb_{crb_key}.npz')
     if os.path.exists(crb_file) and not recompute_crb:
