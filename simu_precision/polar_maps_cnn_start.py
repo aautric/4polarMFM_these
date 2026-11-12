@@ -21,7 +21,7 @@ import SGD_precision_claude as P
 B = '/mnt/d/Amaury/simu_precision_claude/unbiased_2026-11-09/'; O = B + 'analysis/'  # runs and outputs (D:); folder renamed 2026-11-09_unbiased_sgd_vs_cnn after the merge
 CASES = ['nobg_poisson', 'nobg_emccd', 'case2_emccd']
 LABEL = {'nobg_poisson': 'Poisson', 'nobg_emccd': 'Poisson + read + excess', 'case2_emccd': 'Poisson + read + excess + background 25'}
-tmp = Path('/tmp/claude-1000/-mnt-c-Users-Amaury-Documents-GitHub-4polarMFM-these/de72ebfc-bf70-4cdb-bc45-45a2e63f4851/scratchpad/cnn_start_tmp'); tmp.mkdir(exist_ok=True)
+import tempfile; tmp = Path(tempfile.mkdtemp(prefix='cnn_start_'))  # scratch folder of build_pipeline (was a fixed Claude scratchpad path)
 
 # namespace of SGD_jax_CNN.py with the run settings (middle_plane 1.0), then its CNN z table
 P.SGD_SCRIPT = P.HERE / 'SGD_jax_CNN.py'

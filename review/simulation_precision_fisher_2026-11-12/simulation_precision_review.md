@@ -23,7 +23,9 @@ stream_fit.py, ... identical to main at the start).
    CHECKED 2026-11-12, see item 18.
 6. Precision definitions: maps use robust std (1.4826 MAD) per grid point; the CRB comparison uses sqrt(mean over rho of
    std^2) (non robust, as CRB_vs_SGD_eta.png): the CNN delta with EMCCD noise includes the 3-4 % at the delta bound.
-   TO DECIDE which one to show against the CRB.
+   DECIDED (user, 2026-11-12): plain std against the CRB (the CRB bounds the variance, outliers are a real cost),
+   robust std kept for the maps and shown as open points on the CRB plots, outliers (|error - median| > 5 robust std)
+   tracked in the plots and the text (simu_precision/crb_vs_unbiased_sim.py, ad6639e).
    Measured 2026-11-12 (CNN runs without background, median over the grid points with eta 20-160 of std / robust
    std): rho 1.10, eta 1.08-1.09, delta 1.01-1.02, z 1.24-1.25 (same for Poisson and EMCCD). So the error
    distributions have heavier tails than a Gaussian (z most); the choice changes rho/eta by ~10 %.
@@ -69,6 +71,10 @@ stream_fit.py, ... identical to main at the start).
     (EMCCD, all orientations), deviance median 0.88 / 0.63. Probably the huber loss (c 2) on the very skewed EMCCD
     distribution of pixels with < 1 photon (no background): the large values are clipped -> N underestimated. Not a
     bug of SGD_precision_claude.py; TO CHECK with the fit topic (compare with the SGD run, and case2_emccd with b 25).
+    ANSWERED 2026-11-12 (test nobg_emccd_cnn_lossN, same data, --losses poisson huber): poisson N +0.15 %, background
+    -0.004; huber N -3.26 %, background +0.10. The huber loss (one-sided clipping, huber_positive_only) causes it.
+    -> fit topic (keep huber for real data with background, or a bias-corrected huber). SGD_jax.py without
+    background: N -13 %, background +0.3 (SGD1 / SGD2 background estimate), also -> fit topic.
     Update 2026-11-12: N bias follows the background found in every run (median): nobg_poisson CNN -0.4 % (b found
     -0.01), nobg_emccd CNN -3.3 % (+0.10), nobg_poisson SGD -7.1 % (+0.30, no EMCCD skew involved), case2_emccd CNN
     +1.4 % (24.94 for 25), case2_emccd SGD -2.4 % (25.31). Main effect: N-background trade-off (true b = 0 at the edge
@@ -109,3 +115,15 @@ stream_fit.py, ... identical to main at the start).
     and the torch model of the CRB uses polar_projections [0, -45, 0] (crb_vs_unbiased_sim.py), which gives the same
     PSF as the simulation to 0.000 (torch_vs_jax.py).
     Remaining: lambda 617 in crb_vs_unbiased_sim.py (TO DO: 620 when the CRB is redone with the 13 x 13 window).
+19. simu_precision/polar_maps_cnn_start.py - REVIEWED 2026-11-12. The CNN start is not saved by the run
+    (SGD_jax_CNN.py:1187 writes rho_start, delta_start, z_start = nan): the script runs cnn_first_guess again on
+    simulation.npz with the same input as the run (noisy_psf = the simulated patches), the same checkpoint and the
+    z table of the run (cnn_z_equivalence, middle_plane 1.0; the CNN is applied PSF by PSF, so the chunks of 2000
+    instead of the pools of the run give the same values). Errors as collect(). FIXED: its scratch folder was a fixed
+    path in Claude's session folder (not reproducible) -> tempfile. Fragile like item 9: cnn_z_equivalence is cut out
+    of the source of SGD_jax_CNN.py by text. Suggestion for the fit topic: save the CNN start in the npz of the run.
+20. simu_precision/compare_sgd_cnn.py - REVIEWED 2026-11-12: table only; same deviance formula in both pipelines
+    (SGD_jax.py:311, SGD_jax_CNN.py:349), so "dev<other" is valid: without background SGD has the higher deviance on
+    every PSF (its background +0.3 instead of 0), with background 25 on 99.5 %.
+21. Point 7 of the Fisher plan (optional): EMCCD reference line CRB x sqrt(2/QE) = 1.47 x CRB on the CRB plots (the
+    CNN + LM runs with Poisson + read + excess are at ~1.65 x CRB). Not done, user to decide.
