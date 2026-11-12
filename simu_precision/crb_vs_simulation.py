@@ -7,8 +7,9 @@
 # magnification, pixel, planes, SAF) from NPZ_<loss>\config.txt. Only the ideal polarisation of the simulations
 # (J1 identity, J2 rot(45), rotations 0): torch polar_projections [0, -45, 0] (review item 18); else the run is skipped.
 # One CRB per set of conditions, cached in --out (crb_<hash>.npz).
-# Simulated precision per true eta: sqrt(mean over the rho of the grid of std^2): plain std (filled points, the CRB
-# bounds the variance, outliers included) and robust std (1.4826 MAD, open points); outliers = % of the PSF with
+# Simulated precision per true eta: sqrt(mean over the rho of the grid of std^2): plain std (points, the CRB bounds the
+# variance, outliers included); the robust std (1.4826 MAD) only in the text (removed from the figures, user
+# 2026-11-12); outliers = % of the PSF with
 # |error - median| > 5 robust std of their grid point (legend and text). CRB interpolated at the eta of the grid.
 # Dashed lines: CRB x sqrt(2/QE), the bound of an ideal EMCCD (EM excess factor 2, QE of the run; no read noise), the
 # reference for the runs with Poisson + read + excess (review item 21).
@@ -142,7 +143,6 @@ def main(argv):
                 # 2/QE, so the bound of an ideal EMCCD (no read noise) is CRB x sqrt(2/QE)
                 ax[j].plot(ETA_CRB, cr[:, j]*emccd, '--', color=col, lw=0.8, label=f'CRB x sqrt(2/QE) = x{emccd:.2f} (EMCCD excess)')
                 ax[j].plot(el, pl[:, j], 'o', ms=4, color=col, label=f'{i["label"]}: std (outliers {np.mean(ou[:, j]):.1f} %)')
-                ax[j].plot(el, pr[:, j], 'o', ms=4, mfc='none', color=col, alpha=.7, label=f'{i["label"]}: robust std')
             for e in (45, 90):
                 k = np.argmin(np.abs(el - e))
                 lines.append(f'{lab:26s} {i["label"]:24s} eta {el[k]:5.1f}: sim ' + ' '.join(f'{v:5.1f}' for v in pl[k]) +
@@ -155,7 +155,7 @@ def main(argv):
         for j, par in enumerate(('rho', 'eta', 'delta')):
             ax[j].set_title(f'{par} precision (deg)'); ax[j].set_xlabel('true eta (deg)'); ax[j].grid(alpha=.3)
             ax[j].set_yscale('log'); ax[j].set_ylim(1, 20); ax[j].legend(fontsize=5.5)  # user 2026-11-12: log scale, up to 20 deg
-        fig.suptitle(f'{lab}: simulated precision (filled: std, open: robust std; outliers = |error - median| > 5 robust std)\n'
+        fig.suptitle(f'{lab}: simulated precision (std; outliers = |error - median| > 5 robust std)\n'
                      'vs CRB (lines: Poisson only, no background, conditions of each run)', fontsize=9.5)
         fig.tight_layout(); fig.savefig(out / f'crb_vs_simulation_{meth}.png', dpi=110); plt.close(fig)
     (out / 'crb_vs_simulation.txt').write_text('\n'.join(lines) + '\n'); print('\n'.join(lines))
