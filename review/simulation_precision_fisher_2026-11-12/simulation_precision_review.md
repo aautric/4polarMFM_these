@@ -102,10 +102,10 @@ stream_fit.py, ... identical to main at the start).
         systems: information at (rho, eta) in one = at (-rho, eta) in the other. CRB averaged over rho identical
         (eta 20/45/90/135, 200 molecules: same to 0.01 deg), so the CRB plots of 2026-11-12 are valid; a CRB at a given
         rho was not.
-    DONE (user, 2026-11-12): rot(45) -> rot(-45) everywhere in the repo (SGD_precision_claude.py ideal calibration
-    + its 2 comments, PSF_demo.ipynb, PSF_jax_demo.ipynb, SGD_simu_precision2.ipynb, SGD_simu_precision_loss.ipynb):
-    the ideal simulation now projects on +45 deg as the torch model. Not changed: train_cnn_jax.py (measured J2, no
-    rot(45)); on D:, analysis/polar_maps_cnn_start.py (recomputes runs made with rot(45)) and lm_fix/compile_test/ct.py.
-    All the simulations made before (nobg_*, case2_*) used rot(45): a new run with the default gives the mirror data
-    (rho -> -rho); to reproduce an old run: --set "J2=rot(45)" (used for the poisson/huber test nobg_emccd_cnn_lossN).
+    Sign convention (PSF figure analysis/psf_6channels, 2026-11-12): with J2 = rot(45) a dipole at rho 45 lights the x
+    channel of the middle plane (the analyser at rho 45 in the rho frame of the model); "projection on +45 deg" above is
+    in the coordinates of the fields, which are mirrored with respect to rho. rot(-45) was applied to the repo then
+    REVERTED the same day (user, option a): the simulation keeps rot(45) (all the existing runs, figure labels right)
+    and the torch model of the CRB uses polar_projections [0, -45, 0] (crb_vs_unbiased_sim.py), which gives the same
+    PSF as the simulation to 0.000 (torch_vs_jax.py).
     Remaining: lambda 617 in crb_vs_unbiased_sim.py (TO DO: 620 when the CRB is redone with the 13 x 13 window).

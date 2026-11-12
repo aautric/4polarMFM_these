@@ -400,12 +400,12 @@ finite differences (within 6e-4).
 The CRB uses the torch model (simu_PSF_polarMFM.py, `compute_M` + `PSF`), the simulation and the fit the JAX model
 (simu_PSF_polarMFM_JAX.py, `compute_M_jax` + `PSF_jax`). Checked 2026-11-12 (review item 18): for the same molecules
 they give the same image to 0.000 once the wavelength and the 45 deg convention are the same.
-- Polarisation of the middle plane: the torch model uses `polar_projections` [0, 45, 0] (the x channel of the middle
-  plane analyses along +45 deg); the JAX model ignores `polar_projections` and uses the Jones matrices `J_dichroic`
-  = [J1, J2, J1] applied to the fields. `rot(a)` = [[cos a, -sin a], [sin a, cos a]], so J2 = rot(-45) analyses along
-  +45 deg (since 2026-11-12, as the torch model) and rot(45) along -45 deg (before). The two are mirror images
-  (rho -> -rho): the CRB averaged over rho is the same, a CRB at a given rho is not.
+- Polarisation of the middle plane: the JAX model ignores `polar_projections` and uses the Jones matrices
+  `J_dichroic` = [J1, J2, J1] applied to the fields, with `rot(a)` = [[cos a, -sin a], [sin a, cos a]]. The ideal
+  simulation uses J2 = rot(45): a dipole at rho 45 deg lights the x channel of the middle plane (analyser at rho 45).
+  The torch model uses `polar_projections`; the same convention is [0, -45, 0] (the fields are mirrored with respect
+  to rho: [0, 45, 0] is the mirror system, same CRB averaged over rho, not at a given rho). crb_vs_unbiased_sim.py
+  uses [0, -45, 0] since 2026-11-12.
 - Wavelength: 617 nm in crb_vs_unbiased_sim.py, 620 nm in the simulation (CRB changed by < 0.5 %).
-- To reproduce a simulation made before 2026-11-12: `--set "J2=rot(45)"`.
 
 (11.4 crb_vs_unbiased_sim.py: to be reviewed.)
