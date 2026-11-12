@@ -216,6 +216,8 @@ def pixel_loss(model, data, gain, shift):
 
 def loss_angle_with_M(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zernx, zerny, zern_speed2_x, zern_speed2_y, data, background, noise, dim_simu, d_):
     # remove plot argument entirely
+    if 'background' in params: # fit_background2: background fitted in SGD2 (the argument background is then its SGD1 start)
+        background = params['background']*background_speed2
     dim_data = 6
     dim_simu = int(dim_simu)
     # zernx/zerny are the starting aberrations, params['zern_x'/'zern_y'] the fitted offset shared by the whole batch
@@ -341,7 +343,7 @@ reloaded = ['QE', 'EM', 'sensitivity',
             'polar_projections', 'N', 'l_pixel', 'NA', 'mag', 'f_tube', 'MAG', 'SAF',
             'zernike_coefs_x', 'zernike_coefs_y', 'zern_x', 'zern_y',
             'LR1', 'num_epochs_max1', 'Nphotons_speed1', 'background_speed',
-            'LR2', 'num_epochs_max2', 'delta_speed', 'nphotons_speed2', 'xy_speed2', 'z_speed2',
+            'LR2', 'num_epochs_max2', 'delta_speed', 'nphotons_speed2', 'xy_speed2', 'z_speed2', 'fit_background2', 'background_speed2',
             'zern_speed2_x', 'zern_speed2_y', 'zern_start_epoch2', 'fit_zernike', 'loss2', 'huber_c', 'huber_positive_only', 'y_gain_J1', 'y_gain_J2', 'unitary_J', 'registration_z', 'fov_aberrations',
             'Nframe', 'last_frame_processed', 'NPSF', 'n_photons_filtering', 'batch_nb', 'dimensions']
 
@@ -355,6 +357,9 @@ def reload_config(config_file):
             print('  '+key+' = '+str(old_config[key]))
         else:
             print('  '+key+' is missing from the file, keeping the value defined above')
+    if 'fit_background2' not in old_config: # run made before 2026-11-12: background fixed in SGD2, as it was run
+        globals()['fit_background2'] = False
+        print('  fit_background2 = False (run made before the background was refined in SGD2)')
     return old_config
 
 #%% extracting positions/pre-loc
@@ -459,6 +464,12 @@ num_epochs_max1 = 80
 
 num_epochs_max2 = 120
 LR2 = jax.device_put(1.2)
+# background of the 6 channels of each PSF refined in SGD2 (2026-11-12, review simulation precision): SGD1 fits it with
+# the start orientation (rho 90, eta 90, delta 80), the light of the wrong PSF shape goes into it, and it was then
+# fixed in SGD2 (simulations without background: +0.08 photons/pixel, N -7 %). True: free in SGD2 from the SGD1 value,
+# step ~ LR2 x background_speed2 photons/pixel. False: the former behaviour (also for the resumed older runs)
+fit_background2 = True
+background_speed2 = jax.device_put(0.1*photon_scale)
 delta_speed = jax.device_put(1.8)
 nphotons_speed2 = jax.device_put(3*50.*photon_scale) # x3: N of the whole molecule
 xy_speed2 = jax.device_put(1/70)
@@ -658,6 +669,8 @@ config = {
     'nphotons_speed2': nphotons_speed2,
     'xy_speed2': xy_speed2,
     'z_speed2': z_speed2,
+    'fit_background2': fit_background2,
+    'background_speed2': background_speed2,
     'zern_speed2_x': zern_speed2_x,
     'zern_speed2_y': zern_speed2_y,
     'zern_start_epoch2': zern_start_epoch2,
@@ -1006,6 +1019,8 @@ for batch in range(first_batch, batch_nb):
     'zern_x': jnp.zeros(3*15),
     'zern_y': jnp.zeros(3*15)
     }
+    if fit_background2: # background refined in SGD2, from the value of SGD1
+        params['background'] = background_array_found/background_speed2
     optimizer = optax.adam(learning_rate=LR2)
     opt_state = optimizer.init(params)
     
@@ -1100,6 +1115,8 @@ for batch in range(first_batch, batch_nb):
         first_loop_of_the_launch = False
     del(eta_, rho_, delta_, x_, z_, zx_, zy_)
 
+    if fit_background2: # background found by SGD2 (saved and used by eval_batch)
+        background_array_found = params['background']*background_speed2
     rho_found=params['rho']%360
     eta_found=params['eta']%180                                              
     

@@ -164,4 +164,12 @@ Tested 2026-11-12: run 2 x 2 x 50 PSF (--middle-plane 1.0 --NA 1.4 --set middle_
     CRB cache key with lambda, polar_projections and the fisher window; "CRB vs rho" section removed (did not run:
     eta_list undefined, rho in degrees passed as radians, identical copies of the curves). Dead code noted: measured
     J1 / J2 overwritten by the identity, phase mask outside the pupil set to 1 (no effect).
+24. SGD_jax.py - background fixed after SGD1 (fitted with the start orientation rho 90, eta 90, delta 80): without
+    background +0.08 photons/pixel, N -7 %. FIXED 2026-11-12 (user): fit_background2 = True, the 6 backgrounds of each
+    PSF refined in SGD2 from the SGD1 value (step LR2 x background_speed2 = 0.1 x photon_scale); old runs resumed
+    keep it fixed (reload_config). Test (same data, 4 x 4 x 50 PSF, delta 60-120, N 2100), before -> after:
+    no background: N -8.3 / -8.8 % -> +0.7 / -0.2 % (poisson / huber), background +0.083 -> -0.006, std delta
+    12.2 / 11.7 -> 8.1 / 6.5 deg, z 26 / 25 -> 13 / 11 nm; background 25 (EMCCD): N -0.9 / -2.7 % -> +1.1 / +1.0 %,
+    background 25.07 -> 24.98 / 24.90, rho / eta / delta precision unchanged, z std 78 / 73 -> 83 / 84 nm (+7 %, at the
+    limit of the statistics of 800 PSF: to check on a full run).
 
