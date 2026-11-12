@@ -137,7 +137,8 @@ def make_examples(data, fit_file, groups, out, alt_rho=None):
     import os, sys, tempfile, argparse as ap
     os.environ.setdefault('JAX_PLATFORMS', 'cpu')
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import SGD_precision_claude as S
+    import sys, os; sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'simu_precision'))  # SGD_precision.py (was SGD_precision_claude.py)
+    import SGD_precision as S
     import jax.numpy as jnp
     npz = data / ('NPZ_' + Path(fit_file).stem[4:]) # fit_<date>.csv <- NPZ_<date>
     overrides, interplane, rho_offset = run_parameters(npz / 'config.txt')

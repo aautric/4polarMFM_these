@@ -10,7 +10,7 @@ first_guess_net_jax.pt next to this file, read by SGD_jax_CNN.py). The settings 
 checkpoint (train_settings) and read by cnn_first_guess.py.
 Outputs: position, dipole axis, wobble, photons of the whole molecule and mean background level (photons/pixel,
 start of the 6 background values fitted by SGD_jax_CNN.py). Camera noise: EMCCD or Poisson, with background
-fluctuation and read noise, as the simulations of SGD_precision_claude.py.
+fluctuation and read noise, as the simulations of simu_precision/SGD_precision.py.
 """
 
 import argparse
@@ -51,7 +51,7 @@ DELTA_DEG = (1., 180.)
 N_MOLECULE = (300., 15000.)  # photons of the whole molecule, log-uniform
 BACKGROUND = (1., 80.)       # photons/pixel, per patch, log-uniform, x U(0.85, 1.15) per channel
 BASELINE = (-0.5, 0.5)       # residual of the baseline removed by the reconstruction, photons
-# camera noise, as the simulations of SGD_precision_claude.py (noise_jax and emccd_jax of simu_PSF_polarMFM_JAX.py):
+# camera noise, as the simulations of simu_precision/SGD_precision.py (noise_jax and emccd_jax of simu_PSF_polarMFM_JAX.py):
 # a fraction P_EMCCD of the patches with the EMCCD chain (photoelectrons, EM register, read noise, ADC), the others
 # with Poisson noise only; per patch a background fluctuation SIGMA_B (photons, per pixel, inside the shot noise) and
 # a read noise SIGMA_R (photons). Presets of the simulations: SLB sigma_b 0.5, actin 3, read noise 0.4

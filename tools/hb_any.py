@@ -1,4 +1,4 @@
-# hb_any.py <script.py> <args...>: runs the script (SGD_batch.py, SGD_precision_claude.py) with a heartbeat: the time
+# hb_any.py <script.py> <args...>: runs the script (SGD_batch.py, simu_precision/SGD_precision.py) with a heartbeat: the time
 # of the last LM step written to $HEARTBEAT at most every 10 s (for a watchdog), native stacks possible
 # (py-spy dump --native), Python stacks on SIGUSR1
 import sys, os, time, ctypes, runpy, signal, faulthandler

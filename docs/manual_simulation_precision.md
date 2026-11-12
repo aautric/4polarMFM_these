@@ -1,4 +1,4 @@
-# User manual: precision simulations (SGD_precision_claude.py) and Cramer-Rao bound
+# User manual: precision simulations (simu_precision/SGD_precision.py) and Cramer-Rao bound
 
 Written during the code review of 2026-11-12 (branch simulation-review), function by function, in the order in which
 the code runs. Sections marked "(not reviewed yet)" will be completed as the review goes on. Open issues and fixes:
@@ -6,14 +6,14 @@ review/simulation_precision_fisher_2026-11-12/simulation_precision_review.md. Ex
 
 ## 1. What the script does
 
-`SGD_precision_claude.py` measures the bias and the precision of the fit on simulated data. It simulates PSF with
+`simu_precision/SGD_precision.py` measures the bias and the precision of the fit on simulated data. It simulates PSF with
 the same model as the fit, adds camera noise, and runs the real fit pipeline (`SGD_jax.py`, or `SGD_jax_CNN.py` with
 `--cnn`) on them exactly as on real data. Only the reading of the frames is replaced by the simulated PSF. It then
 compares the found parameters with the truth, per orientation (rho, eta).
 
 Typical command (unbiased simulation of 2026-11-12, "Poisson" without background, CNN + LM fit):
 
-    python SGD_precision_claude.py --preset poisson --N 2100 --delta-range 60 120 --losses huber \
+    python simu_precision/SGD_precision.py --preset poisson --N 2100 --delta-range 60 120 --losses huber \
         --background 0 --sigma-b 0 --out /mnt/d/Amaury/simu_precision_claude/unbiased_2026-11-09 \
         --tag nobg_poisson_cnn --cnn
 
@@ -363,7 +363,7 @@ with EMCCD (review item 15).
 bias_<k>, sigma_<k> for rho, eta, delta, x, y, z, N), compare_losses_vs_eta.png, polar_summary_<case>.png, and one
 log line per loss. The log is printed with the time (`SGD_batch.log`): the queue scripts redirect it to `<tag>.log`.
 
-**`recompute`**: `python SGD_precision_claude.py --recompute <run folder> [...]` redoes the statistics and figures
+**`recompute`**: `python simu_precision/SGD_precision.py --recompute <run folder> [...]` redoes the statistics and figures
 from simulation.npz and results_<loss>.npz without fitting again (after a change of the statistics or the figures).
 It overwrites summary.csv and the png; its log lines go to the console only. The CNN-start maps come from
 `analysis/polar_maps.py`, not from here.
@@ -393,7 +393,7 @@ background are known (not estimated): optimistic bound.
 Bound of a ratiometric method: the information in the 6 channel intensities only (each summed over a window x
 window square, `None` = the whole image), not in the shape of the image. Same model and derivatives as `fisher`;
 `fixed_eta=True` gives the 2 x 2 matrix of (rho, delta) with eta known (with the whole image, eta and delta cannot be
-separated). Used only in MFM_fisher_claude.py, for comparison with the full-image bound. Checked 2026-11-12 against
+separated). Used only in simu_precision/MFM_fisher.py, for comparison with the full-image bound. Checked 2026-11-12 against
 finite differences (within 6e-4).
 
 ### 11.3 Torch model (CRB) vs JAX model (simulation)

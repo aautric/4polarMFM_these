@@ -8,8 +8,8 @@ device = 'cpu'; np.random.seed(1)
 NA = torch.tensor(1.4); mag = torch.tensor(100); lambd = torch.tensor(617); f_tube = torch.tensor(200)
 l_pixel = torch.tensor(16); MAG = torch.tensor(200/150)
 zernike_coefs_x = torch.zeros((3, 15)); polar_projections = np.array([0, 45, 0]); J = np.array([[1, 0], [0, 1]])
-exec(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../simu_precision/crb_vs_unbiased_sim.py')).read().split('def build_M')[1].join(['def build_M', '']).split('BCK_CRB')[0]) if False else None
-src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../simu_precision/crb_vs_unbiased_sim.py')).read()
+exec(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../simu_precision/crb_vs_simulation.py')).read().split('def build_M')[1].join(['def build_M', '']).split('BCK_CRB')[0]) if False else None
+src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../simu_precision/crb_vs_simulation.py')).read()
 exec('def build_M' + src.split('def build_M')[1].split('BCK_CRB = ')[0])
 n = 6; planes = np.array([0.646, 1., 1.354])
 M = build_M(xp=torch.tensor(np.random.uniform(-0.2, 0.2, n)), yp=torch.tensor(np.random.uniform(-0.2, 0.2, n)),

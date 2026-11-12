@@ -44,7 +44,8 @@ import matplotlib.pyplot as plt
 REPO = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO))
 logging.getLogger('tifffile').setLevel(logging.ERROR)
-import SGD_precision_claude as S
+import sys, os; sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'simu_precision'))  # SGD_precision.py (was SGD_precision_claude.py)
+import SGD_precision as S
 import simu_PSF_polarMFM_JAX as SP
 from density_experimental import run_parameters
 from reconstruction_juliette import subcanals, measure_baseline, extract_raw_ome, dark_variance, interpolation_factor

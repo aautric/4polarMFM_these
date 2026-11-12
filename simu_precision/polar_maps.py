@@ -1,8 +1,8 @@
-# 2026-11-12 (Claude): polar maps of any run of SGD_precision_claude.py (simulated precision):
+# 2026-11-12 (Claude): polar maps of any run of SGD_precision.py (simulated precision):
 #   python simu_precision/polar_maps.py <run folder> [<run folder> ...] [--redo-cnn]
 # For each run folder (the one with simulation.npz, results_<loss>.npz, NPZ_<loss>\) and each loss it fitted:
 #   rows 1-2: bias (median of the error) and precision (robust std, 1.4826 MAD) per simulated (rho, eta), for rho,
-#             eta, delta, N, from results_<loss>.npz (statistics() of SGD_precision_claude.py, as summary.csv);
+#             eta, delta, N, from results_<loss>.npz (statistics() of SGD_precision.py, as summary.csv);
 #   rows 3-4, only if the run used the CNN (SGD_jax_CNN.py): the same for the CNN first guess alone (before the LM).
 #   The run does not save the CNN start (nan in its npz): cnn_first_guess is run again on simulation.npz (the same
 #   patches the run fitted, same checkpoint) with the z table of the run, rebuilt with the settings of the run read
@@ -20,7 +20,7 @@ import numpy as np
 import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
 from pathlib import Path
 G = os.path.dirname(os.path.dirname(os.path.abspath(__file__))); sys.path.insert(0, G); os.chdir(G)  # the repo this script is in
-import SGD_precision_claude as P
+sys.path.insert(0, os.path.join(G, 'simu_precision')); import SGD_precision as P
 
 PAR = [('rho', 'deg', 1), ('eta', 'deg', 1), ('delta', 'deg', 1), ('N', '%', 100)]  # N error is relative -> %
 TEXT = PAR + [('z', 'nm', 1), ('x', 'nm', 1)]
@@ -61,7 +61,7 @@ def cnn_start(run, loss, cfg):
 
 
 def errors(found, sim):
-    # Purpose: errors of the CNN start vs the truth, as collect() of SGD_precision_claude.py (rho wrapped, eta flipped
+    # Purpose: errors of the CNN start vs the truth, as collect() of SGD_precision.py (rho wrapped, eta flipped
     # when rho crosses 0/180, x y z in nm, N relative)
     t = {k: sim['true_'+k] for k in ('rho', 'eta', 'delta', 'N', 'x', 'y', 'z')}
     err = {}; raw = found['rho'] - t['rho']; err['rho'] = P.wrap(raw)
@@ -103,7 +103,7 @@ def figure(run, loss, blocks, out):
 
 
 def main(argv):
-    p = argparse.ArgumentParser(description='polar maps of runs of SGD_precision_claude.py')
+    p = argparse.ArgumentParser(description='polar maps of runs of SGD_precision.py')
     p.add_argument('runs', nargs='+', help='run folders (with simulation.npz and results_<loss>.npz)')
     p.add_argument('--redo-cnn', action='store_true', help='compute the CNN start again even if cnn_start_<loss>.npz exists')
     a = p.parse_args(argv)

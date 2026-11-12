@@ -4,7 +4,7 @@ sys.path.insert(0, '/mnt/c/Users/Amaury/Documents/GitHub/4polarMFM_these_simulat
 from simu_PSF_polarMFM import *
 from fisher_4pMFM import fisher
 device = 'cpu'; NPSF = 200
-src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../simu_precision/crb_vs_unbiased_sim.py')).read()
+src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../simu_precision/crb_vs_simulation.py')).read()
 planes = np.array([0.646, 1., 1.354])
 out = {}
 for lam, proj in ((617, 45), (620, 45), (620, -45)):

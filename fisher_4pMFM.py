@@ -5,7 +5,7 @@ Created on Mon Jun  8 14:48:18 2026
 
 @author: amaury
 
-Used by MFM_fisher.ipynb and MFM_fisher_claude.py. 2026-10-28 (Claude): d gamma/d delta fixed (pi sin(delta/2)),
+Used by simu_precision/MFM_fisher.py (MFM_fisher.ipynb removed 2026-11-12). 2026-10-28 (Claude): d gamma/d delta fixed (pi sin(delta/2)),
 derivative of the normalisation of PSF() added, noise gain / dark_var, window and fixed_eta options of
 fisher_ratiometric (2026-11-10: merged here from fisher_4pMFM_claude.py, the defaults keep the old calls valid).
 """
@@ -112,7 +112,7 @@ def fisher_ratiometric(M_matrix, RHO, ETA, DELTA, Np, BACKGROUND, device='cuda',
     #   fixed_eta=True for a pure polarisation-ratio bound
     # gain, dark_var: noise of each pixel, variance = gain x (psf + BACKGROUND) + dark_var, as in fisher
     # Purpose: bound of a RATIOMETRIC method (what can be learnt from the 6 channel intensities only, no image shape),
-    # compared with fisher() (whole image) in MFM_fisher_claude.py; not used for the CRB of the simulations.
+    # compared with fisher() (whole image) in simu_precision/MFM_fisher.py; not used for the CRB of the simulations.
     # Same model and derivatives as fisher(); each channel is one Poisson count = sum over its window, variance
     # gain x (signal + n_pix b) + n_pix dark_var. Checked 2026-11-12 against finite differences of PSF() (window 11
     # and None, b 0 and 25, fixed_eta False/True): within 6e-4.

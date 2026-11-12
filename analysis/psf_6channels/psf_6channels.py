@@ -1,4 +1,4 @@
-# 2026-11-10 (Claude): noiseless 6-channel PSF of the 4polarMFM model (SGD_jax.py through SGD_precision_claude.py) with
+# 2026-11-10 (Claude): noiseless 6-channel PSF of the 4polarMFM model (SGD_jax.py through simu_precision/SGD_precision.py) with
 # an ideal polarisation calibration (J1 = identity, J2 = rot(45): projections 0 / 90 in planes 0 and 2,
 # 45 / 135 in plane 1), next to the dipole and its wobbling cone drawn as in PSF_modulation/animation/anim_dipole_only.py
 # (cone of full angle delta, faint dipoles spread over it, dashed projection on the coverslip).
@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
 REPO = str(Path(__file__).resolve().parents[2])  # root of the 4polarMFM_these repo
 sys.path.insert(0, REPO)
-import SGD_precision_claude as P
+sys.path.insert(0, os.path.join(REPO, 'simu_precision')); import SGD_precision as P
 HERE = Path(os.environ.get('OUT_DIR', os.getcwd()))  # outputs: $OUT_DIR, else the current folder
 HERE.mkdir(parents=True, exist_ok=True)
 

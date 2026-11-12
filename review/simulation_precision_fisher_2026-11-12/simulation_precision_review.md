@@ -1,5 +1,9 @@
 # Code review: simulation precision and Fisher (branch simulation-review, started 2026-11-12)
 
+Note (2026-11-12, after this review): SGD_precision_claude.py -> simu_precision/SGD_precision.py, MFM_fisher_claude.py ->
+simu_precision/MFM_fisher.py, crb_vs_unbiased_sim.py -> simu_precision/crb_vs_simulation.py (generic). The names below are
+those of the review.
+
 Worktree GitHub\4polarMFM_these_simulation_review, branch simulation-review from fb633a7 + the uncommitted changes
 of main as they were run on 2026-11-12 (SGD_jax.py, SGD_jax_CNN.py, SGD_precision_claude.py, simu_PSF_polarMFM_JAX.py,
 stream_fit.py, ... identical to main at the start).

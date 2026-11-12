@@ -2,11 +2,13 @@
 
 # -*- coding: utf-8 -*-
 """
-Copy of MFM_fisher.ipynb (2026-10-28) as a script with cells. Only change: the Cramer-Rao bound is the mean over the
+Copy of MFM_fisher.ipynb (2026-10-28; notebook removed 2026-11-12, see docs/removed_files.md) as a script with cells. Only change: the Cramer-Rao bound is the mean over the
 PSF of the inverse of each PSF's Fisher matrix, instead of the inverse of the mean Fisher matrix.
 2026-10-28: d gamma/d delta fixed in fisher_4pMFM.py (pi sin(delta/2) instead of 2 pi sin(delta)).
 """
 #%%
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # root of the repo (this file: simu_precision/MFM_fisher.py, was MFM_fisher_claude.py at the root until 2026-11-12)
 from simu_PSF_polarMFM import *
 from fisher_4pMFM import *
 import matplotlib.pyplot as plt
@@ -207,7 +209,7 @@ ax.set_yticks([])
 #%% WRT to eta: CRB vs simulated SGD
 # Best performance: comparison of the Cramer-Rao bounds with the precision of the SGD fit (huber loss, the gold
 # standard) on simulated data without read noise nor background fluctuation, Poisson + EMCCD excess noise:
-# SGD_precision_claude.py run 2026-10-14_23h37_poisson_excess (D:\AMAURY\simu_precision_claude): N 3000 photons
+# SGD_precision.py run 2026-10-14_23h37_poisson_excess (D:\AMAURY\simu_precision_claude): N 3000 photons
 # per molecule (1000 per plane: the simulation used PSF_jax normalised per plane, before 2026-10-28),
 # background 25 photons per pixel, delta 90 deg, grid of 20 rho x 20 eta (bin centres 4.5 ... 175.5 deg), 80 molecules
 # per point, x, y in [-0.2, 0.2] um, z in [0.2, 1.2] um, planes focused at 0.646 / 1 / 1.354 um, SAF on.
@@ -296,7 +298,7 @@ for name, c in conditions.items():
 
 #%%
 # simulated SGD (huber): errors of each molecule (rho and eta wrapped, equivalent orientation (rho+180, 180-eta)
-# taken into account by SGD_precision_claude.py); precision per eta = rms over rho of the std over the molecules
+# taken into account by SGD_precision.py); precision per eta = rms over rho of the std over the molecules
 res = np.load(sgd_results)
 eta_listMC = np.unique(res['true_eta'])
 rho_listMC = np.unique(res['true_rho'])

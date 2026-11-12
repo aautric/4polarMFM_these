@@ -61,10 +61,10 @@ values measured before 2026-10-28 were per plane (PSF_jax normalised each plane)
     --preset actin --background 0 --sigma-b 0; "+ background" = --preset actin --sigma-b 0 (b 25 with its Poisson noise)
 
 usage (python of the environment, e.g. /home/amaury/exit/envs/env_linux/bin/python):
-    python SGD_precision_claude.py [options] [--set name=value ...]
-    e.g. python SGD_precision_claude.py --preset actin_dense --losses poisson lms huber --out /mnt/d/Amaury/simu_claude
-options: see python SGD_precision_claude.py --help
-    python SGD_precision_claude.py --recompute <result folder> [...]: statistics, figures and summary of finished runs
+    python SGD_precision.py [options] [--set name=value ...]
+    e.g. python SGD_precision.py --preset actin_dense --losses poisson lms huber --out /mnt/d/Amaury/simu_claude
+options: see python SGD_precision.py --help
+    python SGD_precision.py --recompute <result folder> [...]: statistics, figures and summary of finished runs
     again from their simulation.npz and results_<loss>.npz (no fit)
 --set name=value changes a parameter of SGD_jax.py (as in SGD_batch.py), e.g. --set huber_c=1.5 num_epochs_max2=150
 --cnn runs the pipeline of SGD_jax_CNN.py (CNN start and per-PSF fit) instead of SGD_jax.py (its --set parameters)
@@ -87,7 +87,7 @@ from pathlib import Path
 from datetime import datetime
 import numpy as np
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parents[1]  # root of the repo (this file: simu_precision/SGD_precision.py, was SGD_precision_claude.py at the root until 2026-11-12)
 sys.path.insert(0, str(HERE))
 import SGD_batch # helpers to read and change SGD_jax.py and run its cells (not modified)
 
@@ -185,7 +185,7 @@ def parse_arguments(argv):
     return a
 
 
-# ---------------------------------------------------------------- camera noise (as SGD_simu_precision2.ipynb)
+# ---------------------------------------------------------------- camera noise (as SGD_simu_precision2.ipynb, removed 2026-11-12, docs/removed_files.md)
 
 def camera(rng, expected, a):
     # expected photons per pixel (without background) -> pixel values in photons, without camera baseline (as after
@@ -710,7 +710,7 @@ def disc_map(ax, rows, values, cmap, vmin, vmax):
     # simulated (rho, eta).
     # Polar plot: angle rho, radius eta <= 90 (centre = dipole along the optical axis z, edge = in the plane).
     # (rho, eta) and (rho+180, 180-eta) are the same dipole (vector -u), so the bins eta > 90 are drawn at rho+180,
-    # radius 180-eta (as in SGD_simu_precision2.ipynb): the half 0-180 deg of the disc holds eta < 90, the half
+    # radius 180-eta (as in SGD_simu_precision2.ipynb, removed): the half 0-180 deg of the disc holds eta < 90, the half
     # 180-360 holds eta > 90.
     # Careful when reading an eta BIAS map: the value is the error in the coordinates of the truth, so on the half
     # 180-360 (eta > 90) a positive eta bias moves the dipole towards the centre of the disc, on the half 0-180 towards
@@ -912,7 +912,7 @@ def summary(all_rows, run_folder):
 def recompute(folder):
     # statistics, figures and summary of a finished run again, from its simulation.npz and results_<loss>.npz
     # Purpose: redo the statistics and figures after a change of statistics / figures, without fitting again:
-    # python SGD_precision_claude.py --recompute <run folder> [...]. Overwrites summary.csv and the png; the log
+    # python SGD_precision.py --recompute <run folder> [...]. Overwrites summary.csv and the png; the log
     # lines only go to the console (redirect them to keep them). The CNN-start maps are not made here
     # (simu_precision/polar_maps.py <run folder>)
     folder = Path(folder)
@@ -929,7 +929,7 @@ def recompute(folder):
 
 
 if __name__ == '__main__':
-    if sys.argv[1:2] == ['--recompute']: # python SGD_precision_claude.py --recompute <result folder> ...
+    if sys.argv[1:2] == ['--recompute']: # python SGD_precision.py --recompute <result folder> ...
         for folder in sys.argv[2:]:
             recompute(folder)
     else:

@@ -1,5 +1,9 @@
 # Run map: unbiased precision simulations (run_2026-11-12_nobg.sh), what is executed
 
+Note (2026-11-12, after this review): SGD_precision_claude.py -> simu_precision/SGD_precision.py, MFM_fisher_claude.py ->
+simu_precision/MFM_fisher.py, crb_vs_unbiased_sim.py -> simu_precision/crb_vs_simulation.py (generic). The names below are
+those of the review.
+
 Launched 2026-11-12 13:46 from the worktree simulation-review (code = main as run + fix of review item 1).
 Results: D:\Amaury\simu_precision_claude\unbiased_2026-11-09\<date>_<tag>\ ; logs <tag>.log next to them.
 
