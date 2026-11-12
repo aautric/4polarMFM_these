@@ -136,7 +136,10 @@ def parse_arguments(argv):
     # 2026-11-12 (review item 8): None = the value of the parameter cell of SGD_jax*.py; the values used are logged
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--preset', default='actin', choices=list(PRESETS), help='noise and photon conditions (see above)')
-    p.add_argument('--losses', nargs='+', default=['poisson', 'lms', 'huber'], choices=['poisson', 'lms', 'huber'])
+    p.add_argument('--losses', nargs='+', default=None, choices=['poisson', 'lms', 'huber'],
+                   help='losses of the fit (one run each). Default: with --cnn, poisson if the data have no background '
+                   '(background 0, sigma_b 0) else huber (rule of the user, 2026-11-12: huber clips the large EMCCD counts '
+                   'of the dark pixels, N -3 %% without background); without --cnn, poisson lms huber')
     p.add_argument('--n-rho', type=int, default=20, help='number of rho bins in [0, 180[')
     p.add_argument('--n-eta', type=int, default=20, help='number of eta bins in [0, 180[ (even: the bins split at 90)')
     p.add_argument('--per-point', type=int, default=80, help='number of PSF per orientation')
@@ -195,6 +198,11 @@ def parse_arguments(argv):
     for k, v in PRESETS[a.preset].items(): # options not typed (None) <- value of the preset
         if getattr(a, k) is None:
             setattr(a, k, v)
+    if a.losses is None: # default losses (see --losses)
+        if a.cnn:
+            a.losses = ['poisson'] if a.background == 0 and a.sigma_b == 0 else ['huber']
+        else:
+            a.losses = ['poisson', 'lms', 'huber']
     if not a.tag: # default name of the run: preset + the special options
         a.tag = a.preset + ('_warp' if a.warp else '') + (f'_ygain{a.data_y_gain_J2:g}' if a.data_y_gain_J2 != 1 else '')
         a.tag += (f'_n2{a.data_n2:g}' if a.data_n2 else '') + (f'_safdz{a.data_saf_dz:g}' if a.data_saf_dz else '')
