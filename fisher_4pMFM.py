@@ -14,7 +14,7 @@ from simu_PSF_polarMFM import *
 
 def fisher(M_matrix, RHO, ETA, DELTA, Np, BACKGROUND, device='cuda', gain=1., dark_var=0., window=13):
     # noise of each pixel: variance = gain x (psf + BACKGROUND) + dark_var (photons; gain = 1, dark_var = 0: Poisson only,
-    # gain = 1 + 1/QE: Poisson + EM excess, gain and dark_var of the noise model of SGD_jax.py for real data)
+    # gain = 2/QE: Poisson + EM excess of the EMCCD, as the simulations (emccd_jax; was written 1 + 1/QE before 2026-11-12, review item 22), gain and dark_var of the noise model of SGD_jax.py for real data)
     # Purpose: Fisher information matrix of (rho, eta, delta) for each PSF, shape (3, 3, NPSF), angles in RADIANS
     # (RHO, ETA, DELTA in rad; CRB = sqrt(diag(F^-1)) in rad). x, y, z, N and the background are treated as KNOWN
     # (not in the matrix): the bound is optimistic compared with a fit of all the parameters.

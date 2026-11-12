@@ -674,26 +674,27 @@ def BFP_intensity(rho, eta, delta, M, N_photons=1000, device='cpu'):
 
 def noise(PSF, QE, EM, b, sigma_b, sigma_r, bias):
     '''
-    given a computed PSF, adds noise according to a mixed Poisson Gaussian noise
-    shot noise is taken in account with Poisson distribution and backgound by Gaussian noise with b mean and standard deviation sigma_b
-    the camera has a conversion factor QE*EM
-    Afterwards, we add a gaussin read noise (sigma_r)
-    See "A convex 3D deconvolution algorithm for low photon count fluorescence imaging", Ikoma et al. (2018)
-    the value is in number of photons
+    EMCCD camera noise on a computed PSF (photons), returned in photons, as emccd_jax of simu_PSF_polarMFM_JAX.py (the
+    noise of the simulations, 2026-11-12, review item 22):
+    1. light = PSF + background, the background b with a Gaussian fluctuation sigma_b per pixel, clipped at 0
+    2. photoelectrons e ~ Poisson(QE * light)
+    3. EM register: Gamma(shape e, scale EM), 0 when e = 0 (high gain approximation, excess factor 2)
+    4. back to photons (/ (QE EM)) and Gaussian read noise sigma_r (photons)
+    Moments: mean PSF + b, variance 2 (PSF + b)/QE + sigma_r^2. No camera baseline (as the data after the
+    reconstruction): bias is ignored (kept for the existing calls). Same noise for torch tensors and numpy arrays.
+    Before 2026-11-12: Poisson on the photons, then Gamma(shape photons x QE): variance (1 + 1/QE) instead of 2/QE,
+    a camera baseline, and no EM excess at all for numpy arrays.
     '''
-    
+    if bias:
+        print('noise: bias = ' + str(bias) + ' ignored, no camera baseline (as the data after the reconstruction)')
     if isinstance(PSF, torch.Tensor):
-        device = PSF.device
-        background = normal(0, sigma_b, PSF.shape)+b
-        background[background<0] = 0.
-        read = normal(bias, sigma_r, PSF.shape)
-        poiss = torch.poisson(PSF+torch.tensor(background, device=device))
-        gamma_dist = torch.distributions.Gamma(concentration=poiss.clamp(min=1e-6)*QE, rate=1./EM)
-        excess = gamma_dist.sample()/(QE*EM)
-        noisy = torch.tensor(read, device=device) + excess #torch.tensor(poiss, device=device)+torch.tensor(read, device=device)#
-        return noisy
-    else:
-        background = normal(b, sigma_b, PSF.shape)
-        background[background<0] = 0.
-        noisy = poisson(PSF+background) + normal(0, sigma_r, PSF.shape) + bias
-        return noisy
+        light = torch.clamp(PSF + b + sigma_b*torch.randn_like(PSF), min=0.)
+        electrons = torch.poisson(QE*light)
+        gamma = torch.distributions.Gamma(concentration=electrons.clamp(min=1.), rate=torch.full_like(electrons, 1./EM))
+        amplified = torch.where(electrons > 0, gamma.sample(), torch.zeros_like(electrons))
+        return amplified/(QE*EM) + sigma_r*torch.randn_like(PSF)
+    PSF = np.asarray(PSF, dtype=float)
+    light = np.clip(PSF + b + sigma_b*np.random.standard_normal(PSF.shape), 0., None)
+    electrons = np.random.poisson(QE*light)
+    amplified = np.where(electrons > 0, np.random.gamma(np.maximum(electrons, 1), EM), 0.)
+    return amplified/(QE*EM) + sigma_r*np.random.standard_normal(PSF.shape)

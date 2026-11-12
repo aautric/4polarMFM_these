@@ -150,3 +150,11 @@ stream_fit.py, ... identical to main at the start).
   option --middle-plane (sets --d = -middle_plane).
 Tested 2026-11-12: run 2 x 2 x 50 PSF (--middle-plane 1.0 --NA 1.4 --set middle_plane=1.0), polar_maps.py on it,
 --warp + --data-zernike refused.
+22. simu_PSF_polarMFM.py, noise() (torch model; used only by PSF_demo.ipynb, not by the simulations nor the CRB) -
+    REVIEWED 2026-11-12. Torch branch: Poisson on the photons, then Gamma(shape = photons x QE, scale EM)/(QE EM):
+    variance (1 + 1/QE) mu = 2.09 mu, vs the physical chain of emccd_jax (Poisson(QE mu) photoelectrons, Gamma(e, EM)):
+    2/QE mu = 2.17 mu (checked numerically at mu 0.3, 3, 30; equal for QE = 1). Adds a camera baseline (bias), the
+    simulations have none. NumPy branch: no EM excess at all. fisher_4pMFM.py fisher() comment "gain = 1 + 1/QE: Poisson
+    + EM excess" is this formula; 2/QE is the one of the simulations and of the camera (no effect on the CRB of
+    2026-11-12: Poisson only, gain 1). PROPOSED: (a) noise() as emccd_jax, both branches; (b) comment of fisher() 2/QE.
+
