@@ -8,7 +8,7 @@
 # Columns: |bias| / precision of rho, eta, delta (deg), z, x (nm), N (relative); slope of found vs true delta and its
 # value at true 90 minus 90; % of PSF where this method has the lower deviance; same truth in both runs.
 # Output: compare_sgd_cnn.txt in the analysis folder of the runs. (Figures removed 2026-11-12, user: table only;
-# maps: polar_maps_cnn_start.py; CRB: crb_vs_unbiased_sim.py.)
+# maps: polar_maps.py; CRB: crb_vs_unbiased_sim.py.)
 import glob, numpy as np, pandas as pd
 B = '/mnt/d/Amaury/simu_precision_claude/unbiased_2026-11-09/'; O = B + 'analysis/'  # runs and outputs (D:); folder renamed 2026-11-09_unbiased_sgd_vs_cnn after the merge
 CASES = [('nobg_poisson', 'Poisson'), ('nobg_emccd', 'Poisson + read + excess'), ('case2_emccd', 'Poisson + read + excess + bg 25')]

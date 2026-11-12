@@ -328,7 +328,7 @@ the precision (bottom) of rho, eta, delta, z, x, N, one curve per loss. The medi
 cancel biases of opposite sign at different rho: look at the polar maps for that. N is relative here (0.01 = 1 %).
 
 The CNN-start maps (rows 3-4: bias and std of the CNN first guess) are not made by this script: they come from
-`analysis/polar_maps_cnn_start.py` next to the runs (colour bars 5-95 %).
+`analysis/polar_maps.py` next to the runs (colour bars 5-95 %).
 
 ## 10. One run: `main`
 1. `parse_arguments`; `--cnn` switches the pipeline to SGD_jax_CNN.py (CNN first guess + per-PSF LM).
@@ -366,7 +366,7 @@ log line per loss. The log is printed with the time (`SGD_batch.log`): the queue
 **`recompute`**: `python SGD_precision_claude.py --recompute <run folder> [...]` redoes the statistics and figures
 from simulation.npz and results_<loss>.npz without fitting again (after a change of the statistics or the figures).
 It overwrites summary.csv and the png; its log lines go to the console only. The CNN-start maps come from
-`analysis/polar_maps_cnn_start.py`, not from here.
+`analysis/polar_maps.py`, not from here.
 
 ## 11. Cramer-Rao bound
 Files: fisher_4pMFM.py (Fisher matrix), simu_PSF_polarMFM.py (torch model of the PSF), simu_precision/crb_vs_unbiased_sim.py

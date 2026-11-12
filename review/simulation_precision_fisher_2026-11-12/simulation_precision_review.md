@@ -115,7 +115,7 @@ stream_fit.py, ... identical to main at the start).
     and the torch model of the CRB uses polar_projections [0, -45, 0] (crb_vs_unbiased_sim.py), which gives the same
     PSF as the simulation to 0.000 (torch_vs_jax.py).
     Remaining: lambda 617 in crb_vs_unbiased_sim.py (TO DO: 620 when the CRB is redone with the 13 x 13 window).
-19. simu_precision/polar_maps_cnn_start.py - REVIEWED 2026-11-12. The CNN start is not saved by the run
+19. simu_precision/polar_maps.py - REVIEWED 2026-11-12. The CNN start is not saved by the run
     (SGD_jax_CNN.py:1187 writes rho_start, delta_start, z_start = nan): the script runs cnn_first_guess again on
     simulation.npz with the same input as the run (noisy_psf = the simulated patches), the same checkpoint and the
     z table of the run (cnn_z_equivalence, middle_plane 1.0; the CNN is applied PSF by PSF, so the chunks of 2000

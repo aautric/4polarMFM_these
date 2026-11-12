@@ -914,7 +914,7 @@ def recompute(folder):
     # Purpose: redo the statistics and figures after a change of statistics / figures, without fitting again:
     # python SGD_precision_claude.py --recompute <run folder> [...]. Overwrites summary.csv and the png; the log
     # lines only go to the console (redirect them to keep them). The CNN-start maps are not made here
-    # (analysis/polar_maps_cnn_start.py)
+    # (simu_precision/polar_maps.py <run folder>)
     folder = Path(folder)
     sim = dict(np.load(folder / 'simulation.npz'))
     a = None # loss_statistics does not use the options
