@@ -59,17 +59,20 @@ f_tube=torch.tensor(f_tube, device=device)
 MAG=torch.tensor(MAG, device=device)
 
 #%%
-xp=torch.tensor(np.random.rand(NPSF)*0.1, device=device)
-yp=torch.tensor(np.random.rand(NPSF)*0.1, device=device)
-z=torch.tensor(np.random.rand(NPSF)*1.+1., device=device)
-d_=torch.tensor([-2. for i in range(NPSF)], device=device)
+# 2026-11-12 (user): geometry aligned with the simulations (SGD_precision.py defaults, SGD_jax.py): x, y uniform
+# +-0.2 um, z 0.2-1.2 um, middle plane 1.0 um, planes 0.646 / 1 / 1.354 um (was: x, y 0-0.1 um, z 1-2 um, middle
+# plane 2 um, planes +-0.365 um in the opposite order)
+xp=torch.tensor(np.random.uniform(-0.2, 0.2, NPSF), device=device)
+yp=torch.tensor(np.random.uniform(-0.2, 0.2, NPSF), device=device)
+z=torch.tensor(np.random.uniform(0.2, 1.2, NPSF), device=device)
+d_=torch.tensor([-1. for i in range(NPSF)], device=device)
 rho = torch.tensor([45 for k in range(NPSF)], device=device)
 eta = torch.tensor([45 for k in range(NPSF)], device=device)
 delta = torch.tensor([80 for k in range(NPSF)], device=device)
-second_plane = torch.tensor([-0.365, 0, 0.365])
+second_plane = torch.tensor([0.354, 0, -0.354])  # d[1] - d, as SGD_jax.py: planes 0.646 / 1 / 1.354
 zernike_coefs_x = torch.zeros((3,15), device=device)
 zernike_coefs_y = torch.zeros((3,15), device=device)
-polar_projections = np.array([0, 45, 0])
+polar_projections = np.array([0, -45, 0])  # 2026-11-12: = J2 rot(45) of the simulations (a dipole at rho 45 lights the x channel of the middle plane), review item 18; was [0, 45, 0], the mirror system
 
 #%%
 J1 = np.array([[ 0.89642966        ,             -0.15750188 + 1j*  -0.41388938 ],[
@@ -81,7 +84,7 @@ J = np.array([J1, J2, J1])
 J = np.array([[1,0],[0,1]])
 
 #%%
-SAF = False
+SAF = True  # 2026-11-12: as the simulations and the fit (was False)
 
 #%%
 if SAF:
