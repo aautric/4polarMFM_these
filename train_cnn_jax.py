@@ -40,6 +40,8 @@ INTERPLANE = 0.389
 J1 = np.array([[0.89097912 + 0.j, -0.25009759 - 0.43946158j], [0.43033225 - 0.14481147j, 0.6335862 + 0.58557087j]])
 J2 = np.array([[0.31676515 + 0.j, -0.93297585 - 0.07330244j], [-0.58381747 + 0.74754063j, -0.26412184 + 0.23328625j]])
 ROTATION, ROTATION2 = 7, 2
+CALIBRATION = 'slb'  # 'slb': J1, J2, rotations above (SLB calibration); 'ideal' (--calibration ideal): J1 identity,
+                     # J2 rot(45), rotations 0, as the ideal simulations of SGD_precision.py (2026-11-12)
 N_GRID, L_PIXEL, NA, MAG_OBJ, F_TUBE, MAG_RELAY = 80, 16, 1.4, 100, 200, 200 / 150
 HALF = 6  # 13x13 patches
 
@@ -128,7 +130,8 @@ def generate(n_train, n_val, chunk, dataset=DATASET, seed=0):
         if (k // chunk) % 50 == 0:
             el = time.time() - t0
             print(f"  {k + len(g)}/{len(geo)}  ({el / 60:.1f} min, ~{el / (k + len(g)) * (len(geo) - k - len(g)) / 60:.0f} min left)", flush=True)
-    np.savez(dataset, psf=psf, geometry=geo, n_train=n_train, pixel_um=pixel_um, psf_normalisation='molecule')
+    np.savez(dataset, psf=psf, geometry=geo, n_train=n_train, pixel_um=pixel_um, psf_normalisation='molecule',
+             calibration=CALIBRATION, middle_plane=MIDDLE_PLANE, interplane=INTERPLANE)
     print(f"-> {dataset} ({len(geo)} PSF, pixel {pixel_um * 1000:.1f} nm)")
 
 
@@ -182,7 +185,7 @@ def heteroscedastic_loss(mean, log_var, target, min_log_var, max_log_var):
 def train_settings():
     """ Settings of the training data, saved in the checkpoint: cnn_first_guess.py converts z with middle_plane, and
     they tell where the network can be trusted. """
-    return {'middle_plane': MIDDLE_PLANE, 'interplane': INTERPLANE, 'lambda_nm': LAMBDA_NM, 'rotation': ROTATION,
+    return {'calibration': CALIBRATION, 'middle_plane': MIDDLE_PLANE, 'interplane': INTERPLANE, 'lambda_nm': LAMBDA_NM, 'rotation': ROTATION,
             'rotation2': ROTATION2, 'xy_um': XY_UM, 'z_um': Z_UM, 'delta_deg': DELTA_DEG, 'n_photons_molecule': N_MOLECULE,
             'background': BACKGROUND, 'baseline': BASELINE, 'p_emccd': P_EMCCD, 'QE': QE, 'EM': EM,
             'sensitivity': SENSITIVITY, 'sigma_b': SIGMA_B, 'sigma_r': SIGMA_R, 'aberrations': None,
@@ -202,6 +205,10 @@ def train(epochs=200, batch_size=256, lr=1e-3, patience=12, min_log_var=-8., max
     if "psf_normalisation" not in data.files or str(data["psf_normalisation"]) != "molecule":
         raise ValueError(f"{dataset}: unit PSFs not normalised on the whole molecule (made before 2026-10-28?), run --generate again")
     n_train = int(data["n_train"])
+    # the unit PSFs must come from the calibration and planes of this training (2026-11-12)
+    for key, value in (('calibration', CALIBRATION), ('middle_plane', MIDDLE_PLANE), ('interplane', INTERPLANE)):
+        if key in data.files and str(data[key]) != str(value):
+            raise ValueError(f"{dataset}: made with {key} = {data[key]}, this training uses {value}: run --generate again")
     unit = torch.as_tensor(data["psf"], device=device)
     geo_labels = torch.as_tensor(geometry_to_labels(data["geometry"]), device=device)
     gen = torch.Generator(device=device).manual_seed(seed)
@@ -269,7 +276,19 @@ if __name__ == "__main__":
     ap.add_argument("--dataset", default=DATASET, help="npz of the unit PSFs (written by --generate, read by --train)")
     ap.add_argument("--checkpoint", default=CHECKPOINT, help="weights written by --train (default: the ones of SGD_jax_CNN.py)")
     ap.add_argument("--epochs", type=int, default=200)
+    ap.add_argument("--calibration", default='slb', choices=['slb', 'ideal'], help="polarisation of the training PSF: "
+                    "'slb' = J1, J2 and rotations of this file (SLB calibration), 'ideal' = J1 identity, J2 rot(45), rotations 0 "
+                    "(ideal simulations of SGD_precision.py)")
+    ap.add_argument("--middle-plane", type=float, default=None, help="focus of the middle plane (um), default MIDDLE_PLANE (1.4)")
+    ap.add_argument("--interplane", type=float, default=None, help="distance between the planes (um), default INTERPLANE (0.389)")
     args = ap.parse_args()
+    if args.calibration == 'ideal':  # 2026-11-12: training for the ideal simulations
+        J1, J2, ROTATION, ROTATION2, CALIBRATION = np.eye(2, dtype=complex), rot(45).astype(complex), 0, 0, 'ideal'
+    if args.middle_plane is not None:
+        MIDDLE_PLANE = args.middle_plane
+    if args.interplane is not None:
+        INTERPLANE = args.interplane
+    print(f"calibration {CALIBRATION} (rotations {ROTATION}, {ROTATION2}), middle_plane {MIDDLE_PLANE} um, interplane {INTERPLANE} um", flush=True)
     if args.generate:
         generate(args.n_train, args.n_val, args.chunk, dataset=args.dataset)
     if args.train:
