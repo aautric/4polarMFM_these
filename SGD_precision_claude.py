@@ -9,7 +9,7 @@ the noise model of each batch is measured by noise_model of SGD_jax.py on simula
 
 Simulation (in photons):
     PSF of the model of SGD_jax.py (or SGD_jax_CNN.py with --cnn: same model), ideal polarisation calibration
-    (J1 = identity, J2 = 45 deg rotation, rotations 0, rho_offset 0, y gains 1) unless --calibration; the same model
+    (J1 = identity, J2 = rot(-45): projection of the middle plane on +45 deg, as polar_projections 0/45/0 of the torch model of the CRB; rot(45) before 2026-11-12, rotations 0, rho_offset 0, y gains 1) unless --calibration; the same model
     (and calibration) for the data and the fit unless a --data-* mismatch option is given
     true delta = --delta (90 by default) for every PSF, or uniform in --delta-range per PSF
     light of a pixel = s (PSF, photons) + b + sigma_b * N(0,1), clipped at 0: b = mean background (photons/pixel),
@@ -809,9 +809,9 @@ def main(argv):
     log(f'results in {run_folder}')
     log('parameters: ' + ', '.join(f'{k}={v}' for k, v in vars(a).items() if k != 'warps'))
     extra = SGD_batch.parse_overrides(a.set) # --set name=value: any parameter of the parameter cell of SGD_jax.py / SGD_jax_CNN.py
-    # ideal polarisation calibration (J1 identity, J2 45 deg rotation, no rotation of the channels, y gains 1),
+    # ideal polarisation calibration (J1 identity, J2 = rot(-45), projection on +45 deg as the torch model (rot(45) = -45 deg before 2026-11-12), no rotation of the channels, y gains 1),
     # same for the data and the fit
-    calibration = {'J1': 'np.eye(2)', 'J2': 'rot(45)', 'rotation': '0', 'rotation2': '0', 'rho_offset': '0',
+    calibration = {'J1': 'np.eye(2)', 'J2': 'rot(-45)', 'rotation': '0', 'rotation2': '0', 'rho_offset': '0',
                    'unitary_J': 'False', 'y_gain_J1': '1.', 'y_gain_J2': '1.'}
     if a.calibration: # calibration of a real run (same for the data and the fit), rho of the model (no rho_offset)
         from density_experimental import run_parameters

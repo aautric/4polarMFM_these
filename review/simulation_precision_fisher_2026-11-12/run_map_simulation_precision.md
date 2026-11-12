@@ -28,7 +28,7 @@ Kept from 2026-11-10 (run_overnight_gpu.sh): case2_emccd = --preset actin --sigm
 
 ## 3. Model (data and fit identical), from config.txt of the run
 lambda_emission 620 nm, NA 1.4, mag 100 x 4/3, pixel 16 um (120 nm in the sample), SAF on, middle_plane 1.0 um,
-interplane 0.354 um (planes 0.646 / 1 / 1.354), ideal polarisation: J1 identity, J2 45 deg rotation, rotations 0,
+interplane 0.354 um (planes 0.646 / 1 / 1.354), ideal polarisation: J1 identity, J2 = rot(45) (projection of the middle plane on -45 deg; default rot(-45) = +45 deg since 2026-11-12, review item 18), rotations 0,
 rho_offset 0, y gains 1, no aberration, registration_z None, 13 x 13 px patches.
 
 ## 4. Chain of execution
