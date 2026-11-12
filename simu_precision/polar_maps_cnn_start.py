@@ -8,6 +8,9 @@
 # Colour scales (2026-11-12, user): each row from its 5th to its 95th percentile (bias: white kept at 0, TwoSlopeNorm).
 # The start values are reused from cnn_start_<case>.npz when they exist (no CNN rerun).
 # Outputs here: polar_summary_<case>_cnn_with_start.png, cnn_start_<case>.npz (start values), polar_maps_cnn_start.txt
+# Runs (2026-11-12): the 3 noise types of the user, same truth (seed 0): nobg_poisson = Poisson (no background, perfect
+# detector), nobg_emccd = Poisson + read + excess (EMCCD, no background), case2_emccd = Poisson + read + excess +
+# background 25 (with its Poisson noise). case1 / case3 of 2026-11-10 deleted (background 25 everywhere, mislabelled).
 import os, sys, glob, re
 os.environ['JAX_PLATFORMS'] = 'cpu'; os.environ['CUDA_VISIBLE_DEVICES'] = ''
 import numpy as np
@@ -16,7 +19,8 @@ from pathlib import Path
 G = os.path.dirname(os.path.dirname(os.path.abspath(__file__))); sys.path.insert(0, G); os.chdir(G)  # the repo this script is in (was main)
 import SGD_precision_claude as P
 B = '/mnt/d/Amaury/simu_precision_claude/unbiased_2026-11-09/'; O = B + 'analysis/'  # runs and outputs (D:); folder renamed 2026-11-09_unbiased_sgd_vs_cnn after the merge
-CASES = ['case1_poisson', 'case2_emccd', 'case3_emccd_bgnoise']
+CASES = ['nobg_poisson', 'nobg_emccd', 'case2_emccd']
+LABEL = {'nobg_poisson': 'Poisson', 'nobg_emccd': 'Poisson + read + excess', 'case2_emccd': 'Poisson + read + excess + background 25'}
 tmp = Path('/tmp/claude-1000/-mnt-c-Users-Amaury-Documents-GitHub-4polarMFM-these/de72ebfc-bf70-4cdb-bc45-45a2e63f4851/scratchpad/cnn_start_tmp'); tmp.mkdir(exist_ok=True)
 
 # namespace of SGD_jax_CNN.py with the run settings (middle_plane 1.0), then its CNN z table
@@ -24,7 +28,7 @@ P.SGD_SCRIPT = P.HERE / 'SGD_jax_CNN.py'
 a = P.parse_arguments(['--preset', 'actin', '--N', '2100', '--delta-range', '60', '120', '--losses', 'huber', '--cnn', '--out', str(tmp)])
 calibration = {'J1': 'np.eye(2)', 'J2': 'rot(45)', 'rotation': '0', 'rotation2': '0', 'rho_offset': '0',
                'unitary_J': 'False', 'y_gain_J1': '1.', 'y_gain_J2': '1.'}
-NEED = not all(os.path.exists(O + f'cnn_start_{c}.npz') for c in CASES)
+NEED = not all(os.path.exists(O + f'cnn_start_{c}.npz') for c in CASES)  # the CNN is rerun only for the cases without their npz
 if NEED:
   ns, _, source = P.build_pipeline(dict(calibration, loss2='huber', middle_plane=repr(-a.d)), tmp, 'huber', False, a)
   i0 = source.index('def cnn_z_equivalence'); i1 = source.index('\n', source.index('cnn_z_table = ', i0))
@@ -47,7 +51,7 @@ lines = ['Polar maps of the CNN runs + CNN first guess alone (median over the 40
 for case in CASES:
     run = [f for f in sorted(glob.glob(f'{B}2026-11-1*_{case}_cnn')) if 'CRASHED' not in f][-1]
     sim = dict(np.load(run + '/simulation.npz'))
-    if NEED:
+    if not os.path.exists(O + f'cnn_start_{case}.npz'):
         out = [ns['cnn_first_guess'](sim['data'][k:k + 2000], z_table=ns['cnn_z_table']) for k in range(0, len(sim['data']), 2000)]
         x0, y0, z0, N0, rho0, eta0, delta0 = [np.concatenate([np.asarray(o[j]) for o in out]).astype(float) for j in range(7)]
         np.savez_compressed(O + f'cnn_start_{case}.npz', x=x0, y=y0, z=z0, N=N0, rho=rho0, eta=eta0, delta=delta0)
@@ -78,7 +82,7 @@ for case in CASES:
             if c == 0:
                 axs[ri, c].text(-0.25, 0.5, f'{lab}\n{"bias (median error)" if kind == "bias" else "precision (robust std)"}', transform=axs[ri, c].transAxes,
                                 rotation=90, ha='center', va='center', fontsize=10, fontweight='bold')
-    fig.suptitle(f'{case}, CNN + LM run: rows 1-2 final fit, rows 3-4 CNN first guess alone (before LM), vs the truth\n'
+    fig.suptitle(f'{case} ({LABEL[case]}), CNN + LM run: rows 1-2 final fit, rows 3-4 CNN first guess alone (before LM), vs the truth\n'
                  'angle = rho, radius = eta (circles at 30, 60 deg; eta > 90 at rho+180, 180-eta); colour scale of each map from its 5th to its 95th percentile (bias: white = 0)', fontsize=11)
     fig.savefig(O + f'polar_summary_{case}_cnn_with_start.png', dpi=90); plt.close(fig)
     print(lines[-2]); print(lines[-1], flush=True)
@@ -104,6 +108,6 @@ for case in CASES:
             if c == 0:
                 axs[ri, c].text(-0.25, 0.5, f'SGD_jax.py\n{"bias (median error)" if kind == "bias" else "precision (robust std)"}', transform=axs[ri, c].transAxes,
                                 rotation=90, ha='center', va='center', fontsize=10, fontweight='bold')
-    fig.suptitle(f'{case}, SGD_jax.py run vs the truth\nangle = rho, radius = eta (circles at 30, 60 deg; eta > 90 at rho+180, 180-eta); '
+    fig.suptitle(f'{case} ({LABEL[case]}), SGD_jax.py run vs the truth\nangle = rho, radius = eta (circles at 30, 60 deg; eta > 90 at rho+180, 180-eta); '
                  'colour scale of each map from its 5th to its 95th percentile (bias: white = 0)', fontsize=11)
     fig.savefig(O + f'polar_summary_{case}_sgd.png', dpi=90); plt.close(fig)

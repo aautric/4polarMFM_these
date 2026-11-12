@@ -1,14 +1,15 @@
-# 2026-11-12 (Claude): CRB vs eta (Fisher code of the topic mfm_fisher: fisher() of fisher_4pMFM.py, set-up and build_M
-# of MFM_fisher_claude.py section 'WRT to eta') for the conditions of the unbiased simulations of 2026-11-10
-# (D:\Amaury\simu_precision_claude\unbiased_2026-11-09): N 2100 photons per molecule, background 25 photons/pixel,
-# delta uniform 60-120 deg, rho uniform, x, y in [-0.2, 0.2] um, z in [0.2, 1.2] um, planes 0.646 / 1 / 1.354 um, SAF on,
-# ideal polarisation (J identity of the torch model, polar_projections 0/-45/0 = J2 rot(45) of the simulation, review item 18).
-# CRB: Poisson noise of the molecule only, NO background (gain 1, V 0, bck 0), as the CRB of the topic (CRB_vs_SGD_eta.png)
-# (user, 2026-11-12); the simulations have background 25. Compared with the simulated precision of
-# nobg_poisson (Poisson only) and nobg_emccd (Poisson + EM excess + read noise 0.4), both WITHOUT background (2026-11-12). CRB on (rho, eta, delta) only, x, y, z, N known
-# (optimistic), mean over the molecules of the inverse Fisher matrix (crlb_cov), per eta.
-# Simulated precision per eta: sqrt(mean over the 20 rho of the std over the 80 molecules) (as CRB_vs_SGD_eta.png).
-# Figures: crb_vs_unbiased_sgd.png (SGD_jax.py), crb_vs_unbiased_cnn.png (CNN + LM); crb_vs_unbiased_sim.npz / .txt.
+# 2026-11-12 (Claude): CRB vs eta (fisher() of fisher_4pMFM.py, 13 x 13 window as the fit; set-up and build_M of
+# MFM_fisher_claude.py section 'WRT to eta') vs the precision of the unbiased simulations (SGD_precision_claude.py,
+# runs of run_2026-11-12_nobg.sh): N 2100 photons per molecule, delta uniform 60-120 deg, rho uniform, x, y in
+# [-0.2, 0.2] um, z in [0.2, 1.2] um, planes 0.646 / 1 / 1.354 um, SAF on, lambda 620 nm, ideal polarisation (J identity of
+# the torch model, polar_projections 0/-45/0 = J2 rot(45) of the simulation, review item 18).
+# CRB: Poisson noise of the molecule only, NO background (gain 1, V 0, bck 0) (user, 2026-11-12), on (rho, eta, delta)
+# only, x, y, z, N known (optimistic), mean over the molecules of the inverse Fisher matrix (crlb_cov), per eta.
+# Simulations compared (both WITHOUT background): nobg_poisson (Poisson) and nobg_emccd (Poisson + read + excess).
+# Simulated precision per eta (user, 2026-11-12): sqrt(mean over the 20 rho of the PLAIN std^2 over the 80 molecules)
+# (filled points: the CRB bounds the variance, outliers included); the same with the robust std (1.4826 MAD, open
+# points) to show how much comes from the tails; outliers = |error - median| > 5 robust std, % per eta (text + figure).
+# Figures: crb_vs_unbiased_sgd.png (SGD_jax.py), crb_vs_unbiased_cnn.png (CNN + LM); crb_vs_unbiased_sim.txt.
 # CPU (the GPU queue is not touched).
 import os, sys, glob, json, hashlib
 import numpy as np, torch
@@ -22,8 +23,8 @@ SIM = '/mnt/d/Amaury/simu_precision_claude/unbiased_2026-11-09/'
 NPSF = 400; QE = 0.92
 eta_crb = np.linspace(1, 179, 45); delta_crb = (60, 120)
 COND = {'Poisson': dict(gain=1., dark_var=0., case='crb')}
-CASES = {'nobg_poisson': 'Poisson, no background', 'nobg_emccd': 'Poisson + EM excess + read noise, no background'}  # runs of run_2026-11-12_nobg.sh
-NA = torch.tensor(1.4); mag = torch.tensor(100); lambd = torch.tensor(617); f_tube = torch.tensor(200)
+CASES = {'nobg_poisson': 'Poisson', 'nobg_emccd': 'Poisson + read + excess'}  # runs of run_2026-11-12_nobg.sh
+NA = torch.tensor(1.4); mag = torch.tensor(100); lambd = torch.tensor(620); f_tube = torch.tensor(200)
 l_pixel = torch.tensor(16); MAG = torch.tensor(200/150)
 zernike_coefs_x = torch.zeros((3, 15)); polar_projections = np.array([0, -45, 0]); J = np.array([[1, 0], [0, 1]])
 
@@ -47,7 +48,7 @@ def build_M(xp, yp, zp, d_, second_plane_, SAF_):  # copy of MFM_fisher_claude.p
 BCK_CRB = 0.
 params = dict(N=2100, bck=BCK_CRB, delta=delta_crb, eta=eta_crb.tolist(), NPSF=NPSF, cond={k: [v['gain'], v['dark_var']] for k, v in COND.items()},
               geometry=dict(xy=0.2, z=(0.2, 1.2), planes=[0.646, 1., 1.354], SAF=True),
-              lambd=617, polar_projections=[0, -45, 0], window=13)  # 2026-11-12: in the cache key, else an old CRB is reused
+              lambd=620, polar_projections=[0, -45, 0], window=13)  # 2026-11-12: in the cache key, else an old CRB is reused
 cache = O + 'crb_unbiased_' + hashlib.md5(json.dumps(params, sort_keys=True).encode()).hexdigest()[:8] + '.npz'
 if os.path.exists(cache):
     crb = dict(np.load(cache)); print('CRB loaded from', cache)
@@ -68,34 +69,51 @@ else:
     np.savez(cache, params=json.dumps(params), **crb)
 
 def sim_prec(case, meth):
+    # per true eta: sqrt(mean over the 20 rho of std^2), plain std (main) and robust std (1.4826 MAD); outliers:
+    # % of the PSF with |error - median| > 5 robust std of their grid point
     run = [f for f in sorted(glob.glob(f'{SIM}2026-11-1*_{case}_{meth}')) if os.path.exists(f + '/results_huber.npz')][-1]
     r = np.load(run + '/results_huber.npz'); el = np.unique(r['true_eta']); rl = np.unique(r['true_rho'])
-    p = np.array([[np.sqrt(np.mean([np.nanstd(err[(r['true_eta'] == e) & (r['true_rho'] == q)])**2 for q in rl]))
-                   for err in (r['error_rho'], r['error_eta'], r['error_delta'])] for e in el])
-    return el, p
+    plain, robust, outl = (np.zeros((len(el), 3)) for _ in range(3))
+    for i, e in enumerate(el):
+        for j, err in enumerate((r['error_rho'], r['error_eta'], r['error_delta'])):
+            sd, rs, no, n = [], [], 0, 0
+            for q in rl:
+                v = err[(r['true_eta'] == e) & (r['true_rho'] == q)]; v = v[np.isfinite(v)]
+                m = np.median(v); mad = 1.4826*np.median(np.abs(v - m))
+                sd.append(np.std(v)); rs.append(mad); no += np.sum(np.abs(v - m) > 5*mad); n += len(v)
+            plain[i, j], robust[i, j], outl[i, j] = np.sqrt(np.mean(np.square(sd))), np.sqrt(np.mean(np.square(rs))), 100*no/n
+    return el, plain, robust, outl
 
-lines = ['CRB Poisson only, no background (N 2100, delta 60-120, ideal J; rho, eta, delta free, x y z N known) vs simulated precision '
-         '(sqrt(mean over rho of std^2)), deg, at eta ~45 / ~90:']
+lines = ['CRB Poisson only, no background (N 2100, delta 60-120, lambda 620, ideal J, 13 x 13 window; rho, eta, delta free, '
+         'x y z N known) vs simulated precision (sqrt(mean over rho of std^2)), deg. CRB interpolated at the eta of the grid.',
+         'columns: rho eta delta | sim plain std | sim robust std | CRB | ratio plain / CRB | outliers (% |error - median| > 5 robust std)']
 COL = {'nobg_poisson': 'tab:green', 'nobg_emccd': 'tab:orange'}
 for meth, lab, fn in (('sgd', 'SGD_jax.py', 'crb_vs_unbiased_sgd.png'), ('cnn', 'CNN + LM (SGD_jax_CNN.py)', 'crb_vs_unbiased_cnn.png')):
-    fig, ax = plt.subplots(1, 3, figsize=(13, 3.8), sharex=True)
+    fig, ax = plt.subplots(1, 3, figsize=(13.5, 4.2), sharex=True)
     cr = crb['crb']
     for j in range(3):
         ax[j].plot(eta_crb, cr[:, j], 'k-', label='CRB, Poisson only, no background')
     for case, name in CASES.items():
         if not [f for f in glob.glob(f'{SIM}2026-11-1*_{case}_{meth}') if os.path.exists(f + '/results_huber.npz')]:
             continue
-        el, p = sim_prec(case, meth)
+        el, p, pr, out = sim_prec(case, meth)
+        cri = np.stack([np.interp(el, eta_crb, cr[:, j]) for j in range(3)], axis=1)
         for j in range(3):
-            ax[j].plot(el, p[:, j], 'o', ms=4, color=COL[case], label=f'{lab}, {name}')
+            ax[j].plot(el, p[:, j], 'o', ms=4, color=COL[case], label=f'{name}: std (outliers {np.mean(out[:, j]):.1f} %)')
+            ax[j].plot(el, pr[:, j], 'o', ms=4, mfc='none', color=COL[case], alpha=.7, label=f'{name}: robust std')
         for e in (45, 90):
-            i = np.argmin(np.abs(el - e)); k = np.argmin(np.abs(eta_crb - e))
-            lines.append(f'{lab:26s} {name:34s} eta {el[i]:5.1f}: sim ' + ' '.join(f'{v:5.1f}' for v in p[i]) +
-                         ' | CRB ' + ' '.join(f'{v:5.1f}' for v in cr[k]) + ' | ratio ' + ' '.join(f'{a/b:4.2f}' for a, b in zip(p[i], cr[k])))
+            i = np.argmin(np.abs(el - e))
+            lines.append(f'{lab:26s} {name:24s} eta {el[i]:5.1f}: sim ' + ' '.join(f'{v:5.1f}' for v in p[i]) +
+                         ' | robust ' + ' '.join(f'{v:5.1f}' for v in pr[i]) + ' | CRB ' + ' '.join(f'{v:5.1f}' for v in cri[i]) +
+                         ' | ratio ' + ' '.join(f'{a/b:4.2f}' for a, b in zip(p[i], cri[i])) +
+                         ' | outliers ' + ' '.join(f'{v:4.1f}' for v in out[i]) + ' %')
+        lines.append(f'{lab:26s} {name:24s} all eta: outliers ' + ' '.join(f'{v:4.1f}' for v in out.mean(0)) +
+                     ' %, median ratio plain / CRB (eta 20-160) ' +
+                     ' '.join(f'{np.median((p/cri)[(el > 20) & (el < 160), j]):4.2f}' for j in range(3)))
     for j, par in enumerate(('rho', 'eta', 'delta')):
         ax[j].set_title(f'{par} precision (deg)'); ax[j].set_xlabel('true eta (deg)'); ax[j].grid(alpha=.3)
-        ax[j].set_ylim(0, {0: 30, 1: 25, 2: 40}[j])
-    ax[0].legend(fontsize=7)
-    fig.suptitle(f'{lab}: precision of the unbiased simulation (points) vs CRB (line: Poisson only, no background); N 2100, delta 60-120, ideal J; simulations without background', fontsize=10)
+        ax[j].set_ylim(0, {0: 30, 1: 25, 2: 40}[j]); ax[j].legend(fontsize=6)
+    fig.suptitle(f'{lab}: precision of the unbiased simulations without background (filled: std, open: robust std; outliers = |error - median| > 5 robust std)\n'
+                 'vs CRB (line: Poisson only, no background); N 2100, delta 60-120, lambda 620, ideal J', fontsize=9.5)
     fig.tight_layout(); fig.savefig(O + fn, dpi=110); plt.close(fig)
 open(O + 'crb_vs_unbiased_sim.txt', 'w').write('\n'.join(lines) + '\n'); print('\n'.join(lines))
