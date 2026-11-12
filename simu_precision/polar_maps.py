@@ -84,13 +84,16 @@ def figure(run, loss, blocks, out):
                             layout='constrained', squeeze=False)
     for ri, (lab, kind) in enumerate(rows):
         for c, (k, unit, s) in enumerate(PAR):
-            v = s*np.array([r[f'{kind}_{k}'] for r in blocks[lab]], float); f = v[np.isfinite(v)]
+            v = s*np.array([r[f'{kind}_{k}'] for r in blocks[lab]], float)
+            if (kind, k) == ('bias', 'eta'):
+                v = P.eta_bias_on_disc(blocks[lab], v)  # + = towards the edge of the disc everywhere (review item 12)
+            f = v[np.isfinite(v)]
             vmin, vmax = np.percentile(f, [5, 95]) if f.size else (0, 1)
             im = P.disc_map(axs[ri, c], blocks[lab], v, 'coolwarm' if kind == 'bias' else 'viridis', vmin, vmax)
             if kind == 'bias' and vmin < 0 < vmax:
                 im.set_norm(matplotlib.colors.TwoSlopeNorm(0., vmin, vmax))
             med = np.nanmedian(np.abs(v)) if kind == 'bias' else np.nanmedian(v)
-            axs[ri, c].set_title(f'{k}, {"median |bias|" if kind == "bias" else "median precision"} {med:.1f} {unit}', fontsize=9)
+            axs[ri, c].set_title(f'{k}, {"median |bias|" if kind == "bias" else "median precision"} {med:.1f} {unit}\n{P.map_noise(blocks[lab], k, kind, s)}', fontsize=8)
             cb = fig.colorbar(im, ax=axs[ri, c], location='bottom', shrink=0.8, aspect=18, pad=0.02)
             cb.set_label(f'{k} {"bias" if kind == "bias" else "precision"} ({unit})', fontsize=8); cb.ax.tick_params(labelsize=7)
             if c == 0:
@@ -98,7 +101,7 @@ def figure(run, loss, blocks, out):
                                 transform=axs[ri, c].transAxes, rotation=90, ha='center', va='center', fontsize=10, fontweight='bold')
     fig.suptitle(f'{run.name}, loss {loss}: ' + ' / '.join(blocks) + ' vs the truth\n'
                  'angle = rho, radius = eta (circles at 30, 60 deg; eta > 90 at rho+180, 180-eta); colour scale of each map from its '
-                 '5th to its 95th percentile (bias: white = 0)', fontsize=11)
+                 '5th to its 95th percentile (bias: white = 0; eta bias: + = towards the edge of the disc, more in-plane)', fontsize=11)
     fig.savefig(out, dpi=90); plt.close(fig)
 
 

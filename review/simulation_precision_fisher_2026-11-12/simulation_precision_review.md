@@ -131,3 +131,22 @@ stream_fit.py, ... identical to main at the start).
     every PSF (its background +0.3 instead of 0), with background 25 on 99.5 %.
 21. Point 7 of the Fisher plan (optional): EMCCD reference line CRB x sqrt(2/QE) = 1.47 x CRB on the CRB plots (the
     CNN + LM runs with Poisson + read + excess are at ~1.65 x CRB). Not done, user to decide.
+
+## Fixes of 2026-11-12 (user: "do the fixes"), simu_precision/SGD_precision.py (= SGD_precision_claude.py)
+- item 2 FIXED: noise_description(a) logged after the parameters, in the words of the user ("N 2100 photons per
+  molecule; noise: Poisson + excess (EMCCD, QE 0.92, EM 200), read noise 0.4 photons, NO background").
+- item 8 FIXED: options --lambda-emission, --NA, --mag, --MAG, --l-pixel, --SAF (None = parameter cell of
+  SGD_jax*.py), passed as overrides; the model used is logged ("model (data and fit): lambda_emission 620, NA 1.4, ...").
+- item 9 FIXED: build_pipeline stops if a cell header ('PARAMETERS TO BE DEFINED', 'extracting positions', 'gradient
+  descent') or a marker ('################# main loop', result['buffer'] / result['last_frame_processed']) is not
+  found exactly once.
+- item 10 FIXED: statistics() adds bias_err_<k> (1.2533 sigma/sqrt(n)) and sigma_relerr_<k> (1.17/sqrt(n)) per grid
+  point (summary.csv); the map titles give the noise per point (case_figure and polar_maps.py).
+- item 11 FIXED: --data-zshift is added to the --data-shift of the same channel (was: fixed shift lost).
+- item 12 FIXED: eta_bias_on_disc() flips the eta bias of the points eta > 90 on the maps (+ = towards the edge of the
+  disc, more in-plane, everywhere); summary.csv keeps the bias in the coordinates of the truth.
+- item 13 FIXED: --data-zernike / --data-n2 refused with --warp.
+- item 14 FIXED: overrides merged with --set last (--set loss2= / middle_plane= no longer crash, --set wins); new
+  option --middle-plane (sets --d = -middle_plane).
+Tested 2026-11-12: run 2 x 2 x 50 PSF (--middle-plane 1.0 --NA 1.4 --set middle_plane=1.0), polar_maps.py on it,
+--warp + --data-zernike refused.

@@ -408,4 +408,25 @@ they give the same image to 0.000 once the wavelength and the 45 deg convention 
   uses [0, -45, 0] since 2026-11-12.
 - Wavelength: 617 nm in crb_vs_unbiased_sim.py, 620 nm in the simulation (CRB changed by < 0.5 %).
 
-(11.4 crb_vs_unbiased_sim.py: to be reviewed.)
+### 11.4 Analysis scripts of simu_precision/ (generic: any run folders)
+- `crb_vs_simulation.py <run> [...] --out <folder>`: CRB (Poisson only, no background, 13 x 13 window, x y z N known)
+  with the conditions of each run (N, delta, x, y, z = true values of a random subset of its simulation.npz; optics
+  from its config.txt; ideal J only, torch polar_projections [0, -45, 0]) vs its simulated precision per true eta:
+  plain std (filled points, the quantity the CRB bounds), robust std (open points), outliers (% with |error - median|
+  > 5 robust std). One figure per method (SGD_jax.py, CNN + LM), a text summary, the CRB cached per condition.
+- `polar_maps.py <run> [...]`: maps of any run (see section 9), with the CNN first guess rows for a CNN run.
+- `compare_sgd_cnn.py <SGD run> <CNN run> [...] --out <file>`: table of paired runs (same truth).
+Results of 2026-11-12 (no background): CNN + LM with Poisson noise at 1.07-1.12 x the CRB (rho, eta, delta), with
+Poisson + read + excess at 1.6-1.7 x (EMCCD excess alone: sqrt(2/QE) = 1.47); SGD_jax.py 1.5-2.3 x and 2.3-3.2 x.
+
+## 12. Changes of 2026-11-12 after the review (review list, "Fixes")
+- Script moved: `simu_precision/SGD_precision.py` (was SGD_precision_claude.py), run as
+  `python simu_precision/SGD_precision.py ...`.
+- New options: `--middle-plane` (instead of --d, which stays), `--lambda-emission`, `--NA`, `--mag`, `--MAG`,
+  `--l-pixel`, `--SAF` (default: the parameter cell of SGD_jax*.py); `--set` wins over all the other overrides.
+- Log: the noise in plain words (`noise: Poisson ..., NO background`) and the model used (`model (data and fit): ...`).
+- Checks: stops if a cell header / marker of SGD_jax*.py is missing or doubled; refuses --data-zernike / --data-n2
+  with --warp; --data-zshift adds to --data-shift.
+- summary.csv: `bias_err_<k>` and `sigma_relerr_<k>` (statistical noise of each grid point); map titles give it.
+- Maps: eta bias with + = towards the edge of the disc (more in-plane) on both halves.
+

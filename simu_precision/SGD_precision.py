@@ -112,14 +112,28 @@ PRESETS = {
 }
 
 
+def noise_description(a):
+    # Purpose: the noise of the simulated data in plain words, in the vocabulary of the user (review item 2):
+    # "Poisson" = no background, perfect detector; "Poisson + read + excess" = EMCCD; "+ background" = b with its
+    # Poisson noise (and its extra fluctuation sigma_b if > 0)
+    parts = ['Poisson (perfect detector, no QE)' if a.camera == 'poisson' else f'Poisson + excess (EMCCD, QE {a.QE:g}, EM {a.EM:g})']
+    if a.sigma_r: parts.append(f'read noise {a.sigma_r:g} photons')
+    if a.cic: parts.append(f'clock induced charge {a.cic:g} e-')
+    parts.append(f'background {a.background:g} photons/pixel with its Poisson noise' if a.background else 'NO background')
+    if a.sigma_b: parts.append(f'background fluctuation {a.sigma_b:g} photons')
+    if a.crazy_fraction: parts.append(f'crazy pixels {100*a.crazy_fraction:g} %')
+    if a.two_emitter_fraction: parts.append(f'second emitter on {100*a.two_emitter_fraction:g} % of the PSF')
+    return f'N {a.N:g} photons per molecule; noise: ' + ', '.join(parts)
+
+
 def parse_arguments(argv):
     # Reads the command line (list of words argv) and returns one object `a` with a field per option (a.N, a.background,
     # ...), used by the rest of the script. Steps: (1) declaration of the accepted options (name, type, number of
     # values, allowed values, default, help); (2) reading of argv (unknown option or wrong type: stop before any
     # computation); (3) options left at None and not typed take the value of the preset (what is typed wins, what is
     # not typed comes from the preset: all the presets have a background); (4) default name of the run (--tag) and
-    # consistency check. The optical parameters (wavelength, NA, pixel, SAF, ...) are NOT options: they come from the
-    # parameter cell of SGD_jax.py (review item 8)
+    # consistency check. The optical parameters (wavelength, NA, magnifications, pixel, SAF) are options since
+    # 2026-11-12 (review item 8): None = the value of the parameter cell of SGD_jax*.py; the values used are logged
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--preset', default='actin', choices=list(PRESETS), help='noise and photon conditions (see above)')
     p.add_argument('--losses', nargs='+', default=['poisson', 'lms', 'huber'], choices=['poisson', 'lms', 'huber'])
@@ -140,7 +154,16 @@ def parse_arguments(argv):
     p.add_argument('--cic', type=float, default=0., help='clock induced charge (electrons per pixel and frame, emccd camera)')
     p.add_argument('--EM', type=float, default=200.)
     p.add_argument('--interplane', type=float, default=0.354, help='distance between the planes (um)')
-    p.add_argument('--d', type=float, default=-1.0, help='d_ of compute_M_jax (um), d_ = -middle_plane in SGD_jax.py')
+    p.add_argument('--d', type=float, default=-1.0, help='d_ of compute_M_jax (um), d_ = -middle_plane in SGD_jax.py (same as --middle-plane)')
+    p.add_argument('--middle-plane', type=float, default=None, help='focus of the middle plane above the coverslip (um); '
+                   'sets --d = -middle_plane (review item 14, clearer than --d)')
+    # optics of the model (data and fit), review item 8: None = the value of the parameter cell of SGD_jax*.py, written in the log
+    p.add_argument('--lambda-emission', type=float, default=None, help='emission wavelength (nm), default: SGD_jax.py (620)')
+    p.add_argument('--NA', type=float, default=None, help='numerical aperture, default: SGD_jax.py (1.4)')
+    p.add_argument('--mag', type=float, default=None, help='objective magnification, default: SGD_jax.py (100)')
+    p.add_argument('--MAG', type=float, default=None, help='extra magnification after the objective, default: SGD_jax.py (200/150)')
+    p.add_argument('--l-pixel', type=float, default=None, help='camera pixel (um), default: SGD_jax.py (16)')
+    p.add_argument('--SAF', default=None, choices=['True', 'False'], help='supercritical angle fluorescence in the model, default: SGD_jax.py (True)')
     p.add_argument('--z-range', type=float, nargs=2, default=[0.2, 1.2], help='range of the true z (um)')
     p.add_argument('--xy-range', type=float, default=0.2, help='true x, y uniform in [-xy_range, xy_range] (um)')
     p.add_argument('--crazy-fraction', type=float, default=None, help='fraction of crazy pixels in each PSF (0: off)')
@@ -181,6 +204,10 @@ def parse_arguments(argv):
         a.tag += f'_delta{a.delta_range[0]:g}-{a.delta_range[1]:g}' if a.delta_range else ''
     if (a.data_shift or a.data_zshift) and a.warp:
         raise SystemExit('--data-shift / --data-zshift are not implemented with --warp')
+    if (a.data_zernike or a.data_n2 is not None) and a.warp: # review item 13: warped_data uses model_psf, not data_psf
+        raise SystemExit('--data-zernike / --data-n2 are not implemented with --warp')
+    if a.middle_plane is not None:
+        a.d = -a.middle_plane
     a.warps = load_warps(a.warp) if a.warp else None
     return a
 
@@ -236,6 +263,15 @@ def build_pipeline(overrides, out_folder, loss, save_figures, a):
     # loss2, middle_plane, --set); a name absent from the script stops with an error (no silent typo)
     source = SGD_batch.apply_overrides(source, overrides)
     cells = SGD_batch.split_cells(source) # cut at the '#%%' markers: (first line, header, text) of each cell
+    # review item 9: the cells are found by the text of their header; each must be found exactly once, else a renamed
+    # header of SGD_jax*.py would change the simulation silently
+    for key in ('PARAMETERS TO BE DEFINED', 'extracting positions', 'gradient descent'):
+        n = sum(key in header for _, header, _ in cells)
+        if n != 1:
+            raise RuntimeError(f'{SGD_SCRIPT.name}: {n} cells with "{key}" in their header (1 expected): SGD_precision.py must be adapted')
+    for key in ('################# main loop', "    result['buffer'] = buffer", "    result['last_frame_processed']"):
+        if source.count(key) != 1:
+            raise RuntimeError(f'{SGD_SCRIPT.name}: "{key.strip()}" found {source.count(key)} times (1 expected): SGD_precision.py must be adapted')
     ns = {'__name__': '__main__', '__file__': str(SGD_SCRIPT)} # empty memory, filled cell by cell
     dialog = SGD_batch.FakeDialog(out_folder) # answers the folder dialogs of the pipeline with the run folder
     show_factory = lambda n: SGD_batch.make_show(n, save_figures) # figures of the pipeline not shown (saved with --save-figures)
@@ -565,8 +601,12 @@ def data_psf(ns, sl, p, a, phys, half=6):
         for k in pols:
             h[:, int(plane), k] = hs[:, int(plane), k]
     # --data-zshift: same with a shift of each channel that depends on the z of the emitter (table interpolated; end
-    # values outside the table). Recomputed from the original position: with --data-shift too, the --data-shift of
-    # that channel is lost (review item 11)
+    # values outside the table), added to the --data-shift of the channel if any (review item 11, fixed 2026-11-12:
+    # was recomputed from the original position, the fixed shift was lost)
+    fixed = {}
+    for plane, pol, dx, dy in a.data_shift:
+        for k in ((0, 1) if int(pol) == 2 else (int(pol),)):
+            fixed[int(plane), k] = (dx/1000, dy/1000)
     if a.data_zshift:
         table = np.load(a.data_zshift)
         for plane in range(3):
@@ -575,8 +615,9 @@ def data_psf(ns, sl, p, a, phys, half=6):
                 if not np.any(sh):
                     continue
                 q = dict(p); q['x'] = p['x'].copy(); q['y'] = p['y'].copy()
-                q['x'][sl] = p['x'][sl] + np.interp(p['z'][sl], table['z_em'], sh[:, 0])/1000
-                q['y'][sl] = p['y'][sl] + np.interp(p['z'][sl], table['z_em'], sh[:, 1])/1000
+                fx, fy = fixed.get((plane, pol), (0., 0.))
+                q['x'][sl] = p['x'][sl] + fx + np.interp(p['z'][sl], table['z_em'], sh[:, 0])/1000
+                q['y'][sl] = p['y'][sl] + fy + np.interp(p['z'][sl], table['z_em'], sh[:, 1])/1000
                 h[:, plane, pol] = model_psf(ns, sl, q, half, phys.fields, zern)[:, plane, pol]
     return h
 
@@ -698,6 +739,10 @@ def statistics(idx, err, sim, subset=None):
             ok = sel & np.isfinite(v)
             row['bias_'+k] = np.median(v[ok]) if ok.any() else np.nan
             row['sigma_'+k] = robust_std(v[ok]) if ok.any() else np.nan
+            # statistical noise of this point (review item 10, Gaussian errors): standard error of the median
+            # 1.2533 sigma/sqrt(n), relative standard error of the robust std ~1.17/sqrt(n) (13 % for 80 PSF)
+            row['bias_err_'+k] = 1.2533*row['sigma_'+k]/np.sqrt(ok.sum()) if ok.any() else np.nan
+            row['sigma_relerr_'+k] = 1.17/np.sqrt(ok.sum()) if ok.any() else np.nan
         rows.append(row)
     return rows
 
@@ -712,9 +757,9 @@ def disc_map(ax, rows, values, cmap, vmin, vmax):
     # (rho, eta) and (rho+180, 180-eta) are the same dipole (vector -u), so the bins eta > 90 are drawn at rho+180,
     # radius 180-eta (as in SGD_simu_precision2.ipynb, removed): the half 0-180 deg of the disc holds eta < 90, the half
     # 180-360 holds eta > 90.
-    # Careful when reading an eta BIAS map: the value is the error in the coordinates of the truth, so on the half
-    # 180-360 (eta > 90) a positive eta bias moves the dipole towards the centre of the disc, on the half 0-180 towards
-    # the edge (review item 12). rho bias keeps its meaning on both halves.
+    # eta BIAS: in the coordinates of the truth a positive eta error moves the dipole towards the centre of the disc
+    # on the half 180-360 (eta > 90) and towards the edge on the half 0-180; the callers flip it on the half eta > 90
+    # with eta_bias_on_disc (review item 12): on the maps + = towards the edge everywhere. rho bias: same on both halves.
     # Needs a regular grid with rho bins covering 0-180 evenly and an even number of eta bins symmetric about 90.
     rho_bins = np.unique([r['rho'] for r in rows]); eta_bins = np.unique([r['eta'] for r in rows])
     n_rho, n_eta = len(rho_bins), len(eta_bins)
@@ -736,6 +781,22 @@ def disc_map(ax, rows, values, cmap, vmin, vmax):
     return im
 
 
+def eta_bias_on_disc(rows, values):
+    # Purpose (review item 12): on the polar disc the grid points eta > 90 are drawn at (rho + 180, 180 - eta), where a
+    # positive eta error moves the dipole towards the CENTRE of the disc, while for eta < 90 it moves it towards the
+    # EDGE. The sign of the eta bias of the points eta > 90 is flipped for the maps, so that everywhere on the disc
+    # positive = towards the edge (more in-plane), negative = towards the centre (towards the optical axis).
+    # summary.csv keeps the bias in the coordinates of the truth.
+    return np.array([-v if r['eta'] > 90 else v for r, v in zip(rows, values)], dtype=float)
+
+
+def map_noise(rows, k, kind, scale=1):
+    # Purpose (review item 10): statistical noise of one grid point, for the titles of the maps
+    if kind == 'bias':
+        return f'noise per point +-{scale*np.nanmedian([r.get("bias_err_"+k, np.nan) for r in rows]):.2g}'
+    return f'noise per point +-{100*np.nanmedian([r.get("sigma_relerr_"+k, np.nan) for r in rows]):.0f} %'
+
+
 def case_figure(all_rows, folder, case):
     # Purpose: the main figure of a run, polar_summary_<case>.png. all_rows = {loss: rows of statistics()}.
     # Top block: bias (median of the error) of rho, eta, delta, N; bottom block: precision (robust std); one row of
@@ -749,13 +810,15 @@ def case_figure(all_rows, folder, case):
     losses = list(all_rows)
     blocks = (('bias', 'bias (median of the error)', 'coolwarm'), ('sigma', 'precision (robust std)', 'viridis'))
     fig = plt.figure(figsize=(3.2*len(params), 2*3.0*len(losses) + 1.6), layout='constrained')
-    fig.suptitle(f'{case}: bias and precision, one bin per simulated (rho, eta) of the grid\n'
+    fig.suptitle(f'{case}: bias and precision, one bin per simulated (rho, eta) of the grid; eta bias: + = towards the edge of the disc (more in-plane)\n'
                  f'angle = rho, radius = eta (circles at 30, 60 deg; eta > 90 shown at rho+180, 180-eta), same color scale for the 3 losses within a block', fontsize=12)
     for subfig, (kind, title, cmap) in zip(fig.subfigures(2, 1, hspace=0.04), blocks):
         subfig.suptitle(title, fontsize=12, fontweight='bold')
         axs = np.atleast_2d(subfig.subplots(len(losses), len(params), subplot_kw=dict(projection='polar')))
         for c, (k, unit, scale) in enumerate(params):
             values = {l: scale*np.array([r[f'{kind}_{k}'] for r in all_rows[l]], dtype=float) for l in losses}
+            if (kind, k) == ('bias', 'eta'):
+                values = {l: eta_bias_on_disc(all_rows[l], v) for l, v in values.items()}
             allv = np.concatenate(list(values.values())); allv = allv[np.isfinite(allv)]
             if kind == 'bias':
                 lim = np.percentile(np.abs(allv), 95) if allv.size else 1; vmin, vmax = -lim, lim
@@ -765,7 +828,7 @@ def case_figure(all_rows, folder, case):
                 ax = axs[li, c]
                 im = disc_map(ax, all_rows[loss], values[loss], cmap, vmin, vmax)
                 med = np.nanmedian(np.abs(values[loss])) if kind == 'bias' else np.nanmedian(values[loss])
-                ax.set_title(f'{k}, {"median |bias|" if kind == "bias" else "median"} {med:.1f} {unit}', fontsize=9)
+                ax.set_title(f'{k}, {"median |bias|" if kind == "bias" else "median"} {med:.1f} {unit}\n{map_noise(all_rows[loss], k, kind, scale)}', fontsize=8)
                 if c == 0:
                     ax.text(-0.18, 0.5, loss, transform=ax.transAxes, rotation=90, ha='center', va='center', fontsize=11, fontweight='bold')
             cb = subfig.colorbar(im, ax=axs[:, c], location='bottom', shrink=0.85, aspect=20)
@@ -809,6 +872,7 @@ def main(argv):
     run_folder.mkdir(parents=True, exist_ok=True)
     log(f'results in {run_folder}')
     log('parameters: ' + ', '.join(f'{k}={v}' for k, v in vars(a).items() if k != 'warps'))
+    log(noise_description(a)) # review item 2: the noise in plain words
     extra = SGD_batch.parse_overrides(a.set) # --set name=value: any parameter of the parameter cell of SGD_jax.py / SGD_jax_CNN.py
     # ideal polarisation calibration (J1 identity, J2 = rot(45): x channel of the middle plane = analyser at rho 45 deg,
     # review item 18), no rotation of the channels, y gains 1),
@@ -825,12 +889,19 @@ def main(argv):
     all_rows = {}
     for loss in a.losses:
         start = time.time()
-        # overrides of the parameter cell: calibration, loss2 = the loss of this pass, middle_plane = -d (--d -1.0 ->
-        # middle_plane 1.0 um), then --set. Careful: --set loss2=... or --set middle_plane=... raise a TypeError
-        # (same key twice in dict()), review item 14; --set J1=... etc. override the calibration (allowed)
-        overrides = dict(calibration, loss2=loss, middle_plane=repr(-a.d), **extra) # d_ = -middle_plane
+        # overrides of the parameter cell: calibration, loss2 = the loss of this pass, middle_plane = -d (--d -1.0 or
+        # --middle-plane 1.0 -> middle_plane 1.0 um), the optics given as options (item 8, same form as the parameter
+        # cell), then --set, which wins over everything (item 14, fixed 2026-11-12: --set loss2= / middle_plane= crashed)
+        optics = {'lambda_emission': (a.lambda_emission, 'jax.device_put({})'), 'NA': (a.NA, 'jax.device_put(jnp.array({}))'),
+                  'mag': (a.mag, 'jax.device_put(jnp.array({}))'), 'MAG': (a.MAG, 'jax.device_put(jnp.array({}))'),
+                  'l_pixel': (a.l_pixel, 'jax.device_put(jnp.array({}))'), 'SAF': (a.SAF, '{}')}
+        overrides = {**calibration, 'loss2': repr(loss), 'middle_plane': repr(-a.d),
+                     **{k: f.format(v) for k, (v, f) in optics.items() if v is not None}, **extra}
         ns, (loop_first_line, loop_text), source = build_pipeline(overrides, run_folder, loss, a.save_figures, a)
         if sim is None: # same simulated data for all the losses
+            log('model (data and fit): ' + ', '.join(f'{k} {float(np.asarray(ns[k])):g}' for k in ('lambda_emission', 'NA', 'mag', 'MAG', 'l_pixel'))
+                + f', SAF {ns["SAF"]}, middle_plane {float(np.asarray(ns["middle_plane"])):g} um, interplane {float(np.asarray(ns["interplane"])):g} um'
+                + ' (values of the parameter cell of ' + SGD_SCRIPT.name + ' unless given as options)')
             log('simulating the data')
             sim = simulate(ns, a, rng)
             np.savez_compressed(run_folder / 'simulation.npz', **sim)
