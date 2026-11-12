@@ -5,9 +5,9 @@ simu_precision/MFM_fisher.py, crb_vs_unbiased_sim.py -> simu_precision/crb_vs_si
 those of the review.
 
 Launched 2026-11-12 13:46 from the worktree simulation-review (code = main as run + fix of review item 1).
-Results: D:\Amaury\simu_precision_claude\unbiased_2026-11-09\<date>_<tag>\ ; logs <tag>.log next to them.
+Results: D:\Amaury\simu_precision_claude\2026-11-09_unbiased_sgd_vs_cnn\<date>_<tag>\ ; logs <tag>.log next to them.
 
-## 1. Queue script: D:\Amaury\simu_precision_claude\unbiased_2026-11-09\run_2026-11-12_nobg.sh
+## 1. Queue script: D:\Amaury\simu_precision_claude\2026-11-09_unbiased_sgd_vs_cnn\run_2026-11-12_nobg.sh
 For m in (cnn, sgd), for case in (nobg_poisson, nobg_emccd), one after the other (one GPU job):
     python SGD_precision_claude.py <preset> --N 2100 --delta-range 60 120 --losses huber --background 0 --sigma-b 0
                                    --out <folder> --tag <case>_<m> [--cnn]

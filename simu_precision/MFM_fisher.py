@@ -219,7 +219,7 @@ ax.set_yticks([])
 # J2 rot(45), fitted by SGD_jax.py and by CNN + LM (SGD_jax_CNN.py), huber loss.
 # (Before 2026-11-12: run 2026-10-14_23h37_poisson_excess, background 25 + EM excess, delta 90.)
 # Generic version for any runs: simu_precision/crb_vs_simulation.py.
-SIM_RUNS = '/mnt/d/AMAURY/simu_precision_claude/unbiased_2026-11-09/'  # renamed 2026-11-09_unbiased_sgd_vs_cnn after the merge
+SIM_RUNS = '/mnt/d/AMAURY/simu_precision_claude/2026-11-09_unbiased_sgd_vs_cnn/'  # was unbiased_2026-11-09 until 2026-11-12
 sim_results = {'SGD_jax.py': SIM_RUNS + '2026-11-12_14h14_nobg_poisson_sgd/results_huber.npz',
                'CNN + LM': SIM_RUNS + '2026-11-12_13h46_nobg_poisson_cnn/results_huber.npz'}
 out_folder = '/mnt/d/AMAURY/simu_precision_claude/2026-10-28_crb_fisher' # bounds, simulated precision and figures of this comparison

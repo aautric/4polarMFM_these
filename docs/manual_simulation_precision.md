@@ -14,7 +14,7 @@ compares the found parameters with the truth, per orientation (rho, eta).
 Typical command (unbiased simulation of 2026-11-12, "Poisson" without background, CNN + LM fit):
 
     python simu_precision/SGD_precision.py --preset poisson --N 2100 --delta-range 60 120 --losses huber \
-        --background 0 --sigma-b 0 --out /mnt/d/Amaury/simu_precision_claude/unbiased_2026-11-09 \
+        --background 0 --sigma-b 0 --out /mnt/d/Amaury/simu_precision_claude/2026-11-09_unbiased_sgd_vs_cnn \
         --tag nobg_poisson_cnn --cnn
 
 Outputs in `<out>/<date>_<tag>/`: `simulation.npz` (data and truth), `NPZ_<loss>/` (npz of the pipeline, as a real

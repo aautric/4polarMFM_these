@@ -11,10 +11,10 @@ Each script imports the repo it is in (root added to the path). Data and outputs
 | `crb_vs_simulation.py` | CRB (Poisson only, no background, conditions of each run) vs the simulated precision (plain std, robust std, outliers) of any runs, one figure per method | `python simu_precision/crb_vs_simulation.py <run folder> [...] --out <folder>` |
 | `MFM_fisher.py` | Fisher / CRB study of the 4polarMFM (script version of MFM_fisher.ipynb): CRB vs orientation, ratiometric bound, Monte-Carlo checks. Was MFM_fisher_claude.py at the root. | `python simu_precision/MFM_fisher.py` (cells) |
 
-Example (WSL paths): `python simu_precision/polar_maps.py /mnt/d/AMAURY/simu_precision_claude/unbiased_2026-11-09/2026-11-12_13h46_nobg_poisson_cnn`
+Example (WSL paths): `python simu_precision/polar_maps.py /mnt/d/AMAURY/simu_precision_claude/2026-11-09_unbiased_sgd_vs_cnn/2026-11-12_13h46_nobg_poisson_cnn`
 
-Runs of 2026-11-12 (no background, Poisson / Poisson + read + excess, SGD and CNN): `D:\AMAURY\simu_precision_claude\unbiased_2026-11-09\`
-(renamed `2026-11-09_unbiased_sgd_vs_cnn` after the merge of the simulation-review branch); CRB figures in
+Runs of 2026-11-12 (no background, Poisson / Poisson + read + excess, SGD and CNN): `D:\AMAURY\simu_precision_claude\2026-11-09_unbiased_sgd_vs_cnn\`
+(was unbiased_2026-11-09 until 2026-11-12); CRB figures in
 `D:\AMAURY\simu_precision_claude\2026-10-28_crb_fisher\` (crb_vs_simulation_sgd.png, _cnn.png, .txt).
 
 Review of these scripts: `review/simulation_precision_fisher_2026-11-12/`; manual: `docs/manual_simulation_precision.md`;
