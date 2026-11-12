@@ -1179,12 +1179,20 @@ for group in range(first_batch, batch_nb, batches_per_pool):
         # same angles as the loop below: rho % 360, eta % 180, rho_offset, then fold_angles
         rho_found, eta_found = fold_angles(r['rho'] % 360 + rho_offset, r['eta'] % 180)
         x, y = np.array(current['x']), np.array(current['y'])
+        # CNN start of each PSF (2026-11-12, user: saved in every run), in the units of the found values: angles with
+        # rho_offset and fold_angles as above, x, y in nm as x_ below, z in nm, N photons of the whole molecule
+        sl_ = slice(i*NPSF, (i+1)*NPSF)
+        rho_s, eta_s = fold_angles(np.asarray(pool['rho0'][sl_]) % 360 + rho_offset, np.asarray(pool['eta0'][sl_]) % 180)
         x_ = (x/120).astype(int)*120 + 1000*r['x']/correction_dft
         y_ = (y/120).astype(int)*120 + 1000*r['y']/correction_dft
         np.savez_compressed(str(save_folder)+'/'+str(int(batch))+'.npz',
                             frame=current['frame'], x=np.array(x_), y=np.array(y_), z=1000*r['z'], N_photons=r['N'],
                             rho=rho_found, eta=eta_found, delta=r['delta'], score=np.array(score), deviance=np.array(deviance),
-                            x_start=x, y_start=y, z_start=np.nan, rho_start=np.nan, delta_start=np.nan,
+                            x_start=x, y_start=y,  # pre-localised position (nm), as SGD_jax.py
+                            x_cnn_start=(x/120).astype(int)*120 + 1000*np.asarray(pool['x0'][sl_])/correction_dft,
+                            y_cnn_start=(y/120).astype(int)*120 + 1000*np.asarray(pool['y0'][sl_])/correction_dft,
+                            z_start=1000*np.asarray(pool['z0'][sl_]), N_start=np.asarray(pool['N0'][sl_]),
+                            rho_start=rho_s, eta_start=eta_s, delta_start=np.asarray(pool['delta0'][sl_]),  # CNN start (was nan before 2026-11-12)
                             background_array_found=r['background'].reshape(-1),
                             background_start=np.array(background0[i*NPSF:(i+1)*NPSF]),  # (NPSF, 6) start of the 6 backgrounds (CNN)
                             zernx_found=np.array(zern_batch(i)[0]), zerny_found=np.array(zern_batch(i)[1]),

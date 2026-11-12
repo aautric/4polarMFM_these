@@ -4,7 +4,7 @@
 #   rows 1-2: bias (median of the error) and precision (robust std, 1.4826 MAD) per simulated (rho, eta), for rho,
 #             eta, delta, N, from results_<loss>.npz (statistics() of SGD_precision.py, as summary.csv);
 #   rows 3-4, only if the run used the CNN (SGD_jax_CNN.py): the same for the CNN first guess alone (before the LM).
-#   The run does not save the CNN start (nan in its npz): cnn_first_guess is run again on simulation.npz (the same
+#   Runs since 2026-11-12 save the CNN start in their npz (read directly). Older runs (nan): cnn_first_guess is run again on simulation.npz (the same
 #   patches the run fitted, same checkpoint) with the z table of the run, rebuilt with the settings of the run read
 #   from NPZ_<loss>\config.txt (middle_plane, J1, J2, rotations, rho_offset, y gains, unitary_J, registration_z and
 #   fov_aberrations when None; the optics, lambda,
@@ -58,6 +58,22 @@ def cnn_start(run, loss, cfg):
     out = [ns['cnn_first_guess'](sim[k:k + 2000], z_table=ns['cnn_z_table']) for k in range(0, len(sim), 2000)]
     x0, y0, z0, N0, rho0, eta0, delta0 = [np.concatenate([np.asarray(o[j]) for o in out]).astype(float) for j in range(7)]
     return dict(rho=rho0, eta=eta0, delta=delta0, N=N0, x=1000*x0, y=1000*y0, z=1000*z0)  # x, y, z in nm
+
+
+def saved_start(npz_files, n):
+    # Purpose: CNN start saved by the run (SGD_jax_CNN.py since 2026-11-12: x_cnn_start, y_cnn_start, z_start,
+    # N_start, rho_start, eta_start, delta_start in each batch npz), put back in the order of the simulated PSF
+    # ('frame' = PSF index); None for an older run (nan or missing: the CNN is run again)
+    z0 = np.load(npz_files[0])
+    if 'eta_start' not in z0.files or not np.all(np.isfinite(z0['rho_start'])):
+        return None
+    start = {k: np.full(n, np.nan) for k in ('rho', 'eta', 'delta', 'N', 'x', 'y', 'z')}
+    for f in npz_files:
+        z = np.load(f); i = z['frame'].astype(int)
+        for k, key in (('rho', 'rho_start'), ('eta', 'eta_start'), ('delta', 'delta_start'), ('N', 'N_start'), ('z', 'z_start')):
+            start[k][i] = z[key]
+        start['x'][i] = z['x_cnn_start']*0.9952298; start['y'][i] = z['y_cnn_start']*0.9952298  # saved x = 1000 x/correction_dft (patch centred on 0)
+    return start
 
 
 def errors(found, sim):
@@ -122,7 +138,10 @@ def main(argv):
             if 'use_cnn' in getattr(npz0, 'files', []) and bool(npz0['use_cnn']):
                 blocks = {'final fit (CNN + LM)': blocks['final fit']}
                 cache = run / f'cnn_start_{loss}.npz'
-                if cache.exists() and not a.redo_cnn:
+                start = saved_start([f for f in first if f.stem.isdigit()], len(sim['data']))
+                if start is not None:
+                    print(f'{run.name}: CNN start read from the npz of the run')
+                elif cache.exists() and not a.redo_cnn:
                     start = dict(np.load(cache))
                 else:
                     start = cnn_start(run, loss, read_config(run / f'NPZ_{loss}' / 'config.txt'))
