@@ -157,4 +157,11 @@ Tested 2026-11-12: run 2 x 2 x 50 PSF (--middle-plane 1.0 --NA 1.4 --set middle_
     simulations have none. NumPy branch: no EM excess at all. fisher_4pMFM.py fisher() comment "gain = 1 + 1/QE: Poisson
     + EM excess" is this formula; 2/QE is the one of the simulations and of the camera (no effect on the CRB of
     2026-11-12: Poisson only, gain 1). PROPOSED: (a) noise() as emccd_jax, both branches; (b) comment of fisher() 2/QE.
+23. simu_precision/MFM_fisher.py (= MFM_fisher_claude.py, script of the user's notebook) - REVIEWED 2026-11-12.
+    Changes (user): lambda 620; set-up aligned with the simulations (x, y +-0.2 um, z 0.2-1.2 um, middle plane 1.0,
+    planes 0.646 / 1 / 1.354, SAF on, polar_projections [0, -45, 0]); N per molecule = 2100 everywhere (N_MOLECULE);
+    "WRT to eta" section on the runs of 2026-11-12 (nobg_poisson SGD and CNN, delta 60-120, Poisson, no background);
+    CRB cache key with lambda, polar_projections and the fisher window; "CRB vs rho" section removed (did not run:
+    eta_list undefined, rho in degrees passed as radians, identical copies of the curves). Dead code noted: measured
+    J1 / J2 overwritten by the identity, phase mask outside the pupil set to 1 (no effect).
 

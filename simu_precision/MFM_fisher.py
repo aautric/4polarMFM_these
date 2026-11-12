@@ -34,13 +34,15 @@ device='cuda'
 # photons and noise of actin1 (D:\AMAURY\DATA\0_papier\actin1, run NPZ_2026-10-24_15h28, sensitivity 4.4, fits with
 # deviance < 1.3): median N of the whole molecule (1216 per plane in the fit, PSF_jax normalised each plane until
 # 2026-10-28), background per pixel, noise model of SGD_jax.py var = gain x mu + V (V = gain x shift)
-N_actin1 = 3*1216 # photons, whole molecule
+# photon number (2026-11-12, user): N per MOLECULE (whole molecule, 3 planes, as PSF() of this script and PSF_jax since
+# 2026-10-28), the same as the simulations of SGD_precision.py (--N 2100) everywhere in this script (actin1: 3 x 1216)
+N_MOLECULE = 2100
 bck_actin1 = 22.2 # photons per pixel
 gain_actin1 = 1.8
 dark_var_actin1 = 0.74 # photons^2
 
 #%%
-N_photons=N_actin1 # number of photons collected 
+N_photons=N_MOLECULE # photons of the whole molecule
 N=80 # discretization of the BFP
 l_pixel=16 #pixel size in micrometer
 NA=1.4 # numerical aperture
@@ -137,7 +139,7 @@ psf = PSF(rho=rho, eta=eta, delta=delta, M=M, N_photons=N_photons)
 RHO = torch.tensor(np.random.rand(NPSF)*2*np.pi, device=device)
 ETA = torch.tensor(np.arccos(np.random.uniform(np.cos(0*np.pi/180), np.cos(90*np.pi/180), NPSF)), device=device)
 DELTA = torch.tensor(50*np.pi/180+np.random.rand(NPSF)*(100*np.pi/180), device=device)#torch.tensor([70 for uu in range(NPSF)], device=device)#torch.tensor(0.0001*np.random.rand(NPSF), device=device)#
-N = torch.tensor([N_actin1 for uu in range(NPSF)], device=device)#torch.tensor((2000+np.random.rand(NPSF)*6000), device=device)#*(torch.sin(ETA)**2)
+N = torch.tensor([N_MOLECULE for uu in range(NPSF)], device=device)#torch.tensor((2000+np.random.rand(NPSF)*6000), device=device)#*(torch.sin(ETA)**2)
 bck = torch.tensor(bck_actin1, device=device)
 
 #%%
@@ -209,29 +211,25 @@ ax.set_yticks([])
 #%%
 #fig.savefig("C_ratio.svg", format="svg")
 
-#%% WRT to eta: CRB vs simulated SGD
-# Best performance: comparison of the Cramer-Rao bounds with the precision of the SGD fit (huber loss, the gold
-# standard) on simulated data without read noise nor background fluctuation, Poisson + EMCCD excess noise:
-# SGD_precision.py run 2026-10-14_23h37_poisson_excess (D:\AMAURY\simu_precision_claude): N 3000 photons
-# per molecule (1000 per plane: the simulation used PSF_jax normalised per plane, before 2026-10-28),
-# background 25 photons per pixel, delta 90 deg, grid of 20 rho x 20 eta (bin centres 4.5 ... 175.5 deg), 80 molecules
-# per point, x, y in [-0.2, 0.2] um, z in [0.2, 1.2] um, planes focused at 0.646 / 1 / 1.354 um, SAF on.
-# Noise of the simulation (emccd_jax): variance per pixel 2 (s + b)/QE. The bounds are computed with Poisson noise
-# only (gain = 1, dark_var = 0): ideal detector, best possible precision (EM excess would multiply them by sqrt(2/QE)).
-sgd_results = '/mnt/d/AMAURY/simu_precision_claude/2026-10-14_23h37_poisson_excess/results_huber.npz'
-out_folder = '/mnt/d/AMAURY/simu_precision_claude/2026-10-28_crb_fisher' # bounds, SGD precision and figures of this comparison
+#%% WRT to eta: CRB vs simulated precision
+# Comparison of the Cramer-Rao bounds with the precision of the fit on simulated data in the SAME conditions
+# (2026-11-12, user: point to the new runs): SGD_precision.py runs of 2026-11-12, Poisson noise only (perfect detector),
+# NO background, N 2100 photons per molecule, delta uniform 60-120 deg, grid of 20 rho x 20 eta (bin centres 4.5 ...
+# 175.5 deg), 80 molecules per point, x, y in [-0.2, 0.2] um, z in [0.2, 1.2] um, planes 0.646 / 1 / 1.354 um, SAF on,
+# J2 rot(45), fitted by SGD_jax.py and by CNN + LM (SGD_jax_CNN.py), huber loss.
+# (Before 2026-11-12: run 2026-10-14_23h37_poisson_excess, background 25 + EM excess, delta 90.)
+# Generic version for any runs: simu_precision/crb_vs_simulation.py.
+SIM_RUNS = '/mnt/d/AMAURY/simu_precision_claude/unbiased_2026-11-09/'  # renamed 2026-11-09_unbiased_sgd_vs_cnn after the merge
+sim_results = {'SGD_jax.py': SIM_RUNS + '2026-11-12_14h14_nobg_poisson_sgd/results_huber.npz',
+               'CNN + LM': SIM_RUNS + '2026-11-12_13h46_nobg_poisson_cnn/results_huber.npz'}
+out_folder = '/mnt/d/AMAURY/simu_precision_claude/2026-10-28_crb_fisher' # bounds, simulated precision and figures of this comparison
 os.makedirs(out_folder, exist_ok=True)
-QE_sim = 0.92
-delta_sim = 90 # delta of the simulation
-delta_crb = (80, 110) # delta of the bounds: uniform in this range (deg)
+delta_crb = (60, 120) # delta of the bounds: uniform in this range (deg), as the simulations
 eta_crb = np.linspace(1, 179, 45) # deg
-# N = 3000: photons of the whole molecule (PSF() of this script, and PSF_jax since 2026-10-28; the simulation
-# was made when PSF_jax normalised each plane, with N = 1000 per plane)
-# CRB: Poisson noise of the molecule only, NO background photons (final choice, 2026-10-28): best possible precision.
-# It does not match the conditions of the simulated SGD (background 25, EM excess), which is shown for reference.
-conditions = {'N 3000; CRB: Poisson only, no background; SGD huber: background 25, Poisson + EM excess': dict(N=3*1000, bck=0., gain=1., dark_var=0.),
-              # second set: same with the background of actin1 (Poisson noise of the background included)
-              f'N 3000; CRB: Poisson only, background {bck_actin1} (actin1); SGD huber: background 25, Poisson + EM excess': dict(N=3*1000, bck=bck_actin1, gain=1., dark_var=0.)}
+# CRB: Poisson noise of the molecule only, NO background (= the conditions of the simulations); second set: with the
+# background of actin1 (Poisson noise of the background included), for reference
+conditions = {f'N {N_MOLECULE}; Poisson only, no background (= simulations)': dict(N=N_MOLECULE, bck=0., gain=1., dark_var=0.),
+              f'N {N_MOLECULE}; Poisson only, background {bck_actin1} (actin1)': dict(N=N_MOLECULE, bck=bck_actin1, gain=1., dark_var=0.)}
 
 #%%
 # calibration images M with the geometry of the simulation (SAF on)
@@ -301,24 +299,29 @@ for name, c in conditions.items():
     print('CRB computed and saved in', crb_file)
 
 #%%
-# simulated SGD (huber): errors of each molecule (rho and eta wrapped, equivalent orientation (rho+180, 180-eta)
-# taken into account by SGD_precision.py); precision per eta = rms over rho of the std over the molecules
-res = np.load(sgd_results)
-eta_listMC = np.unique(res['true_eta'])
-rho_listMC = np.unique(res['true_rho'])
-sgd_prec = np.zeros((len(eta_listMC), 3))
-for i, e_ in enumerate(eta_listMC):
-    for j, err in enumerate((res['error_rho'], res['error_eta'], res['error_delta'])):
-        std_rho = [np.nanstd(err[(res['true_eta'] == e_) & (res['true_rho'] == r_)]) for r_ in rho_listMC]
-        sgd_prec[i, j] = np.sqrt(np.mean(np.array(std_rho)**2))
-# points of the current figure (CRB of crb_key + SGD), read by the figure cell
-np.savez(os.path.join(out_folder, 'crb_vs_eta.npz'), eta_crb=eta_crb, eta_listMC=eta_listMC, sgd_prec=sgd_prec,
-         names=list(conditions), cr_full=[cr_full[n] for n in conditions], cr_ratio=[cr_ratio[n] for n in conditions],
-         cr_ratio_eta=[cr_ratio_eta[n] for n in conditions], sgd_results=sgd_results)
+# simulated precision of each fit (huber): errors of each molecule (rho and eta wrapped, equivalent orientation
+# (rho+180, 180-eta) taken into account by SGD_precision.py); precision per eta = rms over rho of the (plain) std over
+# the molecules of each grid point (the quantity the CRB bounds)
+sim_prec = {}
+for meth, path in sim_results.items():
+    res = np.load(path)
+    eta_listMC = np.unique(res['true_eta']); rho_listMC = np.unique(res['true_rho'])
+    prec = np.zeros((len(eta_listMC), 3))
+    for i, e_ in enumerate(eta_listMC):
+        for j, err in enumerate((res['error_rho'], res['error_eta'], res['error_delta'])):
+            std_rho = [np.nanstd(err[(res['true_eta'] == e_) & (res['true_rho'] == r_)]) for r_ in rho_listMC]
+            prec[i, j] = np.sqrt(np.mean(np.array(std_rho)**2))
+    sim_prec[meth] = prec
+# points of the current figure (CRB of crb_key + simulations), read by the figure cell
+np.savez(os.path.join(out_folder, 'crb_vs_eta.npz'), eta_crb=eta_crb, eta_listMC=eta_listMC, methods=list(sim_prec),
+         sim_prec=[sim_prec[m] for m in sim_prec], names=list(conditions), cr_full=[cr_full[n] for n in conditions],
+         cr_ratio=[cr_ratio[n] for n in conditions], cr_ratio_eta=[cr_ratio_eta[n] for n in conditions],
+         sim_results=[sim_results[m] for m in sim_prec])
 
 #%%
 # figures, 12 cm wide (about half an A4 page); read the saved results, can be run alone
-# 1. CRB, standard ratiometric CRB, ratiometric CRB with eta known, SGD;  2. the same with only the eta-known ratiometric CRB
+# 1. CRB, standard ratiometric CRB, ratiometric CRB with eta known, simulated precision (SGD_jax.py, CNN + LM);
+# 2. the same with only the eta-known ratiometric CRB (cond 1: CRB with the actin1 background, simulations without)
 r = np.load(os.path.join(out_folder, 'crb_vs_eta.npz'))
 def crb_figure(ratiometric, filename, cond=0):
     # cond: index of the condition in `conditions` (0: no background, 1: actin background)
@@ -330,7 +333,8 @@ def crb_figure(ratiometric, filename, cond=0):
                 ax[i].plot(r['eta_crb'], r['cr_ratio'][cond][:, i], c='r', label='CRB ratiometric')
             if 'eta_known' in ratiometric:
                 ax[i].plot(r['eta_crb'], r['cr_ratio_eta'][cond][:, i], c='r', ls='--', label='CRB ratiometric, $\\eta$ known')
-            ax[i].scatter(r['eta_listMC'], r['sgd_prec'][:, i], marker='+', c='k', s=14, linewidths=0.8, label='SGD (huber)')
+            for m, (meth, mk) in enumerate(zip(r['methods'], ('+', 'x'))):
+                ax[i].scatter(r['eta_listMC'], r['sim_prec'][m][:, i], marker=mk, c='k' if m == 0 else 'tab:green', s=14, linewidths=0.8, label=f'{meth} (huber)')
             ax[i].set_xlabel('$\\eta$ ($\\degree$)', labelpad=1)
             ax[i].set_title('$\\%s$' % par, pad=2)
             ax[i].set_ylim((0, 20))
@@ -404,81 +408,5 @@ def fisher_matrices(background, filename, eta_range=(0, 180)):
 fisher_matrices(0., 'fisher_covariance_matrices')
 fisher_matrices(bck_actin1, 'fisher_covariance_matrices_actin_background')
 
-#%%
-rho_list = np.linspace(0,90,20)
-rho_plot = (eta_list[1:]+eta_list[:-1])/2
-
-#%%
-cr_rho = []
-cr_eta = []
-cr_delta = []
-cr_rho_r = []
-cr_eta_r = []
-cr_delta_r = []
-for i, rho_lim in tqdm(enumerate(rho_list[:-1])):
-    RHO = torch.tensor(np.random.uniform(rho_lim, rho_list[i+1]), device=device)
-    ETA = torch.tensor(np.arccos(np.random.uniform(np.cos(20*np.pi/180), np.cos(90*np.pi/180), NPSF)), device=device)
-    #plt.hist(ETA.cpu().numpy()*180/np.pi, bins=30)
-    #plt.show()
-    DELTA = torch.tensor(80*np.pi/180+np.random.rand(NPSF)*(10*np.pi/180), device=device)#torch.tensor(0.1*np.random.rand(NPSF), device=device)# 
-    N = torch.tensor((N_actin1*np.array([1 for iii in range(NPSF)])), device=device)#*(torch.sin(ETA)**2)
-    bck = torch.tensor(float(bck_actin1), device=device)
-    F = fisher(M, RHO, ETA, DELTA, N, bck, gain=gain_actin1, dark_var=dark_var_actin1)
-    Fr = fisher_ratiometric(M, RHO, ETA, DELTA, N, bck, window=ratio_window, fixed_eta=ratio_fixed_eta, gain=gain_actin1, dark_var=dark_var_actin1)
-    cr = torch.sqrt(crlb_cov(F))*(180/np.pi)
-    crr = torch.sqrt(crlb_cov(Fr))*(180/np.pi)
-    #print(cr)
-    cr_rho.append(cr[0,0].cpu().numpy())
-    cr_eta.append(cr[1,1].cpu().numpy())
-    cr_delta.append(cr[2,2].cpu().numpy())
-    #print(cr_rho, cr_eta, cr_delta)
-    cr_rho_r.append(crr[0,0].cpu().numpy())
-    cr_eta_r.append(crr[1,1].cpu().numpy() if crr.shape[0] == 3 else np.nan) # no eta bound when eta is fixed
-    cr_delta_r.append(crr[-1,-1].cpu().numpy())
-    #print(cr_rho_r, cr_eta_r, cr_delta_r)
-
-#%%
-cr_rho2 = cr_rho
-cr_eta2 = cr_eta 
-cr_delta2 = cr_delta
-cr_rho_r2 = cr_rho_r
-cr_eta_r2 = cr_eta_r
-cr_delta_r2 = cr_delta_r
-
-#%%
-cr_rho3 = cr_rho
-cr_eta3 = cr_eta 
-cr_delta3 = cr_delta
-cr_rho_r3 = cr_rho_r
-cr_eta_r3 = cr_eta_r
-cr_delta_r3 = cr_delta_r
-
-#%%
-plt.rcParams['figure.figsize'] = [15,3]
-fig, ax = plt.subplots(1,3)
-ax[0].plot(rho_plot, cr_rho, c='b', label='$\\delta=0$, b=0')
-ax[0].plot(rho_plot, cr_rho2, c='b', alpha=0.5, label='$\\delta=0$, b=50')
-ax[0].plot(rho_plot, cr_rho3, c='r', alpha=0.8, label='$\\delta \\in$ [40,150], b=50')
-ax[0].legend()
-#ax[0].set_yscale('log')
-ax[0].set_xlabel('$\\eta$ ($\\degree$)')
-ax[0].set_ylabel('CRLB$_{\\rho}$ ($\\degree$)')
-ax[0].set_ylim((0,22))
-ax[0].grid()
-ax[1].plot(rho_plot, cr_eta, c='b')
-ax[1].plot(rho_plot, cr_eta2, c='b', alpha=0.5)
-ax[1].plot(rho_plot, cr_eta3, c='r', alpha=0.8)
-#ax[1].axhline(3.6)
-#ax[1].set_yscale('log')
-ax[1].set_xlabel('$\\eta$ ($\\degree$)')
-ax[1].set_ylabel('CRLB$_{\\eta}$ ($\\degree$)')
-ax[1].set_ylim((0,22))
-ax[1].grid()
-#ax[2].plot(eta_plot, cr_delta, c='b')
-#ax[2].plot(eta_plot, cr_delta2, c='b', alpha=0.5)
-ax[2].plot(rho_plot, cr_delta3, c='r', alpha=0.8)
-#ax[2].set_yscale('log')
-ax[2].set_xlabel('$\\eta$ ($\\degree$)')
-ax[2].set_ylabel('CRLB$_{\\delta}$ ($\\degree$)')
-ax[2].set_ylim((0,22))
-ax[2].grid()
+# (CRB vs rho section removed on 2026-11-12, user: it did not run - eta_list undefined, rho in degrees passed as
+# radians - see git history before this date)
