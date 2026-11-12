@@ -10,6 +10,8 @@
 # Simulated precision per true eta: sqrt(mean over the rho of the grid of std^2): plain std (filled points, the CRB
 # bounds the variance, outliers included) and robust std (1.4826 MAD, open points); outliers = % of the PSF with
 # |error - median| > 5 robust std of their grid point (legend and text). CRB interpolated at the eta of the grid.
+# Dashed lines: CRB x sqrt(2/QE), the bound of an ideal EMCCD (EM excess factor 2, QE of the run; no read noise), the
+# reference for the runs with Poisson + read + excess (review item 21).
 # Outputs in --out: crb_vs_simulation_<method>.png (method = sgd: SGD_jax.py, cnn: CNN + LM), crb_vs_simulation.txt.
 # Runs on the CPU.
 import os, sys, glob, json, hashlib, argparse
@@ -131,10 +133,14 @@ def main(argv):
         fig, ax = plt.subplots(1, 3, figsize=(13.5, 4.2), sharex=True)
         for n, i in enumerate(sel):
             cr = crb(i, a.npsf, out); col = colors[n % len(colors)]
+            emccd = np.sqrt(2/float(i['cfg']['QE']))  # EMCCD reference factor, QE of the run
             el, pl, pr, ou = sim_prec(i['res'])
             cri = np.stack([np.interp(el, ETA_CRB, cr[:, j]) for j in range(3)], axis=1)
             for j in range(3):
                 ax[j].plot(ETA_CRB, cr[:, j], '-', color=col, lw=1, label=f'CRB, conditions of {i["label"]}')
+                # reference for an EMCCD (review item 21, user 2026-11-12): the EM excess multiplies the variance by
+                # 2/QE, so the bound of an ideal EMCCD (no read noise) is CRB x sqrt(2/QE)
+                ax[j].plot(ETA_CRB, cr[:, j]*emccd, '--', color=col, lw=0.8, label=f'CRB x sqrt(2/QE) = x{emccd:.2f} (EMCCD excess)')
                 ax[j].plot(el, pl[:, j], 'o', ms=4, color=col, label=f'{i["label"]}: std (outliers {np.mean(ou[:, j]):.1f} %)')
                 ax[j].plot(el, pr[:, j], 'o', ms=4, mfc='none', color=col, alpha=.7, label=f'{i["label"]}: robust std')
             for e in (45, 90):
@@ -142,6 +148,7 @@ def main(argv):
                 lines.append(f'{lab:26s} {i["label"]:24s} eta {el[k]:5.1f}: sim ' + ' '.join(f'{v:5.1f}' for v in pl[k]) +
                              ' | robust ' + ' '.join(f'{v:5.1f}' for v in pr[k]) + ' | CRB ' + ' '.join(f'{v:5.1f}' for v in cri[k]) +
                              ' | ratio ' + ' '.join(f'{x/y:4.2f}' for x, y in zip(pl[k], cri[k])) + ' | outliers ' + ' '.join(f'{v:4.1f}' for v in ou[k]) + ' %')
+            lines.append(f'{lab:26s} {i["label"]:24s} EMCCD reference: CRB x sqrt(2/QE) = CRB x {emccd:.3f}')
             mid = (el > 20) & (el < 160)
             lines.append(f'{lab:26s} {i["label"]:24s} all eta: outliers ' + ' '.join(f'{v:4.1f}' for v in ou.mean(0)) +
                          ' %, median ratio plain / CRB (eta 20-160) ' + ' '.join(f'{np.median((pl/cri)[mid, j]):4.2f}' for j in range(3)))

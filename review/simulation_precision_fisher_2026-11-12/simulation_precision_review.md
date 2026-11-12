@@ -129,7 +129,7 @@ stream_fit.py, ... identical to main at the start).
 20. simu_precision/compare_sgd_cnn.py - REVIEWED 2026-11-12: table only; same deviance formula in both pipelines
     (SGD_jax.py:311, SGD_jax_CNN.py:349), so "dev<other" is valid: without background SGD has the higher deviance on
     every PSF (its background +0.3 instead of 0), with background 25 on 99.5 %.
-21. Point 7 of the Fisher plan (optional): EMCCD reference line CRB x sqrt(2/QE) = 1.47 x CRB on the CRB plots (the
+21. Point 7 of the Fisher plan: EMCCD reference line CRB x sqrt(2/QE) = 1.47 x CRB on the CRB plots - DONE 2026-11-12 (user), dashed lines of crb_vs_simulation.py (the
     CNN + LM runs with Poisson + read + excess are at ~1.65 x CRB). Not done, user to decide.
 
 ## Fixes of 2026-11-12 (user: "do the fixes"), simu_precision/SGD_precision.py (= SGD_precision_claude.py)
