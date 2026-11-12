@@ -154,7 +154,7 @@ def main(argv):
                          ' %, median ratio plain / CRB (eta 20-160) ' + ' '.join(f'{np.median((pl/cri)[mid, j]):4.2f}' for j in range(3)))
         for j, par in enumerate(('rho', 'eta', 'delta')):
             ax[j].set_title(f'{par} precision (deg)'); ax[j].set_xlabel('true eta (deg)'); ax[j].grid(alpha=.3)
-            ax[j].set_ylim(0, {0: 30, 1: 25, 2: 40}[j]); ax[j].legend(fontsize=5.5)
+            ax[j].set_yscale('log'); ax[j].set_ylim(1, 20); ax[j].legend(fontsize=5.5)  # user 2026-11-12: log scale, up to 20 deg
         fig.suptitle(f'{lab}: simulated precision (filled: std, open: robust std; outliers = |error - median| > 5 robust std)\n'
                      'vs CRB (lines: Poisson only, no background, conditions of each run)', fontsize=9.5)
         fig.tight_layout(); fig.savefig(out / f'crb_vs_simulation_{meth}.png', dpi=110); plt.close(fig)
