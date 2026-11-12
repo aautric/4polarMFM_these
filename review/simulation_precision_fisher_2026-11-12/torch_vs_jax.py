@@ -18,7 +18,7 @@ def torch_psf(lam=617, proj=(0, 45, 0)):
     g = globals()
     g.update(NA=torch.tensor(1.4), mag=torch.tensor(100), lambd=torch.tensor(lam), f_tube=torch.tensor(200), l_pixel=torch.tensor(16),
              MAG=torch.tensor(200/150), zernike_coefs_x=torch.zeros((3, 15)), polar_projections=np.array(proj), J=np.array([[1, 0], [0, 1]]))
-    src = open('/mnt/d/AMAURY/simu_precision_claude/MFM_fisher/crb_vs_unbiased_sim.py').read()
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../simu_precision/crb_vs_unbiased_sim.py')).read()
     exec('def build_M' + src.split('def build_M')[1].split('BCK_CRB = ')[0], g)
     M = g['build_M'](xp=torch.tensor(xp), yp=torch.tensor(yp), zp=torch.tensor(zp), d_=torch.tensor(-planes[1]*np.ones(n)),
                      second_plane_=torch.tensor(planes[1] - planes), SAF_=True)

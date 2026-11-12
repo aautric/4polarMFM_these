@@ -51,8 +51,8 @@ rho_offset 0, y gains 1, no aberration, registration_z None, 13 x 13 px patches.
    -> summary.csv, polar maps, log (delta slope found vs true).
 
 ## 5. Analysis scripts (after the runs)
-- D:\Amaury\simu_precision_claude\unbiased_2026-11-09\analysis\polar_maps_cnn_start.py: usual maps (5-95 %
+- simu_precision/polar_maps_cnn_start.py (git): usual maps (5-95 %
   colour scales), CNN first guess maps (cnn_first_guess rerun on CPU on simulation.npz).
-- ...\analysis\compare_sgd_cnn.py: table (delta slope, paired deviance).
-- D:\AMAURY\simu_precision_claude\MFM_fisher\crb_vs_unbiased_sim.py: CRB (Poisson only, no background, torch model of
+- simu_precision/compare_sgd_cnn.py (git): table (delta slope, paired deviance).
+- simu_precision/crb_vs_unbiased_sim.py (git): CRB (Poisson only, no background, torch model of
   simu_PSF_polarMFM.py + fisher_4pMFM.py) vs simulated precision (sqrt(mean over rho of std^2)).

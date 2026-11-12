@@ -369,8 +369,8 @@ It overwrites summary.csv and the png; its log lines go to the console only. The
 `analysis/polar_maps_cnn_start.py`, not from here.
 
 ## 11. Cramer-Rao bound
-Files: fisher_4pMFM.py (Fisher matrix), simu_PSF_polarMFM.py (torch model of the PSF), crb_vs_unbiased_sim.py
-(D:\AMAURY\simu_precision_claude\MFM_fisher, comparison with the simulations).
+Files: fisher_4pMFM.py (Fisher matrix), simu_PSF_polarMFM.py (torch model of the PSF), simu_precision/crb_vs_unbiased_sim.py
+(comparison with the simulations; cache and figures in D:\AMAURY\simu_precision_claude\2026-10-28_crb_fisher).
 
 ### 11.1 `fisher(M, RHO, ETA, DELTA, Np, BACKGROUND, gain=1, dark_var=0)` (fisher_4pMFM.py)
 Fisher information of (rho, eta, delta) for each PSF, shape (3, 3, NPSF), angles in radians. x, y, z, N and the

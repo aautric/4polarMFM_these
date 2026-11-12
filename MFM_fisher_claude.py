@@ -214,7 +214,7 @@ ax.set_yticks([])
 # Noise of the simulation (emccd_jax): variance per pixel 2 (s + b)/QE. The bounds are computed with Poisson noise
 # only (gain = 1, dark_var = 0): ideal detector, best possible precision (EM excess would multiply them by sqrt(2/QE)).
 sgd_results = '/mnt/d/AMAURY/simu_precision_claude/2026-10-14_23h37_poisson_excess/results_huber.npz'
-out_folder = '/mnt/d/AMAURY/simu_precision_claude/MFM_fisher' # bounds, SGD precision and figures of this comparison
+out_folder = '/mnt/d/AMAURY/simu_precision_claude/2026-10-28_crb_fisher' # bounds, SGD precision and figures of this comparison
 os.makedirs(out_folder, exist_ok=True)
 QE_sim = 0.92
 delta_sim = 90 # delta of the simulation

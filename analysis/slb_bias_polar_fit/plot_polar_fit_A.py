@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # root of the 4pol
 OUT = os.environ.get('OUT_DIR', os.getcwd()).rstrip('/') + '/'  # outputs: $OUT_DIR, else the current folder
 os.makedirs(OUT, exist_ok=True)
 import calibration_polar_claude as cp
-P = '/mnt/d/Amaury/simu_precision_claude/polar_calib_2026-11-04/'
+P = '/mnt/d/Amaury/simu_precision_claude/2026-11-04_polar_calib/'
 d = np.load(P + 'data_AB.npz')
 A = dict(theta=d['A_theta'], I=d['A_I'], E=d['A_E'])
 f = cp.fit_A(A)

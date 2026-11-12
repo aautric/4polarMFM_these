@@ -13,11 +13,11 @@
 import os, sys, glob, json, hashlib
 import numpy as np, torch
 import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
-sys.path.insert(0, '/mnt/c/Users/Amaury/Documents/GitHub/4polarMFM_these')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # the repo this script is in (2026-11-12, was main)
 from simu_PSF_polarMFM import *
 from fisher_4pMFM import fisher
 device = 'cpu'; torch.manual_seed(0); np.random.seed(0)
-O = '/mnt/d/AMAURY/simu_precision_claude/MFM_fisher/'
+O = '/mnt/d/AMAURY/simu_precision_claude/2026-10-28_crb_fisher/'  # CRB cache and figures (MFM_fisher until 2026-11-12)
 SIM = '/mnt/d/Amaury/simu_precision_claude/unbiased_2026-11-09/'
 NPSF = 400; QE = 0.92
 eta_crb = np.linspace(1, 179, 45); delta_crb = (60, 120)
@@ -46,7 +46,8 @@ def build_M(xp, yp, zp, d_, second_plane_, SAF_):  # copy of MFM_fisher_claude.p
 
 BCK_CRB = 0.
 params = dict(N=2100, bck=BCK_CRB, delta=delta_crb, eta=eta_crb.tolist(), NPSF=NPSF, cond={k: [v['gain'], v['dark_var']] for k, v in COND.items()},
-              geometry=dict(xy=0.2, z=(0.2, 1.2), planes=[0.646, 1., 1.354], SAF=True))
+              geometry=dict(xy=0.2, z=(0.2, 1.2), planes=[0.646, 1., 1.354], SAF=True),
+              lambd=617, polar_projections=[0, -45, 0], window=13)  # 2026-11-12: in the cache key, else an old CRB is reused
 cache = O + 'crb_unbiased_' + hashlib.md5(json.dumps(params, sort_keys=True).encode()).hexdigest()[:8] + '.npz'
 if os.path.exists(cache):
     crb = dict(np.load(cache)); print('CRB loaded from', cache)

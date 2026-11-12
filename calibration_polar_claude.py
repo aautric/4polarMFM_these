@@ -367,4 +367,4 @@ def main(out):
     return A, B, fa, sb
 
 if __name__ == '__main__':
-    main(sys.argv[1] if len(sys.argv) > 1 else '/mnt/d/Amaury/simu_precision_claude/polar_calib')
+    main(sys.argv[1] if len(sys.argv) > 1 else '/mnt/d/Amaury/simu_precision_claude/2026-11-02_polar_calib')
