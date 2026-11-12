@@ -163,9 +163,10 @@ def limit(x, lim, slope, upper=True):
     cap = 30.
     return jnp.sum(jnp.exp(jnp.minimum(e, cap)) * (1 + jnp.maximum(e - cap, 0.)))
     
-def loss_pos(params, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, noise, dim_simu, d_):
+def loss_pos(params, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, noise, dim_simu, d_, zcx, zcy):
+    # zcx, zcy: aberrations (3, 15), or (NPSF, 3, 15) with fov_aberrations (one set per PSF)
     Mj = compute_M_jax(xp=params['xp'], yp=params['yp'], zp=params['zp'], d=d_, x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2
-                    , Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, phase_maskx=phase_mask, phase_masky=phase_mask, zernike_base=zernike_base, zernike_coefs_x=zernike_coefs_x, zernike_coefs_y=zernike_coefs_y
+                    , Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, phase_maskx=phase_mask, phase_masky=phase_mask, zernike_base=zernike_base, zernike_coefs_x=zcx, zernike_coefs_y=zcy
                     , second_plane=second_plane, polar_projections=polar_projections, lambd=lambd, f_tube=f_tube,
                     plane_shift=plane_shift_of_z(params['zp']))
     dim_data = 6
@@ -225,7 +226,8 @@ def loss_angle_with_M(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2,
     zern_offset_y = jnp.where(zern_speed2_y == 0, 0., params['zern_y']*zern_speed2_y)
     Mj = compute_M_jax(xp=params['x']*xy_speed2, yp=params['y']*xy_speed2, zp=params['z']*z_speed2, d=d_, x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2,
                    Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, phase_maskx=phase_mask, phase_masky=phase_mask, zernike_base=zernike_base,
-                   zernike_coefs_x=jnp.reshape(zernx + zern_offset_x, (3,15)), zernike_coefs_y=jnp.reshape(zerny + zern_offset_y, (3,15)),
+                   zernike_coefs_x=jnp.reshape(zernx + zern_offset_x, jnp.shape(zernx)[:-1] + (3,15)), # (45,) or (NPSF, 45) with fov_aberrations
+                   zernike_coefs_y=jnp.reshape(zerny + zern_offset_y, jnp.shape(zerny)[:-1] + (3,15)),
                    second_plane=second_plane, polar_projections=polar_projections, lambd=lambd, f_tube=f_tube,
                    plane_shift=plane_shift_of_z(params['z']*z_speed2))
 
@@ -251,7 +253,7 @@ def plot_results(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern
     y_fine = np.array(params['y'] * xy_speed2)
     Mj = compute_M_jax(xp=params['x']*xy_speed2, yp=params['y']*xy_speed2, zp=params['z']*z_speed2, d=d_, x=xx, y=yy, th1=th1, phi=phi, Ex0=Ex0, Ex1=Ex1, Ex2=Ex2,
                     Ey0=Ey0, Ey1=Ey1, Ey2=Ey2, u=u, v=v, phase_maskx=phase_mask, phase_masky=phase_mask, zernike_base=zernike_base, 
-                    zernike_coefs_x=jnp.reshape(zernx, (3,15)), zernike_coefs_y=jnp.reshape(zerny, (3,15)),
+                    zernike_coefs_x=jnp.reshape(zernx, jnp.shape(zernx)[:-1] + (3,15)), zernike_coefs_y=jnp.reshape(zerny, jnp.shape(zerny)[:-1] + (3,15)),
                     second_plane=second_plane, polar_projections=polar_projections, lambd=lambd, f_tube=f_tube,
                     plane_shift=plane_shift_of_z(params['z']*z_speed2))
     h = np.array(PSF_jax(rho=params['rho'], eta=params['eta'], delta=params['delta']*delta_speed, M=Mj, N_photons=params['N_photons']*nphotons_speed2)[:,:,:,dim_simu-dim_data:dim_simu+dim_data+1,dim_simu-dim_data:dim_simu+dim_data+1])
@@ -340,7 +342,7 @@ reloaded = ['QE', 'EM', 'sensitivity',
             'zernike_coefs_x', 'zernike_coefs_y', 'zern_x', 'zern_y',
             'LR1', 'num_epochs_max1', 'Nphotons_speed1', 'background_speed',
             'LR2', 'num_epochs_max2', 'delta_speed', 'nphotons_speed2', 'xy_speed2', 'z_speed2',
-            'zern_speed2_x', 'zern_speed2_y', 'zern_start_epoch2', 'fit_zernike', 'loss2', 'huber_c', 'huber_positive_only', 'y_gain_J1', 'y_gain_J2', 'unitary_J', 'registration_z',
+            'zern_speed2_x', 'zern_speed2_y', 'zern_start_epoch2', 'fit_zernike', 'loss2', 'huber_c', 'huber_positive_only', 'y_gain_J1', 'y_gain_J2', 'unitary_J', 'registration_z', 'fov_aberrations',
             'Nframe', 'last_frame_processed', 'NPSF', 'n_photons_filtering', 'batch_nb', 'dimensions']
 
 def reload_config(config_file):
@@ -524,6 +526,12 @@ SAF = True
 # correction with a warning. A path: that file (warning if its calibration is not the one of the data)
 registration_z = 'auto'
 
+# field-dependent aberrations: None, or the field model (.npz) built by fov_aberrations.py from the bead fits of
+# SGD_aberrations_claude.py (reconstructed with the calibration of the data). The Zernike coefficients of each PSF are
+# computed from its pre-localised position before the fit and stay fixed during it; they replace zernike_coefs_x/y and
+# zern_x/zern_y (no aberration fit: fit_zernike False or all the zern_speed2 at 0)
+fov_aberrations = None
+
 # aberrations, 0 everywhere means a perfect system. zernike_coefs_x/y are used by the
 # first SGD, zern_x/zern_y by the second one (starting point of the aberration fit), in rad
 zernike_coefs_x = jnp.zeros((3,15)).astype(jnp.complex64)
@@ -597,6 +605,8 @@ print('Resuming in '+str(save_folder)+' at batch '+str(first_batch)+', frame '+s
 # replaces every top-level "registration_z = ..." by its value
 from reconstruction_juliette import registration_for_reconstruction
 registration_z_file = registration_for_reconstruction(registration_z, path)
+import fov_aberrations as fov_module
+fov_model = fov_module.for_reconstruction(fov_aberrations, path)
 
 config = {
     'date': f'{datetime.now():%Y-%m-%d %H:%M:%S}',
@@ -630,6 +640,7 @@ config = {
     'MAG': MAG,
     'SAF': SAF,
     'registration_z': str(registration_z_file), # file of the residual registration of the planes vs z, None: no correction
+    'fov_aberrations': str(fov_aberrations), # field model of the aberrations (one set per PSF), None: the same for all
     # aberrations
     'zernike_coefs_x': zernike_coefs_x,
     'zernike_coefs_y': zernike_coefs_y,
@@ -871,8 +882,8 @@ def load_batch(last_frame_processed, buffer, psf_buffer, NPSF, result, n_skip=0)
 
 # functions for the SGD steps
 @functools.partial(jax.jit, static_argnames=['dim_simu'])#, donate_argnums=(0, 1))
-def step1(params, opt_state, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, noise, dim_simu, d_):
-    loss, grads = jax.value_and_grad(loss_pos)(params, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, noise, dim_simu, d_)
+def step1(params, opt_state, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, noise, dim_simu, d_, zcx, zcy):
+    loss, grads = jax.value_and_grad(loss_pos)(params, Nphotons_speed1, background_speed, rho, eta, delta, data, second_plane, noise, dim_simu, d_, zcx, zcy)
     updates, opt_state = optimizer1.update(grads, opt_state, params)
     params = optax.apply_updates(params, updates)
     return params, opt_state, loss
@@ -893,6 +904,14 @@ if not fit_zernike: # no aberration in SGD2, applied here so that it also holds 
     zern_x, zern_y = jnp.zeros(3*15), jnp.zeros(3*15)
     zern_speed2_x, zern_speed2_y = jnp.zeros(3*15), jnp.zeros(3*15)
     print('Zernike aberrations off: all the coefficients stay at 0 in SGD2')
+if fov_model is not None and (np.any(np.asarray(zern_speed2_x) != 0) or np.any(np.asarray(zern_speed2_y) != 0)):
+    raise ValueError('fov_aberrations: the aberrations of each PSF are fixed, set fit_zernike = False (or all the zern_speed2 to 0)')
+def fov_zernike(x_nm, y_nm):
+    # aberrations (rad) of each PSF of a batch from its pre-localised position x, y of load_batch (nm, 120 nm per pixel:
+    # x = column, y = -row of the channel images, the axes swapped by load_batch): (NPSF, 45) for the x and y channels,
+    # index 15*plane + Noll - 1
+    zx, zy = fov_module.zernike_at(fov_model, -np.asarray(y_nm)/120, np.asarray(x_nm)/120)
+    return jnp.asarray(zx), jnp.asarray(zy)
 
 # working buffers of the extraction, empty at the start of a launch (new or resumed run)
 raw = np.zeros((Nframe,6,dimensions[0],dimensions[1]))
@@ -915,6 +934,12 @@ for batch in range(first_batch, batch_nb):
     x = current['x']  
     y = current['y']  
     frame = current['frame'] 
+    if fov_model is not None: # field-dependent aberrations of each PSF, fixed in SGD1 and SGD2
+        zx_psf, zy_psf = fov_zernike(x, y)
+        zc1 = (zx_psf.reshape(-1, 3, 15), zy_psf.reshape(-1, 3, 15))
+    else: # the same aberrations for all the PSF
+        zx_psf, zy_psf = zern_x, zern_y
+        zc1 = (zernike_coefs_x, zernike_coefs_y)
     params = {
         'xp': x_start,
         'yp': y_start,
@@ -935,7 +960,7 @@ for batch in range(first_batch, batch_nb):
     bck = []
     
     for i in tqdm(range(num_epochs_max1)):
-        params, opt_state, loss = step1(params, opt_state, Nphotons_speed1, background_speed, angle_rd2, angle_rd2, angle_rd1, noisy_psf, second_plane, noise, dim_simu, d_)
+        params, opt_state, loss = step1(params, opt_state, Nphotons_speed1, background_speed, angle_rd2, angle_rd2, angle_rd1, noisy_psf, second_plane, noise, dim_simu, d_, *zc1)
         loss_.append(float(loss))
         z__.append(np.array(params['zp']))
         N__.append(np.array(params['N_photons'] * Nphotons_speed1))
@@ -997,7 +1022,7 @@ for batch in range(first_batch, batch_nb):
     for i in tqdm(range(num_epochs_max2)):
         # a speed of 0 gives a gradient of 0: the aberrations do not move before zern_start_epoch2
         zern_on = float(i >= zern_start_epoch2)
-        params, opt_state, loss = step2(params, opt_state, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern_x, zern_y, zern_speed2_x*zern_on, zern_speed2_y*zern_on, noisy_psf, background_array_found, noise, dim_simu, d_)
+        params, opt_state, loss = step2(params, opt_state, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zx_psf, zy_psf, zern_speed2_x*zern_on, zern_speed2_y*zern_on, noisy_psf, background_array_found, noise, dim_simu, d_)
         loss_.append(float(loss))
         rho_.append(np.array(params['rho']))
         eta_.append(np.array(params['eta']))
@@ -1071,7 +1096,7 @@ for batch in range(first_batch, batch_nb):
     #plt.show()
     '''
     if first_loop_of_the_launch:
-        plot_results(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zern_x + params['zern_x']*zern_speed2_x, zern_y + params['zern_y']*zern_speed2_y, noisy_psf, background_array_found, noise, dim_simu, d_)
+        plot_results(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2, zx_psf + params['zern_x']*zern_speed2_x, zy_psf + params['zern_y']*zern_speed2_y, noisy_psf, background_array_found, noise, dim_simu, d_)
         first_loop_of_the_launch = False
     del(eta_, rho_, delta_, x_, z_, zx_, zy_)
 
@@ -1083,8 +1108,9 @@ for batch in range(first_batch, batch_nb):
     x_found = params['x']*xy_speed2
     y_found = params['y']*xy_speed2
     z_found = params['z']*z_speed2
-    zernx = jnp.reshape(zern_x + params['zern_x']*zern_speed2_x, (3,15))
-    zerny = jnp.reshape(zern_y + params['zern_y']*zern_speed2_y, (3,15))
+    # (3, 15), or (NPSF, 3, 15) with fov_aberrations: saved as zernx_found / zerny_found
+    zernx = jnp.reshape(zx_psf + params['zern_x']*zern_speed2_x, jnp.shape(zx_psf)[:-1] + (3,15))
+    zerny = jnp.reshape(zy_psf + params['zern_y']*zern_speed2_y, jnp.shape(zy_psf)[:-1] + (3,15))
     del(params, loss)
     
     score, deviance = eval_batch(x_found, y_found, z_found, zernx, zerny, rho_found, eta_found, delta_found, N_found2, noisy_psf, background_array_found, noise, dim_simu)

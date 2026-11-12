@@ -149,7 +149,7 @@ def make_fit_adam(loss2, sp, lr, bg_speed, slots, cap=400, patience=10):
 
 
 def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=200, patience=2, max_rejects=8, lam0=1., delta_step=20., delta_hold=5,
-                lam_down=3., tol_deg=1., tol_nm=10., xy_max=0.78, z_range=(0., 3.)):
+                lam_down=3., tol_deg=1., tol_nm=10., xy_max=0.78, z_range=(0., 3.), per_psf=(), fixed_delta=False):
     """Builds fit(pool), compiled once: Levenberg-Marquardt fit of x, y, z, N, rho, eta, delta and the background of
     the 6 channels (offsets added to the starting background of each channel), with the loss of the pixels given.
     lam0: starting damping (Marquardt, relative to the diagonal of J^T W J; / lam_down after an accepted step, x 4 after a
@@ -167,6 +167,9 @@ def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=200, patience=2, max
     parameters shared by the pool that model reads (e.g. the aberrations: they can change between two calls of fit
     without a new compilation).
     model(th7, background_flat, pool) -> expected image (slots, 3, 2, 13, 13), th7 = x, y, z (um), N, rho, eta, delta (deg).
+    per_psf: keys of the pool with one row per PSF of the pool that model reads (e.g. the field-dependent aberrations
+    of each PSF, fixed during the fit): model receives the rows of the PSF of the slots.
+    fixed_delta: delta stays at delta0 during the whole fit (profile of the loss vs delta), no hold of the stop.
     pixel_loss(mu, data, noise): loss of each pixel. pixel_weight(mu, data, noise): its curvature vs mu (> 0), the
     weight of each pixel in the Gauss-Newton matrix J^T W J.
     fit(pool) returns dict of (n,) arrays (x, y, z, N, rho, eta, delta, background (n, 6), steps = iterations).
@@ -188,11 +191,12 @@ def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=200, patience=2, max
     def step(state, ids, p):
         th, lam, k, _ = state
         data, noise, bg0 = p['data'][ids], p['noise'][ids], p['background'][ids]
+        p = dict(p, **{key: p[key][ids] for key in per_psf})  # rows of the PSF of the slots
         f = lambda t7: model(t7, full(th, bg0)[1], p)
         mu = f(th[:, :7])
         jp = jnp.stack([jax.jvp(f, (th[:, :7],), (jnp.zeros_like(th[:, :7]).at[:, k].set(1.),))[1] for k in range(7)], 1)
         jb = jnp.broadcast_to(jnp.eye(6).reshape(1, 6, 3, 2, 1, 1), (th.shape[0], 6, 3, 2) + mu.shape[-2:])  # background of each channel
-        free = (k >= delta_hold).astype(mu.dtype)  # 0: delta held
+        free = jnp.zeros_like(k, mu.dtype) if fixed_delta else (k >= delta_hold).astype(mu.dtype)  # 0: delta held
         J = jnp.concatenate([jp, jb], 1).at[:, 6].multiply(free[:, None, None, None, None])
         dl = jax.grad(lambda m: jnp.sum(pixel_loss(m, data, noise)))(mu)  # derivative of the loss of each pixel vs mu
         grad = jnp.sum(J * dl[:, None], axis=(2, 3, 4, 5))
@@ -214,7 +218,7 @@ def make_fit_lm(model, pixel_loss, pixel_weight, slots, cap=200, patience=2, max
     def fit(pool):
         n = pool['data'].shape[0]
         r, steps = stream(n, slots, init, refill, step, w, lambda a, b: move_orient(a, b, tol_deg, tol_nm), ex, pool, cap, patience,
-                          accepted=lambda s: np.asarray(s[3]), max_rejects=max_rejects, hold=delta_hold)
+                          accepted=lambda s: np.asarray(s[3]), max_rejects=max_rejects, hold=0 if fixed_delta else delta_hold)
         th = r['th']
         bg = np.array(pool['background']) + th[:, 7:]
         out = {k: th[:, j] for j, k in enumerate(('x', 'y', 'z', 'N', 'rho', 'eta', 'delta'))}

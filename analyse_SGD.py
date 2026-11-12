@@ -83,7 +83,9 @@ if 'batch' in data.columns and len(zern_columns) > 0:
     zern_data = data.groupby('batch').agg(first_frame=('frame', 'min'), last_frame=('frame', 'max'),
                                           **{c: (c, 'first') for c in zern_columns})
     zern_data = zern_data.dropna().reset_index() # the batches of a run without aberration fit
-    print('Aberrations of '+str(len(zern_data))+' batches loaded')
+    # field-dependent aberrations (fov_aberrations of SGD_jax_CNN.py / SGD_jax.py): one set per PSF, not per batch
+    zern_per_psf = bool((data.groupby('batch')[zern_columns].nunique() > 1).any().any())
+    print('Aberrations of '+str(len(zern_data))+' batches loaded' + (', one set per PSF (field-dependent)' if zern_per_psf else ''))
 else:
     zern_data = None
 
@@ -117,7 +119,27 @@ ax[2].set_ylabel('Occurences')
 
 # %% zernike aberrations across the SGD
 if zern_data is None:
-    print('No aberrations in '+path+', run post_process_SGD.py on a run with the aberration fit')
+    print('No aberrations in '+path+' (none in the _linked csv: open fit_<run>.csv or fit_<run>_drift.csv), '
+          'or run post_process_SGD.py on a run with aberrations')
+elif zern_per_psf:
+    # field-dependent: the coefficients of each PSF vs its position, one column per channel, one row per mode
+    to_mlambda = 1000/(2*np.pi) # rad to milli-waves
+    column = lambda pol, p, m: pol+'_p'+str(p)+'_Z'+str(m)
+    modes = [m for m in range(1, 16) if any((data[column(pol, p, m)] != 0).any() for pol in 'xy' for p in range(3))]
+    shown = np.random.default_rng(0).choice(len(data), min(len(data), 20000), replace=False)
+    fig, ax = plt.subplots(len(modes), 6, figsize=(16, 2.2*len(modes)), sharex=True, sharey=True, squeeze=False)
+    for k, m in enumerate(modes):
+        for p in range(3):
+            for c, pol in enumerate(['x', 'y']):
+                values = data[column(pol, p, m)].to_numpy()[shown]*to_mlambda
+                med = np.median(values); span = max(np.abs(values - med).max(), 0.5)  # colours centred on the median
+                sc = ax[k, 2*p+c].scatter(x[shown]/1000, y[shown]/1000, c=values, s=1, cmap='RdBu_r', vmin=med - span, vmax=med + span)
+                fig.colorbar(sc, ax=ax[k, 2*p+c])
+                ax[k, 2*p+c].set_title(f'Z{m} plane {p} {pol}: {med:+.1f} m$\\lambda$', fontsize=8)
+    for a in ax[-1]: a.set_xlabel('x (um)')
+    for a in ax[:, 0]: a.set_ylabel('y (um)')
+    fig.suptitle('Field-dependent aberrations of each PSF (fixed in the fit), m$\\lambda$ (title: median)')
+    plt.show()
 else:
     to_mlambda = 1000/(2*np.pi) # rad to milli-waves
     column = lambda pol, p, m: pol+'_p'+str(p)+'_Z'+str(m) # plane p, polarisation pol, Noll index m
@@ -160,8 +182,8 @@ else:
 
 # %% TO BE MODIFIED
 # threshold on fit_quality: deviance per pixel (~1 for a good fit), or the final loss for files without deviance
-quality_thresh = 1.5 if deviance is not None else 1500
-mask1 = (fit_quality<quality_thresh) & (delta<150) & (delta>50) & (N_photons>50) & (N_photons<10000) & (z<1800) & (z>0) #& (eta>30) & (eta<150)
+quality_thresh = 2.0 if deviance is not None else 1500
+mask1 = (fit_quality<quality_thresh) & (delta<150) & (delta>50) & (N_photons>50) & (N_photons<10000) & (z<2000) & (z>0) #& (eta>30) & (eta<150)
 #mask1 = (delta<150) & (delta>60)
 #%% mask selection
 %matplotlib widget
@@ -201,10 +223,16 @@ plt.show()
 # the localisations, rms of their difference / 2 (each half has half the localisations: error of the whole ~ diff / 2).
 # More localisations per block (longer blocks, larger mask) give a more precise drift: on actin1 (whole field, 2000
 # frames, ~16000 localisations per block) ~9 nm, the two halves diverging slowly over the acquisition (up to ~40 nm)
-# xcorr, ycorr: drift for each frame number (index = frame), for the cell "drif correction : applying the correction"
-# (skip the cell "drift correction computation with no fiducial")
+# z drift (rcc_z): the image cross-correlation gives x and y only. For z, the same blocks: after the xy correction, the
+# localisations of two blocks closer than z_match_xy in xy sample the same structure (whatever blinks in each block), the
+# z shift between the blocks is the median of their z differences (second pass within z_window of the first median, to
+# leave out structures crossing at another height), and the drift of each block is the least squares solution of
+# d_j - d_i = shift_ij weighted by the number of matches, as for xy. Same uncertainty from the two halves.
+# xcorr, ycorr (zcorr): drift for each frame number (index = frame), for the cell "drif correction : applying the
+# correction" (skip the cell "drift correction computation with no fiducial")
 from scipy.fft import rfft2, irfft2
 from scipy.ndimage import gaussian_filter
+from scipy.spatial import cKDTree
 segment_frames = 2000 # frames per block: more frames, more localisations per image (precise shift), less time resolution
 rcc_pixel = 20.       # nm
 rcc_blur = 1.         # px, gaussian blur of the images (~ localisation precision)
@@ -213,6 +241,10 @@ n_near = 3            # step 1: pairs of blocks at most n_near apart
 refine_window = 100.  # nm, step 2: half width of the search around the predicted shift
 rcc_reject = 30.      # nm, pairs with a residual above this value are left out
 rcc_check = True      # uncertainty from two random halves of the localisations (3 times longer)
+rcc_z = True          # z drift as well (correct_z), see z_drift
+z_match_xy = 50.      # nm, localisations of two blocks closer than this in xy are matched (same structure)
+z_window = 250.       # nm, z differences further than this from the first median are left out
+z_min_pairs = 50      # matches needed for a pair of blocks to be used
 
 def rcc_drift(xs_, ys_, fs_, f_first, f_last):
     # drift (nm) of the blocks of frames [f_first, f_last], at their centres; localisations xs_, ys_ of frames fs_
@@ -265,6 +297,36 @@ def rcc_drift(xs_, ys_, fs_, f_first, f_last):
     d_seg, keep, resid = solve(pairs, shifts)
     return d_seg, centres, counts_seg, keep, resid
 
+def z_drift(xs_, ys_, zs_, fs_, f_first, f_last):
+    # z drift (nm) of the blocks of frames [f_first, f_last] (the blocks of rcc_drift), at their centres; xs_, ys_
+    # already corrected for the xy drift. Returns the drift, the centres, the matches of each pair used, the residuals
+    edges_f = np.arange(f_first, f_last + segment_frames, segment_frames)
+    n_seg = len(edges_f) - 1
+    seg = np.searchsorted(edges_f, fs_, side='right') - 1
+    trees, zseg, centres = [], [], []
+    for k in range(n_seg):
+        s_ = seg == k
+        trees.append(cKDTree(np.column_stack((xs_[s_], ys_[s_]))) if s_.any() else None)
+        zseg.append(zs_[s_])
+        centres.append(np.mean(fs_[s_]) if s_.any() else (edges_f[k] + edges_f[k+1])/2)
+    pairs, shifts, n_match = [], [], []
+    for a in range(n_seg):
+        for b in range(a+1, n_seg):
+            if trees[a] is None or trees[b] is None:
+                continue
+            m = trees[a].sparse_distance_matrix(trees[b], z_match_xy, output_type='ndarray')
+            if len(m) < z_min_pairs:
+                continue
+            dz = zseg[b][m['j']] - zseg[a][m['i']]
+            dz = dz[np.abs(dz - np.median(dz)) < z_window]
+            pairs.append((a, b)); shifts.append(np.median(dz)); n_match.append(len(dz))
+    pairs, shifts, n_match = np.array(pairs), np.array(shifts), np.array(n_match)
+    w = np.sqrt(n_match)
+    A = np.zeros((len(pairs), n_seg))
+    A[np.arange(len(pairs)), pairs[:, 1]] = 1; A[np.arange(len(pairs)), pairs[:, 0]] = -1
+    d = np.r_[0., np.linalg.lstsq(A[:, 1:]*w[:, None], shifts*w, rcond=None)[0]]
+    return d, np.array(centres), n_match, d[pairs[:, 1]] - d[pairs[:, 0]] - shifts
+
 sel_rcc = mask if np.any(mask) else mask1
 xs_, ys_, fs_ = x[sel_rcc], y[sel_rcc], frame[sel_rcc]
 f_first, f_last = int(fs_.min()), int(fs_.max())
@@ -273,30 +335,49 @@ def drift_curves(d_seg, centres):
     # drift for each frame, 0 on the first frame of the selection
     cx_ = np.interp(frames_all, centres, d_seg[:, 0]); cy_ = np.interp(frames_all, centres, d_seg[:, 1])
     return cx_ - cx_[f_first], cy_ - cy_[f_first]
+def z_curve(xs_, ys_, zs_, fs_):
+    # z drift for each frame, 0 on the first frame of the selection, from localisations corrected for the xy drift
+    dz_seg, zc_, n_match, zres = z_drift(xs_, ys_, zs_, fs_, f_first, f_last)
+    c_ = np.interp(frames_all, zc_, dz_seg)
+    return c_ - c_[f_first], dz_seg, zc_, n_match, zres
 
 d_seg, centres, counts_seg, keep, resid = rcc_drift(xs_, ys_, fs_, f_first, f_last)
 xcorr, ycorr = drift_curves(d_seg, centres)
-correct_z = False
+correct_z = rcc_z
 print(f'{len(centres)} blocks of {segment_frames} frames ({np.median(counts_seg):.0f} localisations per block, median), '
       f'{keep.sum()}/{len(keep)} pairs kept, residual of the kept pairs {np.median(resid[keep]):.1f} nm (median); '
       f'drift range x {np.ptp(xcorr[f_first:f_last+1]):.0f} nm, y {np.ptp(ycorr[f_first:f_last+1]):.0f} nm')
 if np.median(counts_seg) < 8000:
     print('WARNING: less than 8000 localisations per block, the drift may be noisy: longer blocks (segment_frames) or a larger mask')
+if rcc_z:
+    fi_ = fs_.astype(int)
+    zcorr, dz_seg, zcentres, n_match, zres = z_curve(xs_ - xcorr[fi_], ys_ - ycorr[fi_], z[sel_rcc], fs_)
+    print(f'z: {len(n_match)} pairs of blocks, {np.median(n_match):.0f} matches per pair (median), residual '
+          f'{np.median(np.abs(zres)):.1f} nm (median); drift range z {np.ptp(zcorr[f_first:f_last+1]):.0f} nm')
 
-fig, ax = plt.subplots(1, 2, figsize=(12, 4))
+fig, ax = plt.subplots(1, 3 if rcc_z else 2, figsize=(18 if rcc_z else 12, 4))
 in_sel = slice(f_first, f_last + 1)
 if rcc_check:
     half_ = np.random.default_rng(0).random(len(xs_)) < 0.5
     curves_h = [drift_curves(*rcc_drift(xs_[h], ys_[h], fs_[h], f_first, f_last)[:2]) for h in (half_, ~half_)]
     err_x = np.std(curves_h[0][0][in_sel] - curves_h[1][0][in_sel])/2
     err_y = np.std(curves_h[0][1][in_sel] - curves_h[1][1][in_sel])/2
-    print(f'uncertainty (two halves of the localisations): x {err_x:.1f} nm, y {err_y:.1f} nm')
-for k, (a_, curve, lab) in enumerate(((ax[0], xcorr, 'x'), (ax[1], ycorr, 'y'))):
+    msg = f'uncertainty (two halves of the localisations): x {err_x:.1f} nm, y {err_y:.1f} nm'
+    if rcc_z:
+        curves_h = [c_ + (z_curve(xs_[h] - c_[0][fi_[h]], ys_[h] - c_[1][fi_[h]], z[sel_rcc][h], fs_[h])[0],)
+                    for c_, h in zip(curves_h, (half_, ~half_))]
+        err_z = np.std(curves_h[0][2][in_sel] - curves_h[1][2][in_sel])/2
+        msg += f', z {err_z:.1f} nm'
+    print(msg)
+panels = [(ax[0], xcorr, 'x', d_seg[:, 0], centres), (ax[1], ycorr, 'y', d_seg[:, 1], centres)]
+if rcc_z:
+    panels.append((ax[2], zcorr, 'z', dz_seg, zcentres))
+for k, (a_, curve, lab, pts, cen) in enumerate(panels):
     if rcc_check:
         for h, c_ in enumerate(curves_h):
             a_.plot(frames_all[in_sel], c_[k][in_sel], lw=0.8, alpha=0.6, label=f'half {"AB"[h]}')
     a_.plot(frames_all[in_sel], curve[in_sel], 'k-', lw=1.5, label='all')
-    a_.plot(centres, d_seg[:, k] - np.interp(f_first, centres, d_seg[:, k]), 'ko', ms=4)
+    a_.plot(cen, pts - np.interp(f_first, cen, pts), 'ko', ms=4)
     a_.set_xlabel('frame'); a_.set_ylabel(f'drift {lab} (nm)'); a_.grid(alpha=0.4); a_.legend(fontsize=9)
 plt.tight_layout()
 plt.show()
@@ -585,7 +666,7 @@ ax[1,3].text(0, 0.95, f'{len(stdx)} molecules on > 1 frame\n\n{"":16s}{"pooled":
 plt.tight_layout()
 plt.show()
 #%% select new filter
-mask1 = (fit_quality<quality_thresh) & (z<1300) & (z>500) & (delta<150) &  (delta>50) & (N_photons>50) & (N_photons<10000)
+mask1 = (fit_quality<quality_thresh) & (z<1500) & (z>0) & (delta<150) &  (delta>50) & (N_photons>50) & (N_photons<10000)
 #%% select mask
 %matplotlib qt
 plt.rcParams['figure.figsize'] = [10,10]
@@ -612,7 +693,7 @@ plt.show()
 
 
 #%% SIZE OF THE SCATTER POINTS
-s = 1
+s = 0.1
 #%% plot of the localisations, white on black, no colour coding
 plt.rcParams.update({'font.size': 15})
 fig, ax = plt.subplots(figsize=(6, 6))
@@ -624,7 +705,7 @@ ax.set_ylabel('y ($\\mu$m)')
 ax.set_title(f'{np.sum(mask)} localisations')
 plt.show()
 #%% plot rho
-plt.rcParams['figure.figsize'] = [8, 5]
+plt.rcParams['figure.figsize'] = [12, 8]
 plt.rcParams.update({'font.size': 15})
 fig = plt.figure()
 ax0 = fig.add_subplot(1, 2, 1)
@@ -675,104 +756,9 @@ plt.tight_layout()
 plt.show()
 
 
-#%% animation (avi): widefield -> single molecules (white on black) -> rho colour coded, rotating wipes
-# The three images are drawn on the same grid, in the coordinates of the fit (x = col*0.12 um, y = -row*0.12 um of the
-# reconstructed frames). Each transition is a radius turning around the centre of the image that uncovers the new
-# image; it stops one wedge before the full turn, so that a wedge of the old image remains, at the top of the image,
-# centred: widefield just left of the vertical, then single molecules just right of it (the widefield wedge is kept)
-import cv2
-import tifffile
-wf_folder = '/mnt/d/Amaury/DATA/2026_09_23_test_marquage_RPE1_2/BSA1_triton_1h/wf/Calib_Polar_2026-09-23/images/RAW_DATA/reconstruction'
-wf_dx, wf_dy = 0., 0.         # shift of the widefield image (um), if it is not aligned with the localisations
-fps_anim = 20
-t_hold, t_wipe, t_pause, t_end = 2., 4., 2., 3. # durations (s)
-wedge = 25.                   # angle of the wedge of the old image that remains (deg)
-px_anim = 720                 # width of the video (pixels)
-s_anim = 2*s                  # size of the points of the single molecule images (s of the scatter cell, doubled)
-scalebar_um = 1.              # scale bar at the lower left corner (um)
-scalebar_up = 1.              # height of the scale bar above the lower margin of the field (um)
-
-wf_files = sorted([f for f in os.listdir(wf_folder) if f[:-4].isdigit() and f.endswith('.tif')], key=lambda f: int(f[:-4]))
-wf = np.sum([tifffile.imread(os.path.join(wf_folder, f)).astype(float).sum(0) for f in wf_files], axis=0) # frames and channels
-H_wf, W_wf = wf.shape
-extent_xy = (wf_dx, wf_dx + W_wf*0.12, wf_dy - H_wf*0.12, wf_dy) # left, right, bottom, top in um (fit coordinates)
-fig_w, fig_h = 6., 6.*H_wf/W_wf
-dpi_anim = px_anim/fig_w
-
-def render(draw):
-    # RGB image (H, W, 3) of what draw(ax) draws, on the field of the widefield, black background, no axes
-    fig_r = plt.figure(figsize=(fig_w, fig_h), dpi=dpi_anim, facecolor='black')
-    ax_r = fig_r.add_axes([0, 0, 1, 1]); ax_r.set_facecolor('black'); ax_r.set_axis_off()
-    draw(ax_r)
-    ax_r.set_xlim(extent_xy[0], extent_xy[1]); ax_r.set_ylim(extent_xy[2], extent_xy[3])
-    # scale bar, the same on the three images so that it stays in place during the wipes
-    margin = 0.04*(extent_xy[1] - extent_xy[0])
-    x0_sb, y0_sb = extent_xy[0] + margin, extent_xy[2] + margin + scalebar_up
-    ax_r.plot([x0_sb, x0_sb + scalebar_um], [y0_sb, y0_sb], color='white', lw=3, solid_capstyle='butt')
-    ax_r.text(x0_sb, y0_sb + 0.3*margin, f'{scalebar_um*1000:.0f} nm' if scalebar_um < 1 else f'{scalebar_um:g} $\\mu$m',
-              color='white', ha='left', va='bottom', fontsize=11) # left aligned with the bar: the bar is short next to the field (~1 % of its width)
-    fig_r.canvas.draw()
-    img = np.asarray(fig_r.canvas.buffer_rgba())[..., :3].copy()
-    plt.close(fig_r)
-    return img
-
-img_wf = render(lambda a: a.imshow(wf, cmap='gray', extent=extent_xy, origin='upper',
-                                   vmin=np.percentile(wf, 1), vmax=np.percentile(wf, 99.7)))
-img_sm = render(lambda a: a.scatter(x[mask]/1000, y[mask]/1000, color='white', s=s_anim, rasterized=True))
-img_rho = render(lambda a: a.scatter(x[mask]/1000, y[mask]/1000, c=rho[mask]/180, cmap='hsv', vmin=0, vmax=1, s=s_anim, rasterized=True))
-h_px, w_px = img_wf.shape[:2]
-h_px, w_px = h_px - h_px % 2, w_px - w_px % 2 # even size for the codec
-img_wf, img_sm, img_rho = img_wf[:h_px, :w_px], img_sm[:h_px, :w_px], img_rho[:h_px, :w_px]
-
-# angle of each pixel around the centre (deg, counterclockwise, 0 = right; image rows go down)
-yy_a, xx_a = np.mgrid[0:h_px, 0:w_px]
-cy, cx = h_px/2, w_px/2
-theta_px = np.degrees(np.arctan2(-(yy_a - cy), xx_a - cx)) % 360
-dir_wf = 90 + wedge/2   # direction of the widefield wedge that remains: just left of the vertical (top, centred)
-dir_sm = 90 - wedge/2   # single molecule wedge: just right of the vertical
-
-def wipe_mask(progress, direction):
-    # pixels already uncovered: the sweep starts just after the wedge kept around direction, turns counterclockwise
-    start = (direction + wedge/2) % 360
-    swept = progress*(360 - wedge)
-    return ((theta_px - start) % 360) < swept, (start + swept) % 360
-
-def with_line(frame, angle):
-    # white radius at the front of the sweep
-    a = np.radians(angle); r = np.hypot(cx, cy)
-    cv2.line(frame, (int(cx), int(cy)), (int(cx + r*np.cos(a)), int(cy - r*np.sin(a))), (255, 255, 255), 2, cv2.LINE_AA)
-    return frame
-
-ease = lambda u: (1 - np.cos(np.pi*u))/2
-frames_anim = []
-frames_anim += [img_wf]*int(t_hold*fps_anim)
-for u in np.linspace(0, 1, int(t_wipe*fps_anim)):                    # widefield -> single molecules
-    m, front = wipe_mask(ease(u), dir_wf)
-    frames_anim.append(with_line(np.where(m[..., None], img_sm, img_wf).copy(), front))
-keep_wf = ~wipe_mask(1., dir_wf)[0]                                # widefield wedge kept to the end
-after_1 = np.where(keep_wf[..., None], img_wf, img_sm)
-frames_anim += [after_1]*int(t_pause*fps_anim)
-for u in np.linspace(0, 1, int(t_wipe*fps_anim)):                    # single molecules -> rho
-    m, front = wipe_mask(ease(u), dir_sm)
-    m &= ~keep_wf
-    frames_anim.append(with_line(np.where(m[..., None], img_rho, after_1).copy(), front))
-final = np.where(keep_wf[..., None], img_wf, np.where(wipe_mask(1., dir_sm)[0][..., None], img_rho, img_sm))
-frames_anim += [final]*int(t_end*fps_anim)
-
-out_avi = os.path.join(os.path.dirname(path), 'animation_widefield_sm_rho.avi')
-writer_avi = cv2.VideoWriter(out_avi, cv2.VideoWriter_fourcc(*'MJPG'), fps_anim, (w_px, h_px))
-if not writer_avi.isOpened(): # e.g. the file is open in a video player (locked on Windows): OpenCV would write nothing
-    raise IOError(f'cannot write {out_avi}: close it if it is open in a player, then run the cell again')
-for fr_ in frames_anim:
-    writer_avi.write(cv2.cvtColor(np.ascontiguousarray(fr_), cv2.COLOR_RGB2BGR))
-writer_avi.release()
-print(f'{len(frames_anim)} frames ({len(frames_anim)/fps_anim:.1f} s) written in {out_avi}')
-plt.figure(figsize=(5, 5*h_px/w_px)); plt.imshow(final); plt.axis('off'); plt.title('last frame'); plt.show()
-
-
 #%% plot z
 %matplotlib qt
-plt.rcParams['figure.figsize'] = [7, 5]
+plt.rcParams['figure.figsize'] = [12, 8]
 plt.rcParams.update({'font.size': 15})
 fig, ax = plt.subplots()
 ax.set_facecolor('black')
@@ -811,7 +797,7 @@ plt.tight_layout()
 plt.show()
 
 #%% Plot delta
-plt.rcParams["figure.figsize"] = [8,4]
+plt.rcParams["figure.figsize"] = [12,7]
 plt.rcParams.update({"font.size": 15})
 fig, ax = plt.subplots(1, 2)
 # ---------------- Scatter plot ----------------
@@ -874,7 +860,7 @@ plt.show()
 hls_colors = sns.color_palette("hls", 256)
 cmap = mcolors.ListedColormap(hls_colors)
 #%% plot eta
-plt.rcParams['figure.figsize'] = [8, 4]
+plt.rcParams['figure.figsize'] = [12, 6]
 plt.rcParams.update({'font.size': 15})
 fig, ax = plt.subplots(1,2)
 ax[0].set_facecolor('black')
@@ -928,6 +914,11 @@ ax1.bar(
     edgecolor='none',
     alpha=0.95
 )
+# reference A sin^2(eta), normalised to the same number of counts as the histogram (sum over the bins)
+iso_scale = counts.sum() / np.sum(np.sin(centers)**2)
+iso_theta = np.linspace(0, 2*np.pi, 721)
+ax1.plot(iso_theta, iso_scale*np.sin(iso_theta)**2, color='k', lw=1.5, label=r'A sin$^2\eta$ (same counts)')
+ax1.legend(loc='lower left', bbox_to_anchor=(-0.15, -0.12), fontsize=10, frameon=False)
 # orientation: 0° top, clockwise
 ax1.set_theta_zero_location('N')
 ax1.set_theta_direction(-1)
@@ -952,7 +943,7 @@ ax1.set_ylabel("Count", labelpad=25)
 
 # colour scale of eta as the outer border of the histogram, as in the plot rho cell (eta and eta + 180 have the same
 # colour, below 30 and above 150 the colours of 30 and 150 as in the scatter)
-r_max = counts.max()*1.05
+r_max = max(counts.max(), iso_scale)*1.05
 ring = np.linspace(0, 2*np.pi, 1024)
 ax1.pcolormesh(*np.meshgrid(ring, [r_max, r_max*1.08]), np.tile(np.rad2deg(ring) % 180, (2, 1)),
                cmap=cmap, norm=norm, shading='auto')
@@ -1029,6 +1020,83 @@ ax.set_ylabel('z (nm)')
 ax.set_xlabel('$\\eta$ $(^{\\circ})$')
 #plt.ylim((400,1800))
 plt.grid()
+plt.show()
+#%% planarity of the orientations (mask)
+# orientation tensor T = <v v^T> of the dipole directions v = (sin eta cos rho, sin eta sin rho, cos eta) of the
+# localisations of mask (functions of bio_data_analysis/analyse_SMOLM_noyau_simu_functions.py, as for the nuclei).
+# Eigenvalues l1 >= l2 >= l3: P = 1 - l3/l1 (0 isotropic, 1 all the dipoles in one plane), P2 = (l1 + l2)/(l1 + l2 + l3)
+# (2/3 isotropic, 1 planar); the normal of the plane is the eigenvector of l3, given as (eta, rho) of the fit.
+# Local planarity: the same with the neighbours of each localisation within planarity_scale nm in 3D (at least
+# min_neighbors). P of a few vectors is > 0 even without any order (finite sample), so it is compared with the same
+# computation after shuffling the (rho, eta) pairs among the localisations of mask (same distribution, same numbers of
+# neighbours, no spatial order), and among the localisations of blocks of block_xy x block_xy x block_z nm (keeps an
+# orientation that changes slowly over the field, e.g. a bias with x, y or z). Without local order, 5 % of the points
+# are above the 95th percentile of the shuffled P.
+# Run it after the correction doublons cell: the same molecule seen on several frames would look like local order.
+sys.path.append('/mnt/c/Users/Amaury/Documents/GitHub/bio_data_analysis')
+from analyse_SMOLM_noyau_simu_functions import orientation_planarity, local_planarity, cart2sph
+planarity_scales = [200., 400.]  # nm, radius of the neighbourhood
+min_neighbors = 10
+block_xy, block_z = 1000., 250.  # nm, blocks of the second shuffle
+P_name = 'P'  # local measure shown: 'P2' = 1 - l3 (2/3 isotropic, 1 planar) or 'P' = 1 - l3/l1 (0 isotropic, 1 planar)
+P_index, P_floor = {'P': (0, 0.), 'P2': (1, 2/3)}[P_name] # output of local_planarity, value without order (isotropic)
+# colours of the maps: turbo (blue -> red, not the hsv of rho), stretched so that it changes colour quickly around
+# the median of the local P of each map (green): P_low_percentile -> median blue -> green, median -> 1 green -> red
+P_low_percentile = 2
+
+sel_p = mask & np.isfinite(x) & np.isfinite(rho) & np.isfinite(eta)
+xp, yp, zp, rhop, etap = x[sel_p], y[sel_p], z[sel_p], rho[sel_p] % 180, eta[sel_p]
+P_g, P2_g, normal_g, ev_g, _ = orientation_planarity(rhop, etap, verbose=False)
+normal_eta, normal_rho = np.rad2deg(cart2sph(*normal_g))
+print(f'{sel_p.sum()} localisations; global planarity P {P_g:.3f}, P2 {P2_g:.3f}, eigenvalues {np.round(ev_g, 3)}; '
+      f'normal eta {normal_eta:.0f}, rho {normal_rho:.0f} deg')
+
+rng = np.random.default_rng(0)
+def shuffle_in_groups(groups):
+    # (rho, eta) pairs permuted among the localisations of each group
+    order = np.argsort(groups, kind='stable')
+    perm = np.empty(len(groups), dtype=int)
+    for g in np.split(order, np.flatnonzero(np.diff(groups[order])) + 1):
+        perm[g] = rng.permutation(g)
+    return rhop[perm], etap[perm]
+block_id = np.unique(np.column_stack((xp//block_xy, yp//block_xy, zp//block_z)), axis=0, return_inverse=True)[1].ravel()
+
+P_local = {} # scale: (P_name of the data, shuffled in mask, shuffled in blocks)
+for scale in planarity_scales:
+    P_local[scale] = []
+    for rho_, eta_ in [(rhop, etap), shuffle_in_groups(np.zeros(len(xp), dtype=int)), shuffle_in_groups(block_id)]:
+        P_local[scale].append(local_planarity(xp, yp, zp, eta_, rho_, scale=scale, min_neighbors=min_neighbors)[P_index])
+    Pd, Ps, Pb = P_local[scale]
+    ok = np.isfinite(Pd)
+    print(f'local {P_name}, {scale:.0f} nm: {ok.sum()} points with >= {min_neighbors} neighbours, median {np.median(Pd[ok]):.3f}; '
+          f'shuffled in mask {np.median(Ps[ok]):.3f} (above its 95th percentile {np.mean(Pd[ok] > np.percentile(Ps[ok], 95)):.3f}), '
+          f'shuffled in blocks {np.median(Pb[ok]):.3f} (above its 95th percentile {np.mean(Pd[ok] > np.percentile(Pb[ok], 95)):.3f})')
+
+plt.rcParams.update({'font.size': 11})
+fig, ax = plt.subplots(len(planarity_scales), 2, figsize=(12, 7), squeeze=False)
+for row, scale in enumerate(planarity_scales):
+    Pd, Ps, Pb = P_local[scale]
+    ok = np.isfinite(Pd)
+    a = ax[row, 0]
+    a.set_facecolor('black')
+    P_centre, P_min = np.median(Pd[ok]), min(np.percentile(Pd[ok], P_low_percentile), np.median(Pd[ok]) - 0.01)
+    # turbo resampled so that its middle (green) falls on the median: linear colour bar from P_min to 1
+    P_axis = np.linspace(P_min, 1., 256)
+    P_cmap = mcolors.ListedColormap(plt.get_cmap('turbo')(np.interp(P_axis, [P_min, P_centre, 1.], [0., 0.5, 1.])))
+    sc = a.scatter(xp[ok]/1000, yp[ok]/1000, c=Pd[ok], cmap=P_cmap, vmin=P_min, vmax=1., s=s, rasterized=True)
+    a.set_aspect('equal')
+    cb = plt.colorbar(sc, ax=a, fraction=0.046, label=f'local {P_name}')
+    cb.set_ticks(np.round([P_min, P_centre, 1.], 2))
+    a.set(xlabel='x ($\\mu$m)', ylabel='y ($\\mu$m)', title=f'local planarity {P_name}, {scale:.0f} nm')
+    a = ax[row, 1]
+    bins_p = np.linspace(P_floor, 1, 51)
+    for values, label, ls in [(Pd, 'data', '-'), (Ps, 'shuffled in mask', ':'), (Pb, 'shuffled in blocks', '--')]:
+        a.hist(values[ok], bins=bins_p, density=True, histtype='step', ls=ls, lw=2, label=label)
+    a.set(xlabel=f'local {P_name}', ylabel='density', title=f'{ok.sum()} points with >= {min_neighbors} neighbours')
+    a.axvline(P_centre, color='gray', lw=0.8, label=f'median {P_centre:.2f} (green on the map)')
+    a.legend(fontsize=8, loc='best')
+fig.suptitle(f'{sel_p.sum()} localisations, global P {P_g:.3f}, P2 {P2_g:.3f}, normal $\\eta$ {normal_eta:.0f}°, $\\rho$ {normal_rho:.0f}°')
+plt.tight_layout()
 plt.show()
 #%% bead fit
 import torch
@@ -1518,6 +1586,7 @@ for label in ax1.get_yticklabels():
 ax1.set_thetagrids(np.arange(0, 360, 60), labels=[f"{d}°" for d in np.arange(0, 360, 60)])
 ax1.set_ylabel("Count", labelpad=25)
 ax1.legend(loc='upper center', bbox_to_anchor=(0.5, -0.12), fontsize=9)
+
 # %% orientation of filaments, compact: z along the PCA axis (equal scales) and polar histogram of eta
 # same computations as the cell above (to run after it or after the pca cell). The legend of the slopes is placed
 # outside the plots, above them, by the constrained layout: it keeps its room when the figure is resized
@@ -1912,84 +1981,6 @@ rho_slider.on_changed(update_rho_window)
 update_rho_window(rho_slider.val)
 plt.show()
 
-#%% gif of the rho window: all points, then the rho_theory dots of the bead fit, then the sliding rho window
-# needs the bead fit cell (params, th, line, rgb_colorsL)
-from matplotlib.animation import FuncAnimation, PillowWriter
-rho_window = 10 # width of the window in degrees, as in the plot rho cell above
-def in_rho_window(rho_values, centre):
-    # distance on the 180 degrees circle, so that a window around 0 also takes the points around 180
-    return np.abs((rho_values - centre + 90) % 180 - 90) <= rho_window/2
-gif_path = os.path.join(os.getcwd(), 'rho_window.gif')
-gif_fps = 10
-faded_alpha = 0.35  # opacity of the histogram bars outside the window. Not lower: too pale colors are merged with white in the 256-color palette of the gif
-n_fade, n_hold_all = 5, 15     # phase 1: all the points fade in, then stay
-n_ring, n_hold_ring = 20, 10   # phase 2: the rho_theory dots appear one after the other around the bead, then stay
-n_sweep, n_hold_end = 90, 10   # phase 3: the rho window slides from 0 to 180 degrees, then stays at the end
-
-plt.rcParams['figure.figsize'] = [12, 6]
-plt.rcParams.update({'font.size': 15})
-fig = plt.figure()
-ax0 = fig.add_subplot(1, 2, 1)
-ax1 = fig.add_subplot(1, 2, 2, projection='polar')
-fig.subplots_adjust(bottom=0.15)
-
-x_ring = (params[1]+(200+params[0])*np.cos(th))/1000
-y_ring = (params[2]+(200+params[0])*np.sin(th))/1000
-ax0.set_facecolor('black')
-# limits fixed for the whole gif, large enough for the points and the rho_theory dots
-ax0.set_xlim(min(np.min(x[mask])/1000, np.min(x_ring)) - 0.05, max(np.max(x[mask])/1000, np.max(x_ring)) + 0.05)
-ax0.set_ylim(min(np.min(y[mask])/1000, np.min(y_ring)) - 0.05, max(np.max(y[mask])/1000, np.max(y_ring)) + 0.05)
-ax0.set_aspect('equal')
-ax0.set_xlabel('x ($\\mu$m)')
-ax0.set_ylabel('y ($\\mu$m)')
-sc_all = ax0.scatter(x[mask]/1000, y[mask]/1000, c=rho[mask], cmap='hsv', vmin=0, vmax=180, s=10*s, alpha=0., rasterized=True)
-sc_window = ax0.scatter([], [], c=[], cmap='hsv', vmin=0, vmax=180, s=10*s, rasterized=True)
-sc_ring = ax0.scatter([], [], s=20, zorder=3)
-ring_rgba = np.column_stack((rgb_colorsL, np.ones(len(th))))
-
-# half circle polar histogram, as in the plot rho cell
-rho_rad = np.deg2rad(rho[mask])
-counts, edges = np.histogram(np.concatenate([rho_rad, rho_rad + np.pi]), bins=np.linspace(0, 2*np.pi, 73))
-centers = (edges[:-1] + edges[1:]) / 2
-bars = ax1.bar(centers, counts, width=edges[1]-edges[0], bottom=0, color=plt.cm.hsv((centers % np.pi) / np.pi))
-ax1.set_thetamin(0)
-ax1.set_thetamax(180)
-ax1.set_theta_zero_location('E')
-ax1.set_theta_direction(1)
-ax1.set_xticks(np.deg2rad([0, 30, 60, 90, 120, 150, 180]))
-ax1.set_xticklabels(['0°', '30°', '60°', '90°', '120°', '150°', '180°'])
-ax1.set_ylabel('Count', labelpad=30)
-
-n1_, n2_ = n_fade + n_hold_all, n_fade + n_hold_all + n_ring + n_hold_ring
-n_frames = n2_ + n_sweep + n_hold_end
-
-def update_gif(i):
-    if i < n1_:  # phase 1: all the points
-        sc_all.set_alpha(min(1., (i+1)/n_fade))
-        ax0.set_title(f'all localizations: {np.sum(mask)} points')
-    elif i < n2_:  # phase 2: rho_theory dots
-        k = min(len(th), int(len(th)*(i-n1_+1)/n_ring))
-        sc_ring.set_offsets(np.column_stack((x_ring[:k], y_ring[:k])))
-        sc_ring.set_color(ring_rgba[:k])
-        ax0.set_title('$\\rho_{\\mathrm{theory}}$ (bead fit)')
-    else:  # phase 3: sliding rho window, as in the plot rho cell
-        sc_all.set_alpha(0.)
-        centre = 180*min(1., (i-n2_)/(n_sweep-1))
-        mask_rho = mask & in_rho_window(rho, centre)
-        sc_window.set_offsets(np.column_stack((x[mask_rho]/1000, y[mask_rho]/1000)))
-        sc_window.set_array(rho[mask_rho])
-        # the rho_theory dots and the bars outside the window are faded
-        ring_rgba[:, 3] = np.where(in_rho_window(line, centre), 1., 0.2)
-        sc_ring.set_color(ring_rgba)
-        for bar, c in zip(bars, np.rad2deg(centers) % 180):
-            bar.set_alpha(0.9 if in_rho_window(c, centre) else faded_alpha)
-        ax0.set_title(f'$\\rho$ in [{centre-rho_window/2:.0f}°, {centre+rho_window/2:.0f}°]: {np.sum(mask_rho)} points')
-
-anim = FuncAnimation(fig, update_gif, frames=n_frames)
-anim.save(gif_path, writer=PillowWriter(fps=gif_fps), dpi=100)  # loops forever by default
-plt.close(fig)
-print('gif saved in', gif_path)
-
 #%% plot z, interactive window in z
 # the slider sets the centre of the window, mask_z keeps the points of mask inside it for the next cells
 %matplotlib qt
@@ -2243,72 +2234,5 @@ eta_yz_slider.on_changed(update_eta_yz_window)
 update_eta_yz_window(eta_yz_slider.val)
 plt.show()
 
-
-#%% gif of the eta window in yz: all points, then the sliding eta window
-# needs the cell above (eta_window, eta_cmap, in_eta_window)
-from matplotlib.animation import FuncAnimation, PillowWriter
-gif_path = os.path.join(os.getcwd(), 'eta_yz_window.gif')
-gif_fps = 10
-faded_alpha = 0.35  # opacity of the histogram bars outside the window. Not lower: too pale colors are merged with white in the 256-color palette of the gif
-n_fade, n_hold_all = 5, 15     # phase 1: all the points fade in, then stay
-n_sweep, n_hold_end = 90, 10   # phase 2: the eta window slides from 0 to 180 degrees, then stays at the end
-
-plt.rcParams['figure.figsize'] = [12, 6]
-plt.rcParams.update({'font.size': 15})
-fig = plt.figure()
-ax0 = fig.add_subplot(1, 2, 1)
-ax1 = fig.add_subplot(1, 2, 2, projection='polar')
-fig.subplots_adjust(bottom=0.15, wspace=0.4) # room for the colorbar of z
-z_min, z_max = np.min(z[mask]), np.max(z[mask])
-
-ax0.set_facecolor('black')
-# limits fixed for the whole gif, with a small margin
-ax0.set_xlim(np.min(y[mask])/1000 - 0.05, np.max(y[mask])/1000 + 0.05)
-ax0.set_ylim(z_min/1000 - 0.05, z_max/1000 + 0.05)
-ax0.set_aspect('equal')
-sc_all = ax0.scatter(y[mask]/1000, z[mask]/1000, c=z[mask]/1000, cmap='plasma', vmin=z_min/1000, vmax=z_max/1000, s=10*s, alpha=0., rasterized=True)
-sc_window = ax0.scatter([], [], c=[], cmap='plasma', vmin=z_min/1000, vmax=z_max/1000, s=10*s, rasterized=True)
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-cax = make_axes_locatable(ax0).append_axes('right', size='5%', pad=0.1)  # colorbar as high as the equal aspect plot
-cbar = plt.colorbar(sc_window, cax=cax)
-cbar.set_label("$z$ ($\\mu$m)")
-ax0.set_xlabel('y ($\\mu$m)')
-ax0.set_ylabel('z ($\\mu$m)')
-
-# half circle polar histogram of eta, as in the cell above
-eta_rad = np.deg2rad(eta[mask])
-counts, edges = np.histogram(eta_rad, bins=np.linspace(0, np.pi, 37))
-centers = (edges[:-1] + edges[1:]) / 2
-bars = ax1.bar(centers, counts, width=edges[1]-edges[0], bottom=0, color=eta_cmap(centers / np.pi), edgecolor='none')
-ax1.set_thetamin(0)
-ax1.set_thetamax(180)
-ax1.set_theta_zero_location('N') # 0 on top
-ax1.set_theta_direction(-1) # clockwise, 90 on the right
-ax1.set_xticks(np.deg2rad([0, 30, 60, 90, 120, 150, 180]))
-ax1.set_xticklabels(['0°', '30°', '60°', '90°', '120°', '150°', '180°'])
-ax1.set_ylabel('Count', labelpad=30)
-
-n1_ = n_fade + n_hold_all
-n_frames = n1_ + n_sweep + n_hold_end
-
-def update_gif(i):
-    if i < n1_:  # phase 1: all the points
-        sc_all.set_alpha(min(1., (i+1)/n_fade))
-        ax0.set_title(f'all localizations: {np.sum(mask)} points')
-    else:  # phase 2: sliding eta window, as in the cell above
-        sc_all.set_alpha(0.)
-        centre = 180*min(1., (i-n1_)/(n_sweep-1))
-        mask_eta_yz = mask & in_eta_window(eta, centre)
-        sc_window.set_offsets(np.column_stack((y[mask_eta_yz]/1000, z[mask_eta_yz]/1000)))
-        sc_window.set_array(z[mask_eta_yz] / 1000)
-        # the bars outside the window are faded
-        for bar, c in zip(bars, np.rad2deg(centers)):
-            bar.set_alpha(0.9 if in_eta_window(c, centre) else faded_alpha)
-        ax0.set_title(f'$\\eta$ in [{centre-eta_window/2:.0f}°, {centre+eta_window/2:.0f}°]: {np.sum(mask_eta_yz)} points')
-
-anim = FuncAnimation(fig, update_gif, frames=n_frames)
-anim.save(gif_path, writer=PillowWriter(fps=gif_fps), dpi=100)  # loops forever by default
-plt.close(fig)
-print('gif saved in', gif_path)
 
 # %%

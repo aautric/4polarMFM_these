@@ -284,7 +284,7 @@ print(f'Ey" = {Ey}')
 print(f'phi" = {phi}')
 
 #%%
-'''
+''' 
 A = 0.8
 B = 0.62
 C = 0.59

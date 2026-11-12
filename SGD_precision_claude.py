@@ -101,6 +101,9 @@ def parse_arguments(argv):
     p.add_argument('--n-eta', type=int, default=20, help='number of eta bins in [0, 180[ (even: the bins split at 90)')
     p.add_argument('--per-point', type=int, default=80, help='number of PSF per orientation')
     p.add_argument('--delta', type=float, default=90., help='true wobbling cone (deg)')
+    p.add_argument('--delta-range', type=float, nargs=2, default=None, metavar=('LO', 'HI'), help='true delta drawn '
+                   'per PSF, uniform in [LO, HI] (deg), instead of --delta: a start of the fit near one common true delta '
+                   'is not mistaken for precision (slope of found vs true delta in the log)')
     # None: value of the preset
     p.add_argument('--camera', default=None, choices=['emccd', 'poisson'], help='emccd: Poisson + EM excess + read noise + offset; poisson: Poisson noise only')
     p.add_argument('--N', type=float, default=None, help='photons of each PSF (whole molecule, 3 planes)')
@@ -149,6 +152,7 @@ def parse_arguments(argv):
         a.tag += ''.join(f'_shift{int(p)}{"xyb"[int(q)]}{dx:g},{dy:g}' for p, q, dx, dy in a.data_shift)
         a.tag += '_zshift' if a.data_zshift else ''
         a.tag += '_zernike' if a.data_zernike else ''
+        a.tag += f'_delta{a.delta_range[0]:g}-{a.delta_range[1]:g}' if a.delta_range else ''
     if (a.data_shift or a.data_zshift) and a.warp:
         raise SystemExit('--data-shift / --data-zshift are not implemented with --warp')
     a.warps = load_warps(a.warp) if a.warp else None
@@ -444,6 +448,8 @@ def simulate(ns, a, rng):
     truth = dict(rho=rho_list[point], eta=eta_list[point], delta=np.full(n_total, a.delta),
                  N=np.full(n_total, a.N), x=rng.uniform(-a.xy_range, a.xy_range, n_total),
                  y=rng.uniform(-a.xy_range, a.xy_range, n_total), z=rng.uniform(*a.z_range, n_total))
+    if a.delta_range: # own generator: the other draws (x, y, z, noise) are those of a run with one delta
+        truth['delta'] = np.random.default_rng(a.seed + 3).uniform(*a.delta_range, n_total)
     # second emitter: random orientation over the half-sphere, N, z, at neighbour_distance pixels in a random direction
     neighbour = rng.random(n_total) < a.two_emitter_fraction
     distance = 0.12*rng.uniform(*a.neighbour_distance, n_total); angle = rng.uniform(0, 2*np.pi, n_total)
@@ -654,6 +660,15 @@ def loss_statistics(loss, idx, err, sim, run_folder, a):
     failed = ~np.isfinite(err['eta'])
     log(f'{loss}: {int(failed.sum())} of {len(failed)} fits diverged (nan), left out; median over the orientations of '
         f'|bias| / precision: {median_line(rows)}')
+    true_delta = sim['true_delta'][idx]
+    if np.ptp(true_delta) > 1: # true delta drawn per PSF: shrinkage of the found delta toward a common value
+        found_delta = err['delta'] + true_delta
+        eta_true = sim['true_eta'][idx]
+        for name, m in (('all', np.isfinite(found_delta)), ('in plane, eta 60-120', np.isfinite(found_delta) & (np.abs(eta_true - 90) <= 30))):
+            if m.sum() < 10: continue
+            slope, offset = np.polyfit(true_delta[m], found_delta[m], 1)
+            log(f'  {loss} delta found vs true ({name}, {int(m.sum())} PSF): slope {slope:.3f} (1 = no shrinkage), '
+                f'offset {offset:.1f} deg, rmse {np.sqrt(np.mean(err["delta"][m]**2)):.1f} deg')
     if sim['neighbour'].any(): # isolated PSF and PSF with a second emitter separately
         for name, subset in (('isolated', ~sim['neighbour'][idx]), ('neighbour', sim['neighbour'][idx])):
             log(f'  {loss} {name:9s} ({int(subset.sum())} PSF, {int((subset & failed).sum())} nan): '

@@ -355,16 +355,24 @@ def compute_M_jax(xp, yp, zp, d, x, y, th1, phi, Ex0, Ex1, Ex2, Ey0, Ey1, Ey2, u
 
     # --- Zernike masks --- dim 15, Npix, Npix
     '''aberrations computations'''
-    if zernike_base is not None:
-        zernike_mask_x = jnp.exp(1j * jnp.einsum('pa,auv->puv', zernike_coefs_x, zernike_base))
-        zernike_mask_y = jnp.exp(1j * jnp.einsum('pa,auv->puv', zernike_coefs_y, zernike_base))
+    # zernike_coefs_x/y: (planes, modes), the same aberrations for all the PSF, or (N, planes, modes), one set per PSF
+    # (field-dependent aberrations, see fov_aberrations.py)
+    if zernike_base is not None and jnp.ndim(zernike_coefs_x) == 3:
+        zernike_mask_x = jnp.exp(1j * jnp.einsum('npa,auv->npuv', zernike_coefs_x, zernike_base))
+        zernike_mask_y = jnp.exp(1j * jnp.einsum('npa,auv->npuv', zernike_coefs_y, zernike_base))
+        total_phase_x = jnp.einsum('pnuv, npuv -> npuv', phase_ch[0], zernike_mask_x)
+        total_phase_y = jnp.einsum('pnuv, npuv -> npuv', phase_ch[1], zernike_mask_y)
     else:
-        zernike_mask_x = jnp.ones((Ex0.shape[-1], Ex0.shape[-1]))
-        zernike_mask_y = jnp.ones((Ex0.shape[-1], Ex0.shape[-1]))
-    
-    # --- total phase mask --- dim N, 3, uv for each polar
-    total_phase_x = jnp.einsum('pnuv, puv -> npuv', phase_ch[0], zernike_mask_x)
-    total_phase_y = jnp.einsum('pnuv, puv -> npuv', phase_ch[1], zernike_mask_y)
+        if zernike_base is not None:
+            zernike_mask_x = jnp.exp(1j * jnp.einsum('pa,auv->puv', zernike_coefs_x, zernike_base))
+            zernike_mask_y = jnp.exp(1j * jnp.einsum('pa,auv->puv', zernike_coefs_y, zernike_base))
+        else:
+            zernike_mask_x = jnp.ones((Ex0.shape[-1], Ex0.shape[-1]))
+            zernike_mask_y = jnp.ones((Ex0.shape[-1], Ex0.shape[-1]))
+
+        # --- total phase mask --- dim N, 3, uv for each polar
+        total_phase_x = jnp.einsum('pnuv, puv -> npuv', phase_ch[0], zernike_mask_x)
+        total_phase_y = jnp.einsum('pnuv, puv -> npuv', phase_ch[1], zernike_mask_y)
     if phase_maskx is not None:
         total_phase_x = jnp.einsum('npuv, puv -> npuv', total_phase_x, phase_maskx)
         total_phase_y = jnp.einsum('npuv, puv -> npuv', total_phase_y, phase_masky)

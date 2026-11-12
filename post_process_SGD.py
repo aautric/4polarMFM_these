@@ -38,7 +38,11 @@ for filename in sorted(folder.glob('*.npz'), key=lambda p: int(p.stem)):
     n_loc = len(data['frame'])
     batch.append(np.full(n_loc, int(filename.stem)))
     if 'zernx_found' in data.files: # absent from the runs without aberration fit
-        zern_found.append(np.tile(np.concatenate((data['zernx_found'].flatten(), data['zerny_found'].flatten())), (n_loc, 1)))
+        zx, zy = data['zernx_found'], data['zerny_found']
+        if zx.ndim == 3: # one set per PSF (fov_aberrations): (n_loc, 3, 15)
+            zern_found.append(np.concatenate((zx.reshape(len(zx), -1), zy.reshape(len(zy), -1)), 1))
+        else: # the same for the whole batch: (3, 15)
+            zern_found.append(np.tile(np.concatenate((zx.flatten(), zy.flatten())), (n_loc, 1)))
     else:
         zern_found.append(np.full((n_loc, 2*3*15), np.nan))
     frame = np.concatenate((frame, data['frame']))
