@@ -45,7 +45,7 @@ N=80 # discretization of the BFP
 l_pixel=16 #pixel size in micrometer
 NA=1.4 # numerical aperture
 mag=100 # first magnification
-lambd=617 # wavelength in nm
+lambd=620 # wavelength in nm (2026-11-12: 620 as SGD_jax.py and the simulations, was 617)
 f_tube=200 # tube lens focal in mm
 MAG=200/150 # second magnification
 
@@ -269,7 +269,8 @@ for name, c in conditions.items():
     # one file per condition (key = hash of its parameters)
     crb_params = dict(conditions={name: c}, delta_crb=delta_crb, eta_crb=eta_crb.tolist(), NPSF=NPSF, window=11,
                       geometry=dict(xy=0.2, z=(0.2, 1.2), planes=planes_sim.tolist(), SAF=True),
-                      fisher='fisher_4pMFM.py (d gamma/d delta fixed, normalisation term, gain/dark_var)')
+                      fisher='fisher_4pMFM.py (d gamma/d delta fixed, normalisation term, gain/dark_var)',
+                      lambd=float(lambd), polar_projections=np.asarray(polar_projections).tolist(), fisher_window=13)  # 2026-11-12: else the CRB of 617 nm / 14 x 14 was reloaded
     crb_key = hashlib.md5(json.dumps(crb_params, sort_keys=True).encode()).hexdigest()[:8]
     crb_file = os.path.join(out_folder, f'crb_{crb_key}.npz')
     if os.path.exists(crb_file) and not recompute_crb:
