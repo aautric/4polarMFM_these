@@ -188,6 +188,11 @@ def parse_arguments(argv):
                    help='lateral shift (nm) of a channel of the data: plane 0-2, pol 0 (x), 1 (y) or 2 (both)')
     p.add_argument('--data-zernike', default=None, help='npz (zx, zy (3, 15) rad): aberrations of the simulated data only')
     p.add_argument('--data-zshift', default=None, help='npz table of a lateral shift of each channel vs the z of the emitter')
+    p.add_argument('--data-fov-aberrations', default=None, help='field model of the aberrations (fov_aberrations.py, e.g. '
+                   'fov_model_2026-11-04_psif.npz): each simulated PSF gets a random position in the area of the beads and '
+                   'the Zernike coefficients of that position, in the DATA only (the fit has no aberration)')
+    p.add_argument('--data-zernike-scale', type=float, default=1., help='factor on the aberrations of the data '
+                   '(--data-zernike or --data-fov-aberrations), e.g. 3 to see the effect of 3 times larger aberrations')
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--out', default='/mnt/d/Amaury/simu_precision_claude', help='folder of the results')
     p.add_argument('--tag', default='', help='added to the name of the result folder (default: the preset)')
@@ -209,11 +214,15 @@ def parse_arguments(argv):
         a.tag += ''.join(f'_shift{int(p)}{"xyb"[int(q)]}{dx:g},{dy:g}' for p, q, dx, dy in a.data_shift)
         a.tag += '_zshift' if a.data_zshift else ''
         a.tag += '_zernike' if a.data_zernike else ''
+        a.tag += '_fovab' if a.data_fov_aberrations else ''
+        a.tag += f'_x{a.data_zernike_scale:g}' if a.data_zernike_scale != 1 else ''
         a.tag += f'_delta{a.delta_range[0]:g}-{a.delta_range[1]:g}' if a.delta_range else ''
     if (a.data_shift or a.data_zshift) and a.warp:
         raise SystemExit('--data-shift / --data-zshift are not implemented with --warp')
-    if (a.data_zernike or a.data_n2 is not None) and a.warp: # review item 13: warped_data uses model_psf, not data_psf
-        raise SystemExit('--data-zernike / --data-n2 are not implemented with --warp')
+    if (a.data_zernike or a.data_n2 is not None or a.data_fov_aberrations) and a.warp: # review item 13: warped_data uses model_psf, not data_psf
+        raise SystemExit('--data-zernike / --data-n2 / --data-fov-aberrations are not implemented with --warp')
+    if a.data_zernike and a.data_fov_aberrations:
+        raise SystemExit('give --data-zernike or --data-fov-aberrations, not both')
     if a.middle_plane is not None:
         a.d = -a.middle_plane
     a.warps = load_warps(a.warp) if a.warp else None
@@ -598,7 +607,10 @@ def data_psf(ns, sl, p, a, phys, half=6):
     if a.data_zernike: # aberrations of the data only (re-read for every batch: small waste, not a bug)
         import jax.numpy as jnp
         zf = np.load(a.data_zernike)
-        zern = (jnp.array(zf['zx'], dtype=jnp.complex64), jnp.array(zf['zy'], dtype=jnp.complex64))
+        zern = (jnp.array(a.data_zernike_scale*zf['zx'], dtype=jnp.complex64), jnp.array(a.data_zernike_scale*zf['zy'], dtype=jnp.complex64))
+    if 'data_zx' in p: # --data-fov-aberrations: one set per PSF (NPSF, 3, 15), from its field position (simulate)
+        import jax.numpy as jnp
+        zern = (jnp.array(p['data_zx'][sl], dtype=jnp.complex64), jnp.array(p['data_zy'][sl], dtype=jnp.complex64))
     h = model_psf(ns, sl, p, half, phys.fields, zern)
     # --data-shift: the image of one channel (pol 2 = both) recomputed with the emitter moved by dx, dy nm replaces
     # that channel (registration error of the channel)
@@ -651,6 +663,17 @@ def simulate(ns, a, rng):
     # the bias and precision of a point are averages over delta (the precision degrades with delta)
     if a.delta_range: # own generator: the other draws (x, y, z, noise) are those of a run with one delta
         truth['delta'] = np.random.default_rng(a.seed + 3).uniform(*a.delta_range, n_total)
+    aberr = {}
+    if a.data_fov_aberrations: # field position of each PSF, uniform in the area of the beads of the model (own
+        # generator: the other draws are those of a run without aberrations), and its aberrations x data_zernike_scale
+        import fov_aberrations as fov_module
+        model = fov_module.load(a.data_fov_aberrations)
+        g4 = np.random.default_rng(a.seed + 4)
+        col, row = g4.uniform(*model['col_range'], n_total), g4.uniform(*model['row_range'], n_total)
+        zx, zy = fov_module.zernike_at(model, row, col) # (n, 45) rad, index 15*plane + Noll - 1
+        aberr = dict(field_col=col, field_row=row, data_zx=a.data_zernike_scale*zx.reshape(-1, 3, 15),
+                     data_zy=a.data_zernike_scale*zy.reshape(-1, 3, 15))
+        truth.update({k: aberr[k] for k in ('data_zx', 'data_zy')})
     # second emitter (preset actin_dense only, two_emitter_fraction > 0): rho uniform, eta = arccos(uniform(-1, 1))
     # (uniform over the sphere), N x uniform(neighbour_N), own z, at neighbour_distance pixels (x 0.12 um) of the
     # first in a random direction. It is not fitted: it is a perturbation of the patch
@@ -677,7 +700,8 @@ def simulate(ns, a, rng):
             h[:, 1, 1] *= a.data_y_gain_J2 # y of plane 1 (1: no change)
             data.append(crazy_pixels(rng, camera(rng, h, a), a)) # background + noise, then crazy pixels (off: no change)
     return dict(data=np.concatenate(data).astype(np.float32), point=point, rho_list=rho_list, eta_list=eta_list,
-                neighbour=neighbour, **{'true_'+k: v for k, v in truth.items()}, **{'second_'+k: v for k, v in second.items()})
+                neighbour=neighbour, **{'true_'+k: v for k, v in truth.items() if k not in ('data_zx', 'data_zy')},
+                **{'second_'+k: v for k, v in second.items()}, **aberr)
 
 
 # ---------------------------------------------------------------- errors and statistics

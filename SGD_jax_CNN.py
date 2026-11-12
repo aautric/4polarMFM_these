@@ -33,7 +33,7 @@ import ast
 import tifffile
 import re
 import time  # timers of the pools
-from cnn_first_guess import cnn_first_guess, training_settings  # CNN first guess, needs first_guess_net_jax.pt next to this file
+from cnn_first_guess import cnn_first_guess, training_settings, CHECKPOINT as CNN_CHECKPOINT  # CNN first guess, needs first_guess_net_jax.pt next to this file
 import stream_fit  # per-PSF fit from the CNN start
 # %% PARAMETERS TO BE DEFINED
 
@@ -382,7 +382,7 @@ reloaded = ['QE', 'EM', 'sensitivity',
             'LR2', 'num_epochs_max2', 'delta_speed', 'nphotons_speed2', 'xy_speed2', 'z_speed2',
             'zern_speed2_x', 'zern_speed2_y', 'zern_start_epoch2', 'fit_zernike', 'loss2', 'huber_c', 'huber_positive_only', 'y_gain_J1', 'y_gain_J2', 'unitary_J', 'registration_z', 'fov_aberrations',
             'Nframe', 'last_frame_processed', 'NPSF', 'n_photons_filtering', 'batch_nb', 'dimensions',
-            'optim', 'batches_per_pool', 'lm_slots', 'lm_lambda0', 'lm_delta_step', 'lm_delta_hold', 'lm_cap',
+            'cnn_checkpoint', 'optim', 'batches_per_pool', 'lm_slots', 'lm_lambda0', 'lm_delta_step', 'lm_delta_hold', 'lm_cap',
             'lm_max_rejects', 'lm_lambda_down', 'lm_patience', 'lm_tol_deg', 'lm_tol_nm', 'cnn_zernike_rounds', 'cnn_zernike_steps']
 
 def reload_config(config_file):
@@ -534,6 +534,9 @@ huber_c = 2.
 huber_positive_only = True
 
 # fit of the CNN version
+# weights of the CNN first guess: None = first_guess_net_jax.pt next to this file (trained with the SLB calibration);
+# a path, e.g. a network trained on ideal J for the ideal simulations (2026-11-12, train_cnn_jax.py --calibration ideal)
+cnn_checkpoint = None
 optim = 'lm'  # 'lm': Levenberg-Marquardt of each PSF (loss2); 'adam': one Adam fit of each PSF with the loss of SGD2 (loss2), its speeds and LR2, aberrations fixed
 batches_per_pool = 20  # batches loaded together and given to the CNN at once, the GPU slots are refilled inside a pool
 lm_slots = 25  # optim 'lm': PSF fitted together on the GPU (<= NPSF): the Jacobian of 100 PSF needs ~15 GB
@@ -743,6 +746,7 @@ config = {
     'n_psf_to_skip': n_psf_to_skip,
     # CNN version
     'use_cnn': True,  # written by SGD_jax_CNN.py (SGD_batch.py resumes such a run with it)
+    'cnn_checkpoint': cnn_checkpoint,
     'optim': optim,
     'batches_per_pool': batches_per_pool,
     'lm_slots': lm_slots,
@@ -1080,7 +1084,9 @@ def cnn_z_equivalence(middle_plane_run, middle_plane_cnn, z_run=np.arange(0., 3.
     c0, c1, c2 = cost[i, j-1], cost[i, j], cost[i, j+1]
     z_eq = z_cnn[j] + (z_cnn[1] - z_cnn[0])*0.5*(c0 - c2)/np.maximum(c0 - 2*c1 + c2, 1e-30)  # parabola through the 3 best
     return z_run, np.maximum.accumulate(z_eq)
-cnn_training = training_settings()  # settings of the training data of the CNN (middle_plane, z_um, ...)
+cnn_path = cnn_checkpoint if cnn_checkpoint else CNN_CHECKPOINT  # weights used (cnn_checkpoint, else the default of cnn_first_guess.py)
+print('CNN first guess:', cnn_path)
+cnn_training = training_settings(cnn_path)  # settings of the training data of the CNN (middle_plane, z_um, ...)
 cnn_z_table = cnn_z_equivalence(float(middle_plane), cnn_training['middle_plane'])
 print(f"CNN trained at middle_plane {cnn_training['middle_plane']}, run at {float(middle_plane):g}: z of the CNN - z = "
       + ', '.join(f'{1000*(np.interp(zz, *cnn_z_table) - zz):+.0f} nm at {zz:g} um' for zz in (0.25, 0.75, 1.25, 1.75))
@@ -1117,7 +1123,7 @@ for group in range(first_batch, batch_nb, batches_per_pool):
     # starting point of the fit: the CNN instead of the fixed starts and SGD1 of SGD_jax.py (no SGD1: the background
     # of the 6 channels is fitted with the other parameters, from the mean background level given by the CNN)
     t0 = time.perf_counter()
-    x0, y0, z0, N0, rho0, eta0, delta0, bg0 = cnn_first_guess(cat('noisy_psf'), z_table=cnn_z_table)  # um, um, um (middle plane of the run), photons of the whole molecule, deg, deg, deg, photons/pixel
+    x0, y0, z0, N0, rho0, eta0, delta0, bg0 = cnn_first_guess(cat('noisy_psf'), path=cnn_path, z_table=cnn_z_table)  # um, um, um (middle plane of the run), photons of the whole molecule, deg, deg, deg, photons/pixel
     x0.block_until_ready()
     t_cnn = time.perf_counter() - t0
     # start of the 6 backgrounds of each PSF: the CNN level in all the channels (a checkpoint without the background
