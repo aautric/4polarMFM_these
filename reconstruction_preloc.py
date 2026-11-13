@@ -248,6 +248,8 @@ if __name__ == '__main__':
     preloc_old(raw, deltaz, rec / 'preloc_old' / name)
     frames = frame_list(rec); bg = Background(rec, frames)
     thr = Path(thr) if thr else preloc_sum_suggest(rec, frames, bg)
-    preloc_sum_run(rec, frames, bg, thr, rec / 'preloc_sum' / name)
+    # a NEW background cache for the detection (as the separate preloc_sum.py suggest / run processes): the cache filled
+    # at the anchors would evict the block just computed (KeyError, SLB 2026-11-13)
+    preloc_sum_run(rec, frames, Background(rec, frames), thr, rec / 'preloc_sum' / name)
     combine(rec / 'preloc_old' / name, rec / 'preloc_sum' / name, rec / name)
     print('pre-localisation done:', rec / name)
