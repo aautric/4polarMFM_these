@@ -11,7 +11,7 @@
 # eta_boundary.txt, ellipse_check.txt.
 # usage: python slb_analysis_v2.py
 import glob, os, re, numpy as np, pandas as pd, matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
-D = '/mnt/d/AMAURY/DATA/0_papier/SLB/'
+D = '/mnt/d/AMAURY/DATA/0_papier_tests/SLB/'
 OUT = os.environ.get('OUT_DIR', os.getcwd()).rstrip('/') + '/'  # outputs: $OUT_DIR, else the current folder
 os.makedirs(OUT, exist_ok=True)
 BEADS = {'central': (8800, -15400), 'top': (10100, -4300)}

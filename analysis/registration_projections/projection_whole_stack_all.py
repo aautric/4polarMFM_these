@@ -14,10 +14,10 @@ OUT = os.environ.get('OUT_DIR', os.getcwd()).rstrip('/') + '/'  # outputs: $OUT_
 os.makedirs(OUT, exist_ok=True)
 PX, HALF = 120., 7
 CALIBS = {  # name: (registration_z.npz, frames dropped at the start)
-    '2026-02-19 SLB': ('/mnt/d/AMAURY/DATA/0_papier/SLB/calibr/registration_z.npz', 0),
+    '2026-02-19 SLB': ('/mnt/d/AMAURY/DATA/0_papier_tests/SLB/calibr/registration_z.npz', 0),
     '2026-02-19 cricket': ('/home/amaury/data_local/1_nuclei/cricket/sm1/RAW_DATA/calibr/registration_z.npz', 0),
     '2026-05-29 mouse': ('/home/amaury/data_local/1_nuclei/mouse/zone1_SM1/RAW_DATA/calibr/registration_z.npz', 0),
-    '2026-09-18 actin': ('/mnt/d/AMAURY/DATA/0_papier/actin2/calibr/registration_z.npz', 0),
+    '2026-09-18 actin': ('/mnt/d/AMAURY/DATA/0_papier_tests/actin2/calibr/registration_z.npz', 0),
     '2026-11-04 RPE1': ('/mnt/d/AMAURY/DATA/2026_11_04_calibration/registration_z.npz', 1),
 }
 if len(sys.argv) > 1: CALIBS = {k: v for k, v in CALIBS.items() if any(a in k for a in sys.argv[1:])}

@@ -23,7 +23,7 @@ view. Runs on CPU, reads only, writes its figures and a summary in <data folder>
 
 usage (python of the environment):
     python density_experimental.py <data folder> [--r-patch 0.78] [--r-neighbour 1.5] [--bin 2] [--n-frames 200]
-    e.g. python density_experimental.py /mnt/d/Amaury/DATA/0_papier/actin2
+    e.g. python density_experimental.py /mnt/d/Amaury/DATA/0_papier_tests/actin2
 """
 import argparse
 import glob

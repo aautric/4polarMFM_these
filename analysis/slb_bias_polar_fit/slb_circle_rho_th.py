@@ -13,7 +13,7 @@
 import os, sys, numpy as np, pandas as pd, matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
 from matplotlib.colors import hsv_to_rgb
 run = sys.argv[1] if len(sys.argv) > 1 else '2026-11-03_11h46'
-D = '/mnt/d/AMAURY/DATA/0_papier/SLB/'
+D = '/mnt/d/AMAURY/DATA/0_papier_tests/SLB/'
 OUT = os.environ.get('OUT_DIR', os.getcwd()).rstrip('/') + '/'  # outputs: $OUT_DIR, else the current folder
 os.makedirs(OUT, exist_ok=True)
 beads = {'central': (8800, -15400), 'top': (10100, -4300)}

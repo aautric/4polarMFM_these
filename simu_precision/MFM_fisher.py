@@ -31,7 +31,7 @@ NPSF = 400
 device='cuda'
 
 #%%
-# photons and noise of actin1 (D:\AMAURY\DATA\0_papier\actin1, run NPZ_2026-10-24_15h28, sensitivity 4.4, fits with
+# photons and noise of actin1 (D:\AMAURY\DATA\0_papier_tests\actin1, run NPZ_2026-10-24_15h28, sensitivity 4.4, fits with
 # deviance < 1.3): median N of the whole molecule (1216 per plane in the fit, PSF_jax normalised each plane until
 # 2026-10-28), background per pixel, noise model of SGD_jax.py var = gain x mu + V (V = gain x shift)
 # photon number (2026-11-12, user): N per MOLECULE (whole molecule, 3 planes, as PSF() of this script and PSF_jax since

@@ -10,7 +10,7 @@ Checked 2026-11-12: run from git, every output text / npz identical to the one o
 |---|---|---|---|
 | psf_6channels | `psf_6channels.py rho eta delta [z_um] [middle_plane]` | noiseless 6-channel PSF of the model (ideal calibration) next to the dipole and its wobbling cone | none (model only, CPU) |
 | registration_projections | `projection_whole_stack_all.py [calibration name ...]` | whole-stack projection registration of the 6 channels for every calibration with registration_z.npz | bead stacks + registration_z.npz of each calibration |
-| slb_bias_polar_fit | `slb_analysis_v2.py` | SLB analysis with the corrected bead circle fit (outliers removed): rho bias harmonics, eta boundary, ellipse check, per-run tables (valid version, 2026-11-10) | SLB fits, AMAURY\DATA\0_papier\SLB (read only) |
+| slb_bias_polar_fit | `slb_analysis_v2.py` | SLB analysis with the corrected bead circle fit (outliers removed): rho bias harmonics, eta boundary, ellipse check, per-run tables (valid version, 2026-11-10) | SLB fits, AMAURY\DATA\0_papier_tests\SLB (read only) |
 | slb_bias_polar_fit | `slb_circle_rho_th.py [run]` | steps of the bead circle fit and rho vs theta on the 2 SLB beads of one run (default 2026-11-03_11h46) | same |
 | slb_bias_polar_fit | `plot_polar_fit_A.py` | fit of method A of the polarisation calibration of 2026-11-04 (rotating polariser, 37 angles) | simu_precision_claude\polar_calib_2026-11-04\data_AB.npz (calibration_polar_claude.py) |
 
