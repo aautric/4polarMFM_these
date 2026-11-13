@@ -39,6 +39,7 @@ from scipy.spatial import cKDTree
 import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import reconstruction_functions as rj
+plt.switch_backend('Agg')  # reconstruction_functions sets TkAgg at import; the Tk windows are disabled below: figures to files only
 
 # settings of the cricket run (2026-11-10)
 SAMPLE, LO, HI, OLD_MAX_SIZE = 500, 1, 10, 40              # old pre-loc (PRELOC_MAX_SIZE=40 for the cricket data)
