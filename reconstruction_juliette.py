@@ -383,13 +383,14 @@ last_calibration_file = None # set by load_calibration, written in calibration_u
 
 def registration_for_reconstruction(value, reconstruction_path):
     '''
-    registration_z file for SGD_jax.py / SGD_jax_CNN.py. value: None (no correction), a path (used as given), or 'auto':
+    registration_z file for SGD_jax.py / SGD_jax_CNN.py. value: False / None (no correction, default of SGD_jax*.py
+    since 2026-11-13), a path (used as given), or 'auto':
     calibr/registration_z.npz of the data set (folder of the reconstruction), only if it was measured with the
     calibration that reconstructed the data: its calibration_sha256 must be the one of calibration_used.txt of the
     reconstruction, or, for reconstructions made before this record (2026-11-03), of calibr/calibration.npz (assumed to
     be the calibration of the reconstruction). Otherwise a warning and no correction. Returns the path or None
     '''
-    if value is None or str(value) in ('None', ''):
+    if value is None or value is False or str(value) in ('None', '', 'False'):
         return None
     data = Path(reconstruction_path).parent
     used = Path(reconstruction_path) / 'calibration_used.txt'

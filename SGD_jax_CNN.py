@@ -586,11 +586,12 @@ SAF = True
 # vs the stage z). The image of each plane of the model is shifted laterally by the offset measured at the z of the
 # emitter (see plane_shift_of_z in the gradient descent cell). The 2D warps of the reconstruction cannot correct it: it
 # depends on z. With the actin2 calibration the outer planes move by 35-70 nm per um of z, which the fit reads as a
-# tilt of the dipole (eta biased by up to ~3 deg). None: no correction, the same position in the 3 planes.
-# 'auto' (default since 2026-11-03): calibr/registration_z.npz of the data set if it was measured with the calibration
-# that reconstructed the data (fingerprint, see registration_for_reconstruction in reconstruction_juliette.py), else no
-# correction with a warning. A path: that file (warning if its calibration is not the one of the data)
-registration_z = 'auto'
+# tilt of the dipole (eta biased by up to ~3 deg). False / None: no correction, the same position in the 3 planes
+# (DEFAULT since 2026-11-13, user: registration vs z not used any more; was 'auto' from 2026-11-03).
+# 'auto': calibr/registration_z.npz of the data set if it was measured with the calibration that reconstructed the data
+# (fingerprint, see registration_for_reconstruction in reconstruction_juliette.py), else no correction with a warning.
+# A path: that file (warning if its calibration is not the one of the data)
+registration_z = False
 
 # field-dependent aberrations: None, or the field model (.npz) built by fov_aberrations.py from the bead fits of
 # SGD_aberrations_claude.py (reconstructed with the calibration of the data). The Zernike coefficients of each PSF are
@@ -671,8 +672,11 @@ print('Resuming in '+str(save_folder)+' at batch '+str(first_batch)+', frame '+s
 # replaces every top-level "registration_z = ..." by its value
 from reconstruction_juliette import registration_for_reconstruction
 registration_z_file = registration_for_reconstruction(registration_z, path)
-import fov_aberrations as fov_module
-fov_model = fov_module.for_reconstruction(fov_aberrations, path)
+if fov_aberrations: # field-dependent aberrations only: fov_aberrations.py is imported only then (user 2026-11-13)
+    import fov_aberrations as fov_module
+    fov_model = fov_module.for_reconstruction(fov_aberrations, path)
+else:
+    fov_model = None
 
 config = {
     'date': f'{datetime.now():%Y-%m-%d %H:%M:%S}',
