@@ -615,7 +615,9 @@ print('Resuming in '+str(save_folder)+' at batch '+str(first_batch)+', frame '+s
 # registration_z: 'auto' -> the file of the data set (or None), checked against the calibration of the reconstruction;
 # the config saves the file actually used (a resumed run reloads it); another name than registration_z: SGD_batch.py
 # replaces every top-level "registration_z = ..." by its value
+import matplotlib; _backend = matplotlib.get_backend()  # reconstruction_functions sets TkAgg at import: restored
 from reconstruction_functions import registration_for_reconstruction
+plt.switch_backend(_backend)  # (headless runs: Tk figures freed from a worker thread abort the run, Tcl_AsyncDelete)
 registration_z_file = registration_for_reconstruction(registration_z, path)
 if fov_aberrations: # field-dependent aberrations only: fov_aberrations.py is imported only then (user 2026-11-13)
     import fov_aberrations as fov_module
