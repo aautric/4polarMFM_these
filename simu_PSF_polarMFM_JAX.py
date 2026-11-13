@@ -490,7 +490,7 @@ def PSF_jax(rho, eta, delta, M, N_photons=1000):
 def noise_jax(key, PSF, QE=1.0, EM=1.0, b=0.0, sigma_b=0.0, sigma_r=0.0, bias=0.0):
     """
     Adds Poisson noise and Gaussian read noise to a PSF using JAX (no EM excess noise, see emccd_jax).
-    No camera baseline, as the data after the reconstruction (reconstruction_juliette.py removes it).
+    No camera baseline, as the data after the reconstruction (reconstruction_functions.py removes it).
 
     key      : jax.random.PRNGKey
     PSF      : array, shape (N_psf, n_plane, n_pol, Nx, Ny), photons

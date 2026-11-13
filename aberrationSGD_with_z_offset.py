@@ -48,7 +48,7 @@ import sys, os; sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(
 import SGD_precision as S
 import simu_PSF_polarMFM_JAX as SP
 from density_experimental import run_parameters
-from reconstruction_juliette import subcanals, measure_baseline, extract_raw_ome, dark_variance, interpolation_factor
+from reconstruction_functions import subcanals, measure_baseline, extract_raw_ome, dark_variance, interpolation_factor
 
 # %% PARAMETERS (defaults; the command line overrides them)
 calibration_file = '/mnt/d/AMAURY/DATA/2026_11_04_calibration/calibration.npz'

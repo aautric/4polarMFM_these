@@ -10,7 +10,7 @@ import sys
 import os
 sys.path.append(os.path.abspath('/mnt/c/Users/Amaury/Documents/Github/4polarMFM_these'))
 os.chdir('/mnt/d/Amaury/DATA')
-from reconstruction_juliette import *
+from reconstruction_functions import *
 
 cwd = '/mnt/d/Amaury/DATA'
 #%% calibration file

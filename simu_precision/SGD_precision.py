@@ -30,7 +30,7 @@ Simulation (in photons):
     second emitter (optional): a fraction of the PSF get a neighbour (random orientation, N and z) a few pixels away;
     the truth is the central emitter
     reconstruction warp (optional, --warp calibration.npz): each channel is interpolated as by the cubic warp of
-    reconstruction_juliette.py (noise added before, as on the camera); plane 1 x, the reference, is not interpolated
+    reconstruction_functions.py (noise added before, as on the camera); plane 1 x, the reference, is not interpolated
     model mismatch of the data (optional, the fit keeps the model of SGD_jax.py):
         --data-n2: refractive index of the sample of the data (critical angle, Fresnel coefficients, defocus phase)
         --data-saf-dz: the evanescent (SAF) part of the field of the data decays as for an emitter dz further from the
@@ -174,7 +174,7 @@ def parse_arguments(argv):
     p.add_argument('--two-emitter-fraction', type=float, default=None, help='fraction of the PSF with a second emitter (0: off)')
     p.add_argument('--neighbour-distance', type=float, nargs=2, default=[3., 5.], help='distance of the second emitter (pixels of 120 nm)')
     p.add_argument('--neighbour-N', type=float, nargs=2, default=[0.5, 1.5], help='photons of the second emitter, relative to N (uniform)')
-    p.add_argument('--warp', default=None, help='calibration.npz of reconstruction_juliette.py: the simulated raw '
+    p.add_argument('--warp', default=None, help='calibration.npz of reconstruction_functions.py: the simulated raw '
                    'channels go through its cubic warps (blur and noise smoothing of the reconstruction), see warp_maps')
     p.add_argument('--data-y-gain-J2', type=float, default=1., help='y channel of plane 1 of the simulated data x this '
                    'factor (real x/y intensity error, the fit keeps its own y_gain_J2)')
@@ -439,12 +439,12 @@ def model_psf(ns, sl, p, half=6, fields=None, zernike=None):
 
 # ---------------------------------------------------------------- warp of the reconstruction
 # Only with --warp (reviewed 2026-11-12, see warped_data; not used in the runs of 2026-11-12). In real data each
-# of the 6 channels is cut from the camera image and resampled by the reconstruction (reconstruction_juliette.py:
+# of the 6 channels is cut from the camera image and resampled by the reconstruction (reconstruction_functions.py:
 # perspective transform M_i, cubic interpolation) to register it on the reference: slight blur and smoothing of the
 # noise (correlated neighbouring pixels) that the fit does not model. This block reproduces it on the simulated raw
 # patches. The reference channel (plane 1, x) has the identity transform: no interpolation.
 
-WARP_CANAL = [[2, 5], [1, 4], [0, 3]] # channel of subcanals (reconstruction_juliette.py) of each (plane, polarisation)
+WARP_CANAL = [[2, 5], [1, 4], [0, 3]] # channel of subcanals (reconstruction_functions.py) of each (plane, polarisation)
 MARGIN = 2 # pixels around the patch for the cubic kernel
 
 

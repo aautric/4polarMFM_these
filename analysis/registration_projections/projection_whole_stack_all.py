@@ -1,7 +1,7 @@
 # 2026-11-10 (Claude): whole-stack projection registration (part 1 of
 # D:\AMAURY\DATA\2026_11_04_calibration\registration_visual\projections\projection_centres.py) for every calibration with
 # a registration_z.npz: centre of each channel from the MAX (MIP) and SUM projections of the bead z-stacks (all frames),
-# gaussian fit (fit_bead of reconstruction_juliette.py) and centroid (15 x 15 px, border-median background), vs channel 1.
+# gaussian fit (fit_bead of reconstruction_functions.py) and centroid (15 x 15 px, border-median background), vs channel 1.
 # Same reconstruction (homographies of the calibration of the registration_z file) and bead selection as
 # measure_registration_z. Frame 0 dropped only for 2026-11-04 (beads in focus before the stage moved, as its registration).
 # Outputs here: whole_stack_<calib>.png, projection_whole_stack_all.txt, summary_all_calibrations.png, .npz.
@@ -9,7 +9,7 @@ import os, sys, numpy as np, cv2, matplotlib; matplotlib.use('Agg'); import matp
 from scipy import ndimage
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # root of the 4polarMFM_these repo
-from reconstruction_juliette import subcanals, extract_raw_ome, measure_baseline, fit_bead
+from reconstruction_functions import subcanals, extract_raw_ome, measure_baseline, fit_bead
 OUT = os.environ.get('OUT_DIR', os.getcwd()).rstrip('/') + '/'  # outputs: $OUT_DIR, else the current folder
 os.makedirs(OUT, exist_ok=True)
 PX, HALF = 120., 7

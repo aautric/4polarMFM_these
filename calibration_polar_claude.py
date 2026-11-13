@@ -7,7 +7,7 @@ polar_analysis_6channels.py, see suivi 2026_11_02\\polarization_calibration):
 
 A (Calibration_polar2.ipynb data): linear polarizer between the lamp and the objective rotated by 5 deg steps
   (positive from x to y, first image along y), full MFM image, 6 channels (plane 0, 1, 2 x Wollaston top = x,
-  bottom = y, as in reconstruction_juliette.py). Channels cut as subcanals() and divided by the lamp image of the
+  bottom = y, as in reconstruction_functions.py). Channels cut as subcanals() and divided by the lamp image of the
   session, as the reconstruction does: the model of the SGD sees the same normalised channels.
 B (polar_analysis_6channels.py data): polarizer at X / Y / 45, quarter wave plate before the Wollaston rotated to
   9 angles, both Wollaston outputs (discs = images of a field diaphragm).
@@ -63,13 +63,13 @@ def read(path):
     return tifffile.imread(path).astype(np.float64).reshape(-1, 512, 512)
 
 def baseline(frames):
-    # camera baseline of a stack (same as measure_baseline of reconstruction_juliette.py): median of the darkest rows
+    # camera baseline of a stack (same as measure_baseline of reconstruction_functions.py): median of the darkest rows
     rows = np.median(np.median(frames, axis=0), axis=1)
     dark = rows < rows.min() + 0.2*(np.median(rows) - rows.min())
     return float(np.median(frames[:, dark]))
 
 def channel_slices(cal, margin=10):
-    # the 6 channels as cut by subcanals() (reconstruction_juliette.py), without a margin at the edges
+    # the 6 channels as cut by subcanals() (reconstruction_functions.py), without a margin at the edges
     X, Y, v = cal['X'], cal['Y'], cal['vecteurs']
     return [(slice(Y[0] + v[i][1] + margin, Y[1] + v[i][1] - margin), slice(X[2] + v[i][0] + margin, X[3] + v[i][0] - margin))
             for i in range(6)]

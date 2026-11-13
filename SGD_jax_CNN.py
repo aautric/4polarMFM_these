@@ -131,7 +131,7 @@ def noise_model(raw, dark_variance, n_bins=10):
     # noise of each of the 6 channels of a chunk of frames (frames, channels, H, W), in the units of the data:
     # var(v) = gain*v + V. v = 0 without light (the reconstruction removes the camera baseline). V = dark_variance
     # (one value per channel): variance without light, read noise + clock induced charge, measured by
-    # reconstruction_juliette.py on the dark rows of the raw frames and carried through the interpolation and the
+    # reconstruction_functions.py on the dark rows of the raw frames and carried through the interpolation and the
     # normalisation of each channel (dark_variance.txt). gain is the part proportional to the light (EM excess noise,
     # real EM gain, normalisation and interpolation): fitted on the photon transfer curve of the whole channel, the
     # pixels sorted by their median over time in n_bins groups, the variance of each group measured on the differences
@@ -420,7 +420,7 @@ for name, expected in SENSITIVITY_SETTINGS.items():
     if name in camera_metadata and str(camera_metadata[name]) != expected:
         print('WARNING: '+name+' = '+str(camera_metadata[name])+', sensitivity = '+str(sensitivity)+' was measured with '+expected+': check it')
 # variance without light of each channel of the reconstruction (ADU^2, read noise + clock induced charge of the dark
-# rows of the raw frames carried through the reconstruction), written by reconstruction_juliette.py
+# rows of the raw frames carried through the reconstruction), written by reconstruction_functions.py
 if (path / 'dark_variance.txt').exists():
     dark_variance_adu = np.loadtxt(path / 'dark_variance.txt').reshape(6)
     print('Variance without light of the channels (ADU^2): '+str(np.round(dark_variance_adu, 1)))
@@ -582,14 +582,14 @@ MAG=jax.device_put(jnp.array(200/150))
 SAF = True
 
 # residual registration of the 3 planes vs the z of the emitter: registration_z.npz written by measure_registration_z
-# of reconstruction_juliette.py (bead z-stacks reconstructed with the calibration of the data, offset of each channel
+# of reconstruction_functions.py (bead z-stacks reconstructed with the calibration of the data, offset of each channel
 # vs the stage z). The image of each plane of the model is shifted laterally by the offset measured at the z of the
 # emitter (see plane_shift_of_z in the gradient descent cell). The 2D warps of the reconstruction cannot correct it: it
 # depends on z. With the actin2 calibration the outer planes move by 35-70 nm per um of z, which the fit reads as a
 # tilt of the dipole (eta biased by up to ~3 deg). False / None: no correction, the same position in the 3 planes
 # (DEFAULT since 2026-11-13, user: registration vs z not used any more; was 'auto' from 2026-11-03).
 # 'auto': calibr/registration_z.npz of the data set if it was measured with the calibration that reconstructed the data
-# (fingerprint, see registration_for_reconstruction in reconstruction_juliette.py), else no correction with a warning.
+# (fingerprint, see registration_for_reconstruction in reconstruction_functions.py), else no correction with a warning.
 # A path: that file (warning if its calibration is not the one of the data)
 registration_z = False
 
@@ -670,7 +670,7 @@ print('Resuming in '+str(save_folder)+' at batch '+str(first_batch)+', frame '+s
 # registration_z: 'auto' -> the file of the data set (or None), checked against the calibration of the reconstruction;
 # the config saves the file actually used (a resumed run reloads it); another name than registration_z: SGD_batch.py
 # replaces every top-level "registration_z = ..." by its value
-from reconstruction_juliette import registration_for_reconstruction
+from reconstruction_functions import registration_for_reconstruction
 registration_z_file = registration_for_reconstruction(registration_z, path)
 if fov_aberrations: # field-dependent aberrations only: fov_aberrations.py is imported only then (user 2026-11-13)
     import fov_aberrations as fov_module

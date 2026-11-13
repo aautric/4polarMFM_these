@@ -210,7 +210,7 @@ carries no orientation information in this model; same convention in the fit and
 Modelling choice, not a bug.
 
 **Warp of the reconstruction (`--warp` only, not used in the runs of 2026-11-12; reviewed 2026-11-12).**
-Why: in real data the reconstruction (reconstruction_juliette.py) cuts the 6 channels from the camera image and
+Why: in real data the reconstruction (reconstruction_functions.py) cuts the 6 channels from the camera image and
 resamples each one with `cv2.warpPerspective(channel, M_i, INTER_CUBIC)` to register it on the reference channel
 (canal 1, M = identity). Each output pixel is a cubic interpolation of 4 x 4 raw pixels: slight blur of the PSF and
 correlated noise between neighbouring pixels (lower variance per pixel), which the fit does not model. `--warp

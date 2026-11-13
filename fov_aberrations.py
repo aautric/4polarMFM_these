@@ -107,7 +107,7 @@ def build(fit_folder, out_file, calibration=None, n_min=N_MIN):
                 col_range=np.array([P[:, 0].min(), P[:, 0].max()]), row_range=np.array([P[:, 1].min(), P[:, 1].max()]),
                 n_fits=len(rows), n_fits_all=n_all, n_beads=int(bid.max() + 1), noll=noll, fit_folder=str(fit_folder))
     if calibration is not None:
-        from reconstruction_juliette import calibration_fingerprint
+        from reconstruction_functions import calibration_fingerprint
         meta.update(calibration_file=str(calibration), calibration_sha256=calibration_fingerprint(calibration))
     np.savez(out_file, **meta)
     return meta
@@ -121,7 +121,7 @@ def load(path):
 def for_reconstruction(value, reconstruction_path):
     # field model for SGD_jax.py / SGD_jax_CNN.py: value None (no field-dependent aberrations) or the path of a model
     # built by build(). Warning if it was measured with another calibration than the one that reconstructed the data
-    # (same check as registration_for_reconstruction of reconstruction_juliette.py). Returns the model or None
+    # (same check as registration_for_reconstruction of reconstruction_functions.py). Returns the model or None
     if value is None or str(value) in ('None', ''):
         return None
     model = load(str(value))
@@ -130,7 +130,7 @@ def for_reconstruction(value, reconstruction_path):
     if used.exists():
         data_sha = used.read_text().split('\n')[1].strip()
     elif (data / 'calibr' / 'calibration.npz').exists():
-        from reconstruction_juliette import calibration_fingerprint
+        from reconstruction_functions import calibration_fingerprint
         data_sha = calibration_fingerprint(data / 'calibr' / 'calibration.npz')
     else:
         data_sha = None
