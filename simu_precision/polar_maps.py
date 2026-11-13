@@ -1,5 +1,7 @@
 # 2026-11-12 (Claude): polar maps of any run of SGD_precision.py (simulated precision):
-#   python simu_precision/polar_maps.py <run folder> [<run folder> ...] [--redo-cnn]
+#   python simu_precision/polar_maps.py <run folder> [<run folder> ...] [--redo-cnn] [--clim-from <reference run>]
+# 2026-11-13 (user): precision maps light green (precise) -> light red; --clim-from: every map takes the colour scale of
+# the same map of the reference run (e.g. the CNN run with background; bias scales symmetric about 0), to compare runs.
 # For each run folder (the one with simulation.npz, results_<loss>.npz, NPZ_<loss>\) and each loss it fitted:
 #   rows 1-2: bias (median of the error) and precision (robust std, 1.4826 MAD) per simulated (rho, eta), for rho,
 #             eta, delta, N, from results_<loss>.npz (statistics() of SGD_precision.py, as summary.csv);
@@ -93,62 +95,101 @@ def median_line(rows):
                      for k, u, s in TEXT)
 
 
-def figure(run, loss, blocks, out):
-    # Purpose: the maps, 2 rows (bias, precision) per block (final fit; CNN first guess if any)
-    rows = [(lab, kind) for lab in blocks for kind in ('bias', 'sigma')]
-    fig, axs = plt.subplots(len(rows), len(PAR), figsize=(3.3*len(PAR), 3.4*len(rows) + 0.8), subplot_kw=dict(projection='polar'),
+# precision maps: light green (precise) -> light red (imprecise), RdYlGn reversed and mixed 30 % with white (user 2026-11-13)
+_c = plt.get_cmap('RdYlGn_r')(np.linspace(0, 1, 256)); _c[:, :3] = 0.7*_c[:, :3] + 0.3
+PRECISION_CMAP = matplotlib.colors.ListedColormap(_c, name='RdYlGn_r_light')
+
+
+def map_values(rows, kind, k, s):
+    # Purpose: the value of each grid point drawn on a map (eta bias: + = towards the edge of the disc, review item 12)
+    v = s*np.array([r[f'{kind}_{k}'] for r in rows], float)
+    return P.eta_bias_on_disc(rows, v) if (kind, k) == ('bias', 'eta') else v
+
+
+def limits(blocks):
+    # Purpose: colour scale of each map, 5th to 95th percentile of its values; key (block number: 0 final fit,
+    # 1 CNN first guess, kind, parameter) so that the limits of one run (--clim-from) apply to the maps of another
+    lim = {}
+    for b, rows in enumerate(blocks.values()):
+        for kind in ('bias', 'sigma'):
+            for k, unit, s in PAR:
+                f = map_values(rows, kind, k, s); f = f[np.isfinite(f)]
+                lim[b, kind, k] = tuple(np.percentile(f, [5, 95])) if f.size else (0., 1.)
+    return lim
+
+
+def figure(run, loss, blocks, out, ref=None):
+    # Purpose: the maps, 2 rows (bias, precision) per block (final fit; CNN first guess if any). ref = (name, limits
+    # of the reference run): its colour scale for every map (values outside: colour of the end, arrows on the bar);
+    # None: the 5th-95th percentile of each map.
+    rows = [(b, lab, kind) for b, lab in enumerate(blocks) for kind in ('bias', 'sigma')]
+    own = limits(blocks)
+    fig, axs = plt.subplots(len(rows), len(PAR), figsize=(3.3*len(PAR), 3.4*len(rows) + 1.5), subplot_kw=dict(projection='polar'),
                             layout='constrained', squeeze=False)
-    for ri, (lab, kind) in enumerate(rows):
+    for ri, (b, lab, kind) in enumerate(rows):
         for c, (k, unit, s) in enumerate(PAR):
-            v = s*np.array([r[f'{kind}_{k}'] for r in blocks[lab]], float)
-            if (kind, k) == ('bias', 'eta'):
-                v = P.eta_bias_on_disc(blocks[lab], v)  # + = towards the edge of the disc everywhere (review item 12)
-            f = v[np.isfinite(v)]
-            vmin, vmax = np.percentile(f, [5, 95]) if f.size else (0, 1)
-            im = P.disc_map(axs[ri, c], blocks[lab], v, 'coolwarm' if kind == 'bias' else 'viridis', vmin, vmax)
+            v = map_values(blocks[lab], kind, k, s)
+            vmin, vmax = (ref[1] if ref and (b, kind, k) in ref[1] else own)[b, kind, k]
+            if ref and kind == 'bias':  # reference scale made symmetric about 0: white = 0 also when the bias of the
+                vmin, vmax = -max(abs(vmin), abs(vmax)), max(abs(vmin), abs(vmax))  # reference has one sign (delta)
+            im = P.disc_map(axs[ri, c], blocks[lab], v, 'coolwarm' if kind == 'bias' else PRECISION_CMAP, vmin, vmax)
             if kind == 'bias' and vmin < 0 < vmax:
                 im.set_norm(matplotlib.colors.TwoSlopeNorm(0., vmin, vmax))
             med = np.nanmedian(np.abs(v)) if kind == 'bias' else np.nanmedian(v)
             axs[ri, c].set_title(f'{k}, {"median |bias|" if kind == "bias" else "median precision"} {med:.1f} {unit}\n{P.map_noise(blocks[lab], k, kind, s)}', fontsize=8)
-            cb = fig.colorbar(im, ax=axs[ri, c], location='bottom', shrink=0.8, aspect=18, pad=0.02)
+            cb = fig.colorbar(im, ax=axs[ri, c], location='bottom', shrink=0.8, aspect=18, pad=0.02, extend='both' if ref else 'neither')
             cb.set_label(f'{k} {"bias" if kind == "bias" else "precision"} ({unit})', fontsize=8); cb.ax.tick_params(labelsize=7)
             if c == 0:
                 axs[ri, c].text(-0.25, 0.5, f'{lab}\n{"bias (median error)" if kind == "bias" else "precision (robust std)"}',
                                 transform=axs[ri, c].transAxes, rotation=90, ha='center', va='center', fontsize=10, fontweight='bold')
+    scale = (f'colour scales of {ref[0]} (5th-95th percentile there, bias symmetric about 0)' if ref
+             else 'colour scale of each map from its 5th to its 95th percentile')
     fig.suptitle(f'{run.name}, loss {loss}: ' + ' / '.join(blocks) + ' vs the truth\n'
-                 'angle = rho, radius = eta (circles at 30, 60 deg; eta > 90 at rho+180, 180-eta); colour scale of each map from its '
-                 '5th to its 95th percentile (bias: white = 0; eta bias: + = towards the edge of the disc, more in-plane)', fontsize=11)
+                 'angle = rho, radius = eta (circles at 30, 60 deg; eta > 90 at rho+180, 180-eta)\n'
+                 f'{scale}\nbias: white = 0; eta bias: + = towards the edge of the disc (more in-plane)', fontsize=10)
     fig.savefig(out, dpi=90); plt.close(fig)
+
+
+def run_blocks(run, res, redo_cnn=False):
+    # Purpose: statistics per grid point of the final fit of results_<loss>.npz and, for a CNN run, of its CNN start
+    sim = dict(np.load(run / 'simulation.npz'))
+    loss = res.stem[len('results_'):]
+    r = np.load(res)
+    err = {k[6:]: r[k] for k in r.files if k.startswith('error_')}
+    blocks = {'final fit': P.statistics(r['index'], err, sim)}
+    first = sorted(run.glob(f'NPZ_{loss}/*.npz'), key=lambda f: int(f.stem) if f.stem.isdigit() else -1)
+    npz0 = np.load(first[-1]) if first else {}
+    if 'use_cnn' in getattr(npz0, 'files', []) and bool(npz0['use_cnn']):
+        blocks = {'final fit (CNN + LM)': blocks['final fit']}
+        cache = run / f'cnn_start_{loss}.npz'
+        start = saved_start([f for f in first if f.stem.isdigit()], len(sim['data']))
+        if start is not None:
+            print(f'{run.name}: CNN start read from the npz of the run')
+        elif cache.exists() and not redo_cnn:
+            start = dict(np.load(cache))
+        else:
+            start = cnn_start(run, loss, read_config(run / f'NPZ_{loss}' / 'config.txt'))
+            np.savez_compressed(cache, **start)
+        blocks['CNN first guess'] = P.statistics(np.arange(len(sim['data'])), errors(start, sim), sim)
+    return loss, blocks
 
 
 def main(argv):
     p = argparse.ArgumentParser(description='polar maps of runs of SGD_precision.py')
     p.add_argument('runs', nargs='+', help='run folders (with simulation.npz and results_<loss>.npz)')
     p.add_argument('--redo-cnn', action='store_true', help='compute the CNN start again even if cnn_start_<loss>.npz exists')
+    p.add_argument('--clim-from', default=None, help='reference run folder: every map takes the colour scale of the same '
+                   'map (block, bias/precision, parameter) of its first loss, so that runs can be compared by eye')
     a = p.parse_args(argv)
+    ref = None
+    if a.clim_from:
+        rr = Path(a.clim_from)
+        ref = (rr.name, limits(run_blocks(rr, sorted(rr.glob('results_*.npz'))[0], a.redo_cnn)[1]))
     for run in map(Path, a.runs):
-        sim = dict(np.load(run / 'simulation.npz'))
         for res in sorted(run.glob('results_*.npz')):
-            loss = res.stem[len('results_'):]
-            r = np.load(res)
-            err = {k[6:]: r[k] for k in r.files if k.startswith('error_')}
-            blocks = {'final fit': P.statistics(r['index'], err, sim)}
-            first = sorted(run.glob(f'NPZ_{loss}/*.npz'), key=lambda f: int(f.stem) if f.stem.isdigit() else -1)
-            npz0 = np.load(first[-1]) if first else {}
-            if 'use_cnn' in getattr(npz0, 'files', []) and bool(npz0['use_cnn']):
-                blocks = {'final fit (CNN + LM)': blocks['final fit']}
-                cache = run / f'cnn_start_{loss}.npz'
-                start = saved_start([f for f in first if f.stem.isdigit()], len(sim['data']))
-                if start is not None:
-                    print(f'{run.name}: CNN start read from the npz of the run')
-                elif cache.exists() and not a.redo_cnn:
-                    start = dict(np.load(cache))
-                else:
-                    start = cnn_start(run, loss, read_config(run / f'NPZ_{loss}' / 'config.txt'))
-                    np.savez_compressed(cache, **start)
-                blocks['CNN first guess'] = P.statistics(np.arange(len(sim['data'])), errors(start, sim), sim)
+            loss, blocks = run_blocks(run, res, a.redo_cnn)
             try:
-                figure(run, loss, blocks, run / f'polar_maps_{loss}.png')
+                figure(run, loss, blocks, run / f'polar_maps_{loss}.png', ref)
             except ValueError as e:  # disc_map needs a regular grid with an even number of eta bins
                 print(f'{run.name} {loss}: no polar maps ({e})')
             lines = [f'{run.name}, loss {loss}: median over the grid points of |bias| / precision (robust std); rho eta delta deg, N %, z x nm']
