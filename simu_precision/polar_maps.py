@@ -8,7 +8,7 @@
 #   rows 3-4, only if the run used the CNN (SGD_jax_CNN.py): the same for the CNN first guess alone (before the LM).
 #   Runs since 2026-11-12 save the CNN start in their npz (read directly). Older runs (nan): cnn_first_guess is run again on simulation.npz (the same
 #   patches the run fitted, same checkpoint) with the z table of the run, rebuilt with the settings of the run read
-#   from NPZ_<loss>\config.txt (middle_plane, J1, J2, rotations, rho_offset, y gains, unitary_J, registration_z and
+#   from NPZ_<loss>\config.txt (middle_plane, J_dichroic of the run, rho_offset, y gains, registration_z and
 #   fov_aberrations when None; the optics, lambda,
 #   NA, pixel, planes, SAF, must be those of the code, else the script stops). Cached in the run folder as
 #   cnn_start_<loss>.npz (--redo-cnn: computed again). CPU only (the GPU is not used).
@@ -26,7 +26,6 @@ sys.path.insert(0, os.path.join(G, 'simu_precision')); import SGD_precision as P
 
 PAR = [('rho', 'deg', 1), ('eta', 'deg', 1), ('delta', 'deg', 1), ('N', '%', 100)]  # N error is relative -> %
 TEXT = PAR + [('z', 'nm', 1), ('x', 'nm', 1)]
-CALIB = ('J1', 'J2', 'rotation', 'rotation2', 'rho_offset', 'unitary_J', 'y_gain_J1', 'y_gain_J2', 'middle_plane')
 OPTICS = ('lambda_emission', 'NA', 'mag', 'MAG', 'l_pixel', 'f_tube', 'SAF', 'interplane')
 
 
@@ -42,7 +41,8 @@ def read_config(path):
 def cnn_start(run, loss, cfg):
     # Purpose: CNN first guess of every simulated PSF of the run, as the run computed it (see the header)
     P.SGD_SCRIPT = P.HERE / 'SGD_jax_CNN.py'
-    over = {k: (f'np.array({cfg[k]})' if k in ('J1', 'J2') else cfg[k]) for k in CALIB if k in cfg}
+    over = {k: cfg[k] for k in ('rho_offset', 'middle_plane') if k in cfg}
+    over.update(P.SGD_batch.calibration_overrides(cfg))  # polarisation of the run = its J_dichroic (2026-11-16)
     over['loss2'] = repr(loss)
     for k in ('registration_z', 'fov_aberrations'):  # None in the simulations: no correction, as the run
         if cfg.get(k) == 'None': over[k] = 'None'

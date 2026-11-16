@@ -103,6 +103,20 @@ def apply_overrides(source, overrides):
     return new_source
 
 
+def calibration_overrides(cfg):
+    # overrides of SGD_jax*.py that give the polarisation model of a run, from its config.txt ({name: text of the value}):
+    # its J_dichroic (3 planes, rotations and unitary part already applied) as J_planes with rotations 0 and unitary_J
+    # False, and its y gains. Works for every run whatever its calibration era (J1/J2 before 2026-11-16, J_planes since);
+    # a config without J_dichroic falls back to [J1, J2, J1] with its own rotations and unitary_J. (2026-11-16)
+    over = {k: cfg[k] for k in ('y_gain_J1', 'y_gain_J2') if k in cfg}
+    if 'J_dichroic' in cfg:
+        over.update({'J_planes': 'np.array(' + cfg['J_dichroic'] + ')', 'rotation': '0', 'rotation2': '0', 'unitary_J': 'False'})
+    else:
+        over['J_planes'] = 'np.array([' + cfg['J1'] + ', ' + cfg['J2'] + ', ' + cfg['J1'] + '])'
+        over.update({k: cfg[k] for k in ('rotation', 'rotation2', 'unitary_J') if k in cfg})
+    return over
+
+
 def split_cells(source):
     # list of (first line number, header, text) of the cells, the text before the first header is a cell too
     starts = [0] + [m.start() for m in CELL_HEADER.finditer(source)]

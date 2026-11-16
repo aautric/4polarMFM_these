@@ -37,11 +37,17 @@ LABEL_NAMES = ['x_um', 'y_um', 'z_um', 'mx', 'my', 'mz', 'delta_deg', 'n_photons
 LAMBDA_NM = 620.
 MIDDLE_PLANE = 1.4
 INTERPLANE = 0.389
-J1 = np.array([[0.89097912 + 0.j, -0.25009759 - 0.43946158j], [0.43033225 - 0.14481147j, 0.6335862 + 0.58557087j]])
-J2 = np.array([[0.31676515 + 0.j, -0.93297585 - 0.07330244j], [-0.58381747 + 0.74754063j, -0.26412184 + 0.23328625j]])
-ROTATION, ROTATION2 = 7, 2
-CALIBRATION = 'slb'  # 'slb': J1, J2, rotations above (SLB calibration); 'ideal' (--calibration ideal): J1 identity,
-                     # J2 rot(45), rotations 0, as the ideal simulations of SGD_precision.py (2026-11-12)
+# polarisation: J_PLANES = Jones matrix of the 3 planes before the rotations, as J_planes of SGD_jax_CNN.py (2026-11-16:
+# J of method A, rotations 0 = the polar calibration of the last SLB run). Networks trained before 2026-11-16 used
+# J1 = [[0.89097912+0.j, -0.25009759-0.43946158j], [0.43033225-0.14481147j, 0.6335862+0.58557087j]],
+# J2 = [[0.31676515+0.j, -0.93297585-0.07330244j], [-0.58381747+0.74754063j, -0.26412184+0.23328625j]],
+# J_dichroic = [J1 rot(7), J2 rot(-2), J1 rot(7)] (first_guess_net_jax.pt of 2026-10-29 included)
+J_PLANES = np.array([[[0.842462+0.109866j, -0.210602-0.483565j], [0.513730-0.136411j, 0.597490+0.600400j]],
+                     [[0.387630+0.178874j, -0.444873-0.787296j], [0.895174-0.048815j, 0.387449+0.214856j]],
+                     [[0.844954+0.108419j, -0.215836-0.477193j], [0.509920-0.135141j, 0.606564+0.594809j]]])
+ROTATION, ROTATION2 = 0, 0
+CALIBRATION = 'slb'  # 'slb': J_PLANES, rotations above (calibration of the real data); 'ideal' (--calibration ideal):
+                     # [identity, rot(45), identity], rotations 0, as the ideal simulations of SGD_precision.py (2026-11-12)
 N_GRID, L_PIXEL, NA, MAG_OBJ, F_TUBE, MAG_RELAY = 80, 16, 1.4, 100, 200, 200 / 150
 HALF = 6  # 13x13 patches
 
@@ -76,7 +82,7 @@ def build_renderer():
     from simu_PSF_polarMFM_JAX import (vectorial_BFP_perfect_focus_jax, padding_jax, pad_jax,
                                        generate_zernike_base_jax, compute_M_jax, PSF_jax)
 
-    J_dichroic = np.array([J1 @ rot(ROTATION), J2 @ rot(-ROTATION2), J1 @ rot(ROTATION)])
+    J_dichroic = np.array([J_PLANES[0] @ rot(ROTATION), J_PLANES[1] @ rot(-ROTATION2), J_PLANES[2] @ rot(ROTATION)])
     d = jnp.array([MIDDLE_PLANE - INTERPLANE, MIDDLE_PLANE, MIDDLE_PLANE + INTERPLANE])
     second_plane = jnp.array([d[1] - d[0], 0., d[1] - d[2]])
     lambd = jnp.array(LAMBDA_NM)
@@ -277,13 +283,13 @@ if __name__ == "__main__":
     ap.add_argument("--checkpoint", default=CHECKPOINT, help="weights written by --train (default: the ones of SGD_jax_CNN.py)")
     ap.add_argument("--epochs", type=int, default=200)
     ap.add_argument("--calibration", default='slb', choices=['slb', 'ideal'], help="polarisation of the training PSF: "
-                    "'slb' = J1, J2 and rotations of this file (SLB calibration), 'ideal' = J1 identity, J2 rot(45), rotations 0 "
+                    "'slb' = J_PLANES and rotations of this file (calibration of the real data), 'ideal' = [identity, rot(45), identity], rotations 0 "
                     "(ideal simulations of SGD_precision.py)")
     ap.add_argument("--middle-plane", type=float, default=None, help="focus of the middle plane (um), default MIDDLE_PLANE (1.4)")
     ap.add_argument("--interplane", type=float, default=None, help="distance between the planes (um), default INTERPLANE (0.389)")
     args = ap.parse_args()
     if args.calibration == 'ideal':  # 2026-11-12: training for the ideal simulations
-        J1, J2, ROTATION, ROTATION2, CALIBRATION = np.eye(2, dtype=complex), rot(45).astype(complex), 0, 0, 'ideal'
+        J_PLANES = np.array([np.eye(2), rot(45), np.eye(2)], dtype=complex); ROTATION, ROTATION2, CALIBRATION = 0, 0, 'ideal'
     if args.middle_plane is not None:
         MIDDLE_PLANE = args.middle_plane
     if args.interplane is not None:

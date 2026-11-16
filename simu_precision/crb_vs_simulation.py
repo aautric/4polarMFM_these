@@ -5,7 +5,7 @@
 # the molecules of the inverse Fisher matrix (crlb_cov), per eta (45 values 1-179 deg), rho uniform. The conditions come
 # from each run: N, delta, x, y, z = a random subset of the true values of its simulation.npz; optics (lambda, NA,
 # magnification, pixel, planes, SAF) from NPZ_<loss>\config.txt. Only the ideal polarisation of the simulations
-# (J1 identity, J2 rot(45), rotations 0): torch polar_projections [0, -45, 0] (review item 18); else the run is skipped.
+# (J_dichroic = [identity, rot(45), identity]): torch polar_projections [0, -45, 0] (review item 18); else the run is skipped.
 # One CRB per set of conditions, cached in --out (crb_<hash>.npz).
 # Simulated precision per true eta: sqrt(mean over the rho of the grid of std^2): plain std (points, the CRB bounds the
 # variance, outliers included); the robust std (1.4826 MAD) only in the text (removed from the figures, user
@@ -65,9 +65,15 @@ def run_info(run):
     cfg = read_config(run / f'NPZ_{loss}' / 'config.txt')
     npz = sorted(run.glob(f'NPZ_{loss}/*.npz'))
     cnn = 'use_cnn' in np.load(npz[0]).files and bool(np.load(npz[0])['use_cnn'])
-    J1, J2 = np.array(eval(cfg['J1'])), np.array(eval(cfg['J2']))
-    ideal = (np.allclose(J1, np.eye(2)) and np.allclose(J2, [[np.cos(np.pi/4), -np.sin(np.pi/4)], [np.sin(np.pi/4), np.cos(np.pi/4)]])
-             and float(cfg['rotation']) == 0 and float(cfg['rotation2']) == 0)
+    # ideal = the model used J_dichroic = [identity, rot(45), identity] (2026-11-16: tested on the J_dichroic of the run,
+    # which includes the rotations; configs without it: J1 identity, J2 rot(45), rotations 0, as before)
+    r45 = [[np.cos(np.pi/4), -np.sin(np.pi/4)], [np.sin(np.pi/4), np.cos(np.pi/4)]]
+    if 'J_dichroic' in cfg:
+        ideal = np.allclose(np.array(eval(cfg['J_dichroic'])), [np.eye(2), r45, np.eye(2)])
+    else:
+        J1, J2 = np.array(eval(cfg['J1'])), np.array(eval(cfg['J2']))
+        ideal = (np.allclose(J1, np.eye(2)) and np.allclose(J2, r45)
+                 and float(cfg['rotation']) == 0 and float(cfg['rotation2']) == 0)
     return dict(run=run, res=res, cfg=cfg, method='cnn' if cnn else 'sgd', ideal=ideal, label=run.name.split('_', 2)[-1])
 
 
@@ -122,7 +128,7 @@ def main(argv):
     infos = [run_info(Path(r)) for r in a.runs]
     for i in infos:
         if not i['ideal']:
-            print(f'{i["run"].name}: not the ideal polarisation (J1 identity, J2 rot(45), rotations 0): skipped')
+            print(f'{i["run"].name}: not the ideal polarisation (J_dichroic = [identity, rot(45), identity]): skipped')
     infos = [i for i in infos if i['ideal']]
     lines = ['CRB Poisson only, no background (13 x 13 window; rho, eta, delta free, x y z N known; conditions of each run) vs '
              'simulated precision (sqrt(mean over rho of std^2)), deg; CRB interpolated at the eta of the grid.',

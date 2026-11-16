@@ -9,7 +9,8 @@ the noise model of each batch is measured by noise_model of SGD_jax.py on simula
 
 Simulation (in photons):
     PSF of the model of SGD_jax.py (or SGD_jax_CNN.py with --cnn: same model), ideal polarisation calibration
-    (J1 = identity, J2 = rot(45): a dipole at rho 45 deg lights the x channel of the middle plane; the torch model of the
+    (J_planes = [identity, rot(45), identity] (J1 = identity, J2 = rot(45) before 2026-11-16): a dipole at rho 45 deg
+    lights the x channel of the middle plane; the torch model of the
     CRB needs polar_projections 0/-45/0 for the same convention, review item 18; rotations 0, rho_offset 0, y gains 1) unless --calibration; the same model
     (and calibration) for the data and the fit unless a --data-* mismatch option is given
     true delta = --delta (90 by default) for every PSF, or uniform in --delta-range per PSF
@@ -178,8 +179,8 @@ def parse_arguments(argv):
                    'channels go through its cubic warps (blur and noise smoothing of the reconstruction), see warp_maps')
     p.add_argument('--data-y-gain-J2', type=float, default=1., help='y channel of plane 1 of the simulated data x this '
                    'factor (real x/y intensity error, the fit keeps its own y_gain_J2)')
-    p.add_argument('--calibration', default=None, help='config.txt of a run: its J1, J2, rotation, rotation2, unitary_J, '
-                   'y_gain_J1/J2 for the data and the fit (rho_offset stays 0: rho of the model) instead of the ideal calibration')
+    p.add_argument('--calibration', default=None, help='config.txt of a run: its J_dichroic (rotations and unitary part included) '
+                   'and y_gain_J1/J2 for the data and the fit (rho_offset stays 0: rho of the model) instead of the ideal calibration')
     p.add_argument('--rho-values', type=float, nargs='+', default=None, help='list of true rho (replaces the grid of n_rho)')
     p.add_argument('--eta-values', type=float, nargs='+', default=None, help='list of true eta (replaces the grid of n_eta)')
     p.add_argument('--data-n2', type=float, default=None, help='refractive index of the sample in the data (model: n2 of simu_PSF_polarMFM_JAX.py)')
@@ -909,13 +910,17 @@ def main(argv):
     # ideal polarisation calibration (J1 identity, J2 = rot(45): x channel of the middle plane = analyser at rho 45 deg,
     # review item 18), no rotation of the channels, y gains 1),
     # same for the data and the fit
-    calibration = {'J1': 'np.eye(2)', 'J2': 'rot(45)', 'rotation': '0', 'rotation2': '0', 'rho_offset': '0',
+    # (2026-11-16: J_planes = Jones matrix of the 3 planes, the only calibration of SGD_jax*.py; was J1 = identity, J2 = rot(45))
+    calibration = {'J_planes': 'np.array([np.eye(2), rot(45), np.eye(2)])', 'rotation': '0', 'rotation2': '0', 'rho_offset': '0',
                    'unitary_J': 'False', 'y_gain_J1': '1.', 'y_gain_J2': '1.'}
     if a.calibration: # calibration of a real run (same for the data and the fit), rho of the model (no rho_offset)
-        from density_experimental import run_parameters
-        real = run_parameters(a.calibration)[0]
-        calibration.update({k: v for k, v in real.items() if k in ('J1', 'J2', 'rotation', 'rotation2', 'unitary_J', 'y_gain_J1', 'y_gain_J2')})
-        log('calibration of ' + a.calibration + ': ' + ', '.join(f'{k}={calibration[k]}' for k in ('rotation', 'rotation2', 'unitary_J', 'y_gain_J1', 'y_gain_J2')))
+        # its J_dichroic (rotations and unitary part included) and y gains, SGD_batch.calibration_overrides (2026-11-16)
+        cfg = {}
+        for line in Path(a.calibration).read_text().splitlines():
+            if '=' in line and not line.startswith('#'):
+                k, _, v = line.partition('='); cfg[k.strip()] = v.strip()
+        calibration.update(SGD_batch.calibration_overrides(cfg))
+        log('calibration of ' + a.calibration + ': J_dichroic of the run, ' + ', '.join(f'{k}={calibration[k]}' for k in ('rotation', 'rotation2', 'unitary_J', 'y_gain_J1', 'y_gain_J2')))
     rng = np.random.default_rng(a.seed) # truth and data noise (simulate); seed + 1: background frames; + 2 warp; + 3 delta
     sim = None
     all_rows = {}

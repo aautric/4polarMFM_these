@@ -120,11 +120,11 @@ def run_parameters(config_file):
             k, _, v = line.partition('=')
             cfg[k.strip()] = v.strip()
     # sensitivity: the photons of the run (the default of SGD_jax.py changed from 3.9 to 4.4 on 2026-10-26)
-    overrides = {k: cfg[k] for k in ('middle_plane', 'rotation', 'rotation2', 'rho_offset', 'unitary_J', 'y_gain_J1',
-                                     'y_gain_J2', 'loss2', 'sensitivity') if k in cfg}
-    for k in ('J1', 'J2'):
-        if k in cfg:
-            overrides[k] = 'np.array(' + cfg[k] + ')'
+    overrides = {k: cfg[k] for k in ('middle_plane', 'rho_offset', 'loss2', 'sensitivity') if k in cfg}
+    # polarisation model of the run: its J_dichroic (2026-11-16, see SGD_batch.calibration_overrides; before, J1/J2 and
+    # the rotations were reinjected, which gave the wrong J for runs made with J_dichroic set by --set)
+    import SGD_batch
+    overrides.update(SGD_batch.calibration_overrides(cfg))
     return overrides, float(cfg['interplane']), float(cfg.get('rho_offset', 0))
 
 

@@ -339,7 +339,7 @@ def parse_config(config_path):
 # the keys of config.txt are the variable names themselves, so they can be reinjected directly
 reloaded = ['QE', 'EM', 'sensitivity',
             'lambda_emission', 'middle_plane', 'interplane', 'd',
-            'rotation', 'J1', 'J2', 'J_dichroic',
+            'rotation', 'J_planes', 'J1', 'J2', 'J_dichroic',
             'polar_projections', 'N', 'l_pixel', 'NA', 'mag', 'f_tube', 'MAG', 'SAF',
             'zernike_coefs_x', 'zernike_coefs_y', 'zern_x', 'zern_y',
             'LR1', 'num_epochs_max1', 'Nphotons_speed1', 'background_speed',
@@ -417,24 +417,31 @@ J2 = np.array([[ 0.31561277+0.j        , -0.95752769-0.05599034j],
        [-0.65325986-0.68821518j, -0.19602931-0.2039076j ]])
 '''
 
-J1 = np.array([[ 0.89097912+0.j        , -0.25009759-0.43946158j],
-       [ 0.43033225-0.14481147j,  0.6335862 +0.58557087j]])
-J2 = np.array([[ 0.31676515+0.j        , -0.93297585-0.07330244j],
-       [-0.58381747+0.74754063j, -0.26412184+0.23328625j]])
+# J1, J2 used until 2026-11-16 (fit of Calibration_polar2, method B; with unitary_J = True, rotation = rotation2 = 5,
+# y_gain_J2 = 0.93; J_dichroic = [J1 rot(rotation), J2 rot(-rotation2), J1 rot(rotation)]):
+# J1 = [[0.89097912+0.j, -0.25009759-0.43946158j], [0.43033225-0.14481147j, 0.6335862+0.58557087j]]
+# J2 = [[0.31676515+0.j, -0.93297585-0.07330244j], [-0.58381747+0.74754063j, -0.26412184+0.23328625j]]
 
-# True: J1 and J2 replaced by their unitary part (polar decomposition J = U H, U = W Vh from the SVD J = W S Vh).
-# The fit of Calibration_polar2 leaves them ~3 % off unitary (diattenuation ~5 %, unpolarised light split
-# 1.050/0.950 behind J1 and 0.976/1.024 behind J2), while the reconstruction normalises the 6 channels with white
-# light, so that unpolarised light gives the same intensity in x and y. U keeps the retardance (rotation and
-# ellipticity of the polarisation) and removes the diattenuation. With it, y_gain_J1 = y_gain_J2 = 1
-unitary_J = True
+# POLARISATION CALIBRATION (user 2026-11-16: settings of the last SLB run, 00_papier/SLB fit 2026-11-14_09h52,
+# D:\AMAURY\DATA\00_papier\SLB\scripts\run_slb.sh). J_planes = Jones matrix of each plane (0, 1, 2) before the
+# rotations: J of polarisation method A (rotating linear polariser at the sample), rows of norm 1, circular sign
+# (-, +) (J_A_pipeline_unitrows.npy of D:\AMAURY\simu_precision_claude\2026-11-02_polar_calib); no y gain, common
+# rotation 0, rho_offset -6.2. See suivi\Topics\polarization_calibration\problem.md.
+# J_planes is the ONLY polarisation calibration of the model. To reproduce another run, use its J_dichroic
+# (config.txt) with SGD_batch.calibration_overrides(); simulations: J_planes = [identity, rot(45), identity].
+J_planes = np.array([[[0.842462+0.109866j, -0.210602-0.483565j], [0.513730-0.136411j, 0.597490+0.600400j]],
+                     [[0.387630+0.178874j, -0.444873-0.787296j], [0.895174-0.048815j, 0.387449+0.214856j]],
+                     [[0.844954+0.108419j, -0.215836-0.477193j], [0.509920-0.135141j, 0.606564+0.594809j]]])
+# True: each J replaced by its unitary part (polar decomposition J = U H, U = W Vh from the SVD J = W S Vh): keeps
+# the retardance (rotation and ellipticity of the polarisation), removes the diattenuation (used with the method B
+# J1, J2 until 2026-11-16; False for the J of method A)
+unitary_J = False
 if unitary_J:
-    W, _, Vh = np.linalg.svd(J1); J1 = W @ Vh
-    W, _, Vh = np.linalg.svd(J2); J2 = W @ Vh
-
-rotation = 5
-rotation2 =  5
-J_dichroic = np.array([J1@rot(rotation), J2@rot(-rotation2), J1@rot(rotation)])
+    J_planes = np.array([np.linalg.svd(J)[0] @ np.linalg.svd(J)[2] for J in J_planes])
+J1, J2 = J_planes[0], J_planes[1]  # written in config.txt for older tools only; the model uses J_dichroic
+rotation = 0
+rotation2 = 0
+J_dichroic = np.array([J_planes[0]@rot(rotation), J_planes[1]@rot(-rotation2), J_planes[2]@rot(rotation)])
 rho_offset = -6.2
 # relative gain of the y polarisation channel in the model, for the planes behind J1 (planes 0 and 2) and behind
 # J2 (plane 1); 1 = no correction. The rho bias and the delta vs rho of a SLB bead (2026_02_02, rotation =
@@ -443,8 +450,9 @@ rho_offset = -6.2
 # the model behind J1 and ~11 % dimmer behind J2 (estimate, to be checked on the bead)
 # with unitary_J = False, 1/(y/x of J) = 1.104 and 0.953 make unpolarised light even in x and y as after the
 # normalisation; 1.09 and 0.89 were fitted on the bias curves of the bead
+# 2026-11-16: no y gain with J of method A (0.95 / 0.93 not supported once drift and bead fit were corrected, 2026-11-10)
 y_gain_J1 = 1.
-y_gain_J2 = 0.93
+y_gain_J2 = 1.
 
 # %% SGD PARANETERS TO DEFINE
 # the settings in photons (speeds of SGD1 and SGD2, starting N in load_batch, fiducial threshold in plot_results)
@@ -462,7 +470,7 @@ background_speed = jax.device_put(100.*photon_scale)
 LR1 = jax.device_put(0.05)
 num_epochs_max1 = 80
 
-num_epochs_max2 = 120
+num_epochs_max2 = 200  # 2026-11-16 (user): 200 (was 120; at 120 eta collapsed to 0/180 near rho 0/180 without background, 300 removed it, simulations 2026-11-14)
 LR2 = jax.device_put(1.2)
 # background of the 6 channels of each PSF refined in SGD2 (2026-11-12, review simulation precision): SGD1 fits it with
 # the start orientation (rho 90, eta 90, delta 80), the light of the wrong PSF shape goes into it, and it was then
@@ -644,8 +652,9 @@ config = {
     'rotation': rotation,
     'rotation2': rotation2,
     'rho_offset': rho_offset,
-    'J1': J1,
-    'J2': J2,
+    'J_planes': J_planes, # the calibration (3 planes, before the rotations)
+    'J1': J1, # = J_planes[0], older tools
+    'J2': J2, # = J_planes[1], older tools
     'J_dichroic': J_dichroic,
     # objective and back focal plane
     'polar_projections': polar_projections,
@@ -680,7 +689,7 @@ config = {
     'zern_speed2_x': zern_speed2_x,
     'zern_speed2_y': zern_speed2_y,
     'zern_start_epoch2': zern_start_epoch2,
-    'unitary_J': unitary_J, # J1 and J2 above are already the unitary ones when True
+    'unitary_J': unitary_J, # J_planes above is already the unitary one when True
     'y_gain_J1': y_gain_J1,
     'y_gain_J2': y_gain_J2,
     'fit_zernike': fit_zernike,
