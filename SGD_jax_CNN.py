@@ -276,7 +276,10 @@ def loss_angle_with_M(params, delta_speed, nphotons_speed2, xy_speed2, z_speed2,
     gain = noise[:, 0, :, :, None, None]
     shift = noise[:, 1, :, :, None, None]
     loss = jnp.sum(pixel_loss(model, data, gain, shift)) # loss chosen by loss2
-    delta_bound = limit(params['delta'], 180, 100, upper=True) + limit(params['delta'], 1, 100, upper=False)
+    # bounds of the PHYSICAL delta (1-180 deg): the parameter is delta/delta_speed (2026-11-17: the bounds were applied to
+    # the scaled parameter, i.e. 1.8-324 deg with delta_speed 1.8 since 2026-10-01; runaway SGD fits reached delta 238-255)
+    delta_bound = (limit(params['delta']*delta_speed, 180, 100, upper=True)
+                   + limit(params['delta']*delta_speed, 1, 100, upper=False))
     # N_photons >= 0 (as in SGD1): without it the fit can make the PSF negative to lower the model when the
     # background, fixed after SGD1, is too high. Slope 10 on the scaled parameter (N/nphotons_speed2): the penalty
     # is negligible above ~0.5*nphotons_speed2 photons and stays finite in float32 for an overshoot of a few steps
